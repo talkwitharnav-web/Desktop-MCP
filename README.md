@@ -226,6 +226,10 @@ Coordinate-bound batches guard the observed foreground window. If an action
 opens a new dialog or switches applications, use the returned fresh observation
 before deciding the next coordinate-based action.
 
+`Snapshot` binds its accessibility tree and image to the same context and input
+revision. A switch or input change during the compound inspection is an error,
+not a tree from one window paired with another window's image.
+
 ## Faster observations and actions
 
 MCP is a request/response protocol, not a video stream into a model. The efficient

@@ -2,6 +2,8 @@ import base64
 import asyncio
 import io
 import sys
+from dataclasses import replace
+from types import SimpleNamespace
 
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
@@ -57,6 +59,9 @@ class FixtureApplication:
         if armed:
             self.controller.arm_local()
         self.vision = FixtureVision(self.controller)
+        self.capture = SimpleNamespace(
+            context=lambda: CaptureContext(1, (0, 0, 1000, 1000), (0, 0, 1000, 1000))
+        )
         self.export_frames = False
         self.image_files = ImageFiles()
 
@@ -129,6 +134,67 @@ async def test_zero_duration_coordinate_batch_fails_before_its_first_key():
         )
         assert result.is_error
         assert application.backend.events == []
+
+
+@pytest.mark.parametrize("phase", ["tree", "image", "export"])
+@pytest.mark.parametrize("change", ["window", "input", "none"])
+async def test_snapshot_rejects_context_or_input_changes_between_compound_phases(phase, change):
+    from desktop_mcp.vision import VisionService
+    from tests.test_desktop_vision import Clock, Provider
+
+    application = FixtureApplication(armed=True)
+    application.controller.set_human_takeover(False)
+    clock = Clock()
+    provider = Provider(clock)
+    application.capture = provider
+    application.vision = VisionService(
+        provider,
+        revision=lambda: application.controller.input_revision,
+        checkpoint=application.controller.checkpoint,
+        wait=clock.wait,
+        clock=clock,
+    )
+
+    def change_context():
+        if change == "window":
+            provider.current = replace(provider.current, window_id=29)
+        elif change == "input":
+            application.controller.notify_human_input(kind="key")
+
+    def tree(**kwargs):
+        if phase == "tree":
+            change_context()
+        return "Window1 Save button"
+
+    observe = application.vision.observe
+
+    def image(**kwargs):
+        result = observe(**kwargs)
+        if phase == "image":
+            change_context()
+        return result
+
+    application.accessibility_tree = tree
+    application.vision.observe = image
+    if phase == "export":
+        application.export_frames = True
+
+        def export(observation):
+            change_context()
+            return observation
+
+        application.export_observation = export
+    async with Client(create_server(application)) as client:
+        result = await client.call_tool("Snapshot", {}, raise_on_error=False)
+        if change == "none":
+            assert not result.is_error
+            assert result.structured_content["accessibility_tree"] == "Window1 Save button"
+            assert result.structured_content["observation"]["window_id"] == 17
+            assert any(block.type == "image" for block in result.content)
+        else:
+            assert result.is_error
+            assert not any(block.type == "image" for block in result.content)
+        assert application.controller.snapshot().armed
 
 
 @pytest.mark.parametrize(

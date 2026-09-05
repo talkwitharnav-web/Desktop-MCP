@@ -94,6 +94,9 @@ implementation lives under `src/desktop_mcp`.
 - Accessibility is optional and heavier than capture. Its subprocess receives
   one window handle, never an unrestricted background-window traversal. Stop or
   timeout terminates only that owned worker and does not strand the action lock.
+  Snapshot pins context/input revision across both UIA and image phases. The
+  worker validates the supplied ticket before launch and after inspection;
+  the tool rejects mismatches before returning a combined tree/image result.
 - Image exports are explicit, or enabled by `DESKTOP_MCP_IMAGE_FILES`. Only files
   created by that instance are unlinked; directory removal is nonrecursive.
   An unchanged image can keep its previous image content without another export.

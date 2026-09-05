@@ -181,10 +181,33 @@ class DesktopApplication:
             for display in uia.GetDisplays()
         ]
 
-    def accessibility_tree(self, *, use_dom: bool = False) -> str:
+    def accessibility_tree(
+        self,
+        *,
+        use_dom: bool = False,
+        expected_context: CaptureContext | None = None,
+        expected_input_revision: int | None = None,
+    ) -> str:
         from desktop_mcp.capture import context_identity
 
+        self.controller.checkpoint()
+        revision = (
+            self.controller.input_revision
+            if expected_input_revision is None
+            else expected_input_revision
+        )
+
+        def check_revision() -> None:
+            self.controller.checkpoint()
+            if self.controller.input_revision != revision:
+                raise RuntimeError("Input changed during accessibility inspection. Observe again.")
+
         context = self.capture.context()
+        check_revision()
+        if expected_context is not None and context_identity(context) != context_identity(
+            expected_context
+        ):
+            raise RuntimeError("The accessibility target changed before inspection. Observe again.")
         args = [
             sys.executable,
             "-m",
@@ -194,7 +217,7 @@ class DesktopApplication:
         ]
         if use_dom:
             args.append("--dom")
-        self.controller.checkpoint()
+        check_revision()
         process = subprocess.Popen(
             args,
             stdin=subprocess.DEVNULL,
@@ -207,7 +230,7 @@ class DesktopApplication:
         deadline = time.monotonic() + 5.0
         try:
             while True:
-                self.controller.checkpoint()
+                check_revision()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError(
@@ -218,16 +241,18 @@ class DesktopApplication:
                     break
                 except subprocess.TimeoutExpired:
                     continue
-            self.controller.checkpoint()
+            check_revision()
             if process.returncode:
                 raise RuntimeError(
                     f"Accessibility worker exited with {process.returncode}: {stderr[-2000:]}"
                 )
             if context_identity(context) != context_identity(self.capture.context()):
                 raise RuntimeError("The foreground window changed during accessibility inspection.")
+            check_revision()
             result = json.loads(stdout)
             if not isinstance(result, dict) or not isinstance(result.get("tree"), str):
                 raise RuntimeError("Accessibility worker returned an invalid response.")
+            check_revision()
             return result["tree"]
         finally:
             if process.poll() is None:

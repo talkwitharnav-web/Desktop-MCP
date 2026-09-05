@@ -332,11 +332,32 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
         annotations=read,
     )
     def snapshot(use_dom: bool = False) -> ToolResult:
+        from desktop_mcp.capture import context_identity
+
         app = get_app()
         with app.controller.operation("Accessibility inspection"):
-            tree = app.accessibility_tree(use_dom=use_dom)
-            app.controller.checkpoint()
+            revision = app.controller.input_revision
+            context = app.capture.context()
+
+            def check_ticket(current=None) -> None:
+                app.controller.checkpoint()
+                if app.controller.input_revision != revision:
+                    raise RuntimeError("Input changed during Snapshot. Obtain a fresh observation.")
+                current = app.capture.context() if current is None else current
+                if context_identity(current) != context_identity(context):
+                    raise RuntimeError("The Snapshot window changed. Obtain a fresh observation.")
+                app.controller.checkpoint()
+                if app.controller.input_revision != revision:
+                    raise RuntimeError("Input changed during Snapshot. Obtain a fresh observation.")
+
+            tree = app.accessibility_tree(
+                use_dom=use_dom,
+                expected_context=context,
+                expected_input_revision=revision,
+            )
+            check_ticket()
             observation = app.vision.observe()
             if observation.image is not None and app.export_frames:
                 observation = app.export_observation(observation)
+            check_ticket(app.vision.context_for(observation.frame_id))
             return observation_result(observation, extra={"accessibility_tree": tree})
