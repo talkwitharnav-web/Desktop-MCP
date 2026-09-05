@@ -57,8 +57,12 @@ fork: PyPI and MCP registry publication are not part of setting up the checkout.
 From the project folder:
 
 ```powershell
-copilot mcp add desktop-mcp -- "$((Get-Location).Path)\.venv\Scripts\python.exe" -m desktop_mcp serve
+copilot.cmd mcp add desktop-mcp -- "$((Get-Location).Path)\.venv\Scripts\python.exe" -m desktop_mcp serve
 ```
+
+For an npm-installed Copilot on Windows, use `copilot.cmd`: the PowerShell shim
+can consume `--` and then misinterpret Python's `-m`. A native executable
+installation can use `copilot` with the same arguments.
 
 Alternatively, use `/mcp add` inside Copilot and enter:
 
