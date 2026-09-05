@@ -7,13 +7,17 @@ from collections.abc import Callable
 from dataclasses import asdict
 import json
 from typing import TYPE_CHECKING, Literal
+from typing import Annotated
 
+from fastmcp import Context
 from fastmcp.tools.tool import ToolResult
 from mcp.types import ImageContent, TextContent, ToolAnnotations
-from pydantic import StrictInt
+from pydantic import Field, StrictInt
 
 from desktop_mcp.actions import Action, Button, parse_shortcut
 from desktop_mcp.contracts import CaptureScope, Observation
+from desktop_mcp.interaction import current_actor
+from desktop_mcp.runtime import BatchInterrupted
 
 if TYPE_CHECKING:
     from desktop_mcp.app import DesktopApplication
@@ -23,15 +27,47 @@ def observation_result(
     observation: Observation | None,
     *,
     extra: dict[str, object] | None = None,
+    detail: Literal["compact", "full"] = "compact",
 ) -> ToolResult:
     """Keep actual image blocks separate from their structured/text metadata."""
     metadata = dict(extra or {})
     if observation is not None:
         metadata["observation"] = observation.metadata
         metadata["frame_id"] = observation.frame_id
-    content: list[TextContent | ImageContent] = [
-        TextContent(type="text", text=json.dumps(metadata, ensure_ascii=False, allow_nan=False))
-    ]
+    if detail == "full":
+        summary = json.dumps(metadata, ensure_ascii=False, allow_nan=False)
+    else:
+        lines = []
+        if "actions" in metadata:
+            lines.append(
+                f"Completed: {len(metadata['actions'])} action step(s). "
+                "Application outcome is not yet verified."
+            )
+        if "windows" in metadata:
+            lines.extend(
+                f"Window {window['window_id']}: {window['title']}" for window in metadata["windows"]
+            )
+        if "state" in metadata:
+            lines.append(f"Desktop {metadata['state']}: {metadata.get('reason', '')}")
+        if observation is not None:
+            frame = observation.metadata
+            lines.append(
+                f"Frame {observation.frame_id}; scope={frame.get('scope', 'active')}; "
+                f"window={frame.get('window_id')}; image={frame.get('image_dimensions')}."
+            )
+            lines.append(
+                f"Image unchanged; reuse {frame.get('image_frame_id')}. Use the new frame_id for input."
+                if observation.image is None
+                else "Inspect the image before choosing the next action; use frame_id for its coordinates."
+            )
+        if metadata.get("observation_due"):
+            lines.append(
+                "Observation due: check the last action before a long wait or completion claim."
+            )
+        if metadata.get("pending_messages"):
+            lines.append(f"Transcript has {metadata['pending_messages']} unanswered message(s).")
+        summary = "\n".join(lines) or "Result details are in the structured response."
+    content: list[TextContent | ImageContent] = [TextContent(type="text", text=summary)]
     if observation is not None and observation.image is not None:
         content.append(
             ImageContent(
@@ -43,7 +79,12 @@ def observation_result(
     return ToolResult(content=content, structured_content=metadata)
 
 
-def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
+def register_tools(
+    mcp,
+    get_app: Callable[[], DesktopApplication],
+    *,
+    on_desktop_session: Callable[[str], None] | None = None,
+) -> None:
     read = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True)
     mutate = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False)
 
@@ -54,6 +95,7 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
         since: str | None = None,
         scope: CaptureScope = "active",
         window_id: int | None = None,
+        detail: Literal["compact", "full"] = "compact",
     ) -> ToolResult:
         app = get_app()
         with app.controller.operation("Desktop input"):
@@ -63,13 +105,47 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
                 if window_id is not None and context.window_id != window_id:
                     raise ValueError("The frame belongs to a different foreground window.")
                 window_id = context.window_id
-            completed = app.controller.execute(
-                actions, resolve=app.vision.resolve, window_id=window_id
-            )
+            actor = current_actor()
             try:
-                observation = app.vision.observe(scope=scope, since=since) if observe else None
+                completed = app.controller.execute(
+                    actions, resolve=app.vision.resolve, window_id=window_id
+                )
+            except BatchInterrupted as error:
+                app.interaction.record_input(
+                    tool=actor.tool if actor else "Desktop input",
+                    completed=error.completed,
+                    partial=True,
+                )
+                raise
+            if any(action.kind != "wait" for action in actions):
+                app.interaction.record_input(
+                    tool=actor.tool if actor else "Desktop input", completed=len(completed)
+                )
+            try:
+                reference = since
+                if reference is None and len(frames) == 1:
+                    candidate = next(iter(frames))
+                    # A change wait is meaningful only in the same captured context.
+                    if context.scope == scope:
+                        reference = candidate
+                if reference is None:
+                    reference = app.interaction.observation_reference(scope)
+                observation = (
+                    app.vision.observe(
+                        scope=scope,
+                        since=reference,
+                        wait_for_change=0.35
+                        if reference
+                        and any(action.kind not in {"move", "wait"} for action in actions)
+                        else 0.0,
+                    )
+                    if observe
+                    else None
+                )
                 if observation is not None and observation.image is not None and app.export_frames:
                     observation = app.export_observation(observation)
+                if observation is not None:
+                    app.interaction.record_observation(observation)
             except (OSError, RuntimeError, ValueError) as error:
                 raise RuntimeError(
                     f"{len(completed)} action(s) completed, but the follow-up observation failed: "
@@ -77,7 +153,16 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
                 ) from error
             return observation_result(
                 observation,
-                extra={"actions": completed, "input_revision": app.controller.input_revision},
+                extra={
+                    "actions": completed,
+                    "input_revision": app.controller.input_revision,
+                    "application_outcome": "unverified",
+                    "host": app.host_info,
+                    "request": None if actor is None else asdict(actor),
+                    "observation_due": app.interaction.status()["observation_due"],
+                    "pending_messages": app.teaching.conversation.status()["pending_messages"],
+                },
+                detail=detail,
             )
 
     @mcp.tool(
@@ -87,14 +172,41 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
     )
     def status() -> dict[str, object]:
         app = get_app()
+        actor = current_actor()
         return {
             **asdict(app.controller.snapshot()),
+            "host": app.host_info,
+            "interaction": app.interaction.status(actor.session_id if actor else None),
             "transcript": {
                 "visible": app.teaching_surface.visible,
                 "enabled": app.teaching_surface.enabled,
                 **app.teaching.conversation.status(),
             },
         }
+
+    @mcp.tool(
+        name="DesktopControl",
+        description="Claim or release ownership of a multi-step desktop task. One interactive MCP session owns input/observations at a time; other helpers must return research to it, not interleave GUI actions. Claim requires existing local Arm and never grants it. First desktop use also claims automatically. Release stops desktop access and invalidates queued input. Status is read-only. Use a brief task label, not private document contents.",
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
+    )
+    def desktop_control(
+        ctx: Context,
+        action: Literal["claim", "release", "status"] = "status",
+        task: str | None = None,
+    ) -> dict[str, object]:
+        app = get_app()
+        owner = ctx.session_id
+        if action == "claim":
+            with app.controller.request() as generation:
+                result = app.interaction.claim(owner, generation=generation, task=task)
+            if on_desktop_session is not None:
+                on_desktop_session(owner)
+            return {"claimed": True, "owner": result}
+        if task is not None:
+            raise ValueError("task is only valid when claiming a desktop task.")
+        if action == "release":
+            return {"released": app.interaction.release(owner)}
+        return app.interaction.status(owner)
 
     @mcp.tool(
         name="DesktopStop",
@@ -108,19 +220,22 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
 
     @mcp.tool(
         name="Screenshot",
-        description="Observe the active window (default) or desktop, with an actual image block and a frame_id. For loc coordinates taken from this image, pass its frame_id to input tools: the server applies crop origins/scales. since reuses identical image content with fresh metadata. wait_for_change performs bounded adaptive polling, not video streaming; settle waits briefly for visual stability. If your client drops image blocks, export_image=true also returns a temporary image_path for a native image-reading tool. Stop blocks capture too.",
+        description="Observe the active window or desktop with real image pixels and a frame_id for safe coordinate mapping. wait_for_change is 0..5 seconds, settle is 0..1; this is bounded polling, not video or proof of application readiness. Use a relevant region and verify the actual UI postcondition. since can reuse an unchanged image; omit it if you need new image bytes. detail='full' repeats all structured diagnostics as text for clients that need that compatibility path. export_image returns a temporary path only when requested.",
         annotations=read,
     )
     def screenshot(
         scope: CaptureScope = "active",
         region: tuple[StrictInt, StrictInt, StrictInt, StrictInt] | None = None,
-        max_dimension: StrictInt = 1440,
+        max_dimension: Annotated[int, Field(strict=True, ge=1, le=4096)] = 1440,
         encoding: Literal["auto", "png", "jpeg"] = "auto",
-        quality: StrictInt = 85,
+        quality: Annotated[int, Field(strict=True, ge=1, le=100)] = 85,
         since: str | None = None,
-        wait_for_change: float = 0.0,
-        settle: float = 0.06,
+        wait_for_change: Annotated[
+            float, Field(strict=True, ge=0, le=5, allow_inf_nan=False)
+        ] = 0.0,
+        settle: Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)] = 0.06,
         export_image: bool = False,
+        detail: Literal["compact", "full"] = "compact",
     ) -> ToolResult:
         app = get_app()
         with app.controller.operation("Observing"):
@@ -138,7 +253,15 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
             )
             if observation.image is not None and (export_image or app.export_frames):
                 observation = app.export_observation(observation)
-            return observation_result(observation)
+            app.interaction.record_observation(observation)
+            return observation_result(
+                observation,
+                detail=detail,
+                extra={
+                    "host": app.host_info,
+                    "pending_messages": app.teaching.conversation.status()["pending_messages"],
+                },
+            )
 
     @mcp.tool(
         name="DesktopBatch",
@@ -151,8 +274,11 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
         since: str | None = None,
         scope: CaptureScope = "active",
         window_id: StrictInt | None = None,
+        detail: Literal["compact", "full"] = "compact",
     ) -> ToolResult:
-        return run(actions, observe=observe, since=since, scope=scope, window_id=window_id)
+        return run(
+            actions, observe=observe, since=since, scope=scope, window_id=window_id, detail=detail
+        )
 
     @mcp.tool(
         name="Click",
@@ -313,10 +439,19 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
                     raise ValueError("Launch requires executable and optional args, not window_id.")
                 pid = app.controller.emit(lambda: app.backend.launch(executable, args or []))
                 result = {"pid": pid, "launched": True}
+            app.interaction.record_input(tool=f"App.{mode}", completed=1)
             try:
-                observation = app.vision.observe() if observe else None
+                observation = (
+                    app.observe_focused(window_id)
+                    if mode == "focus" and observe
+                    else app.vision.observe()
+                    if observe
+                    else None
+                )
                 if observation is not None and observation.image is not None and app.export_frames:
                     observation = app.export_observation(observation)
+                if observation is not None:
+                    app.interaction.record_observation(observation)
             except (OSError, RuntimeError, ValueError) as error:
                 raise RuntimeError(
                     f"The application {mode} completed, but observation failed: {error}. "
@@ -368,4 +503,5 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
             if observation.image is not None and app.export_frames:
                 observation = app.export_observation(observation)
             check_ticket(app.vision.context_for(observation.frame_id))
+            app.interaction.record_observation(observation)
             return observation_result(observation, extra={"accessibility_tree": tree})

@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.4",
   "name": "Desktop-MCP",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Visible, supervised Windows desktop control built on Windows-MCP",
   "long_description": "One locally armed session combines desktop control and teaching: smooth input, adaptive screenshots, laser/ink guidance and learner cursor waits. A two-way transcript opens with the app and has a main-panel visibility toggle. An active MCP agent can listen for typed questions and reply there. Chat works while desktop control is paused; only the human can arm or resume input. Python 3.14+ required.",
   "author": {
@@ -36,6 +36,7 @@
   "tools": [
     {"name": "DesktopStatus", "description": "Read controller state without capturing the screen."},
     {"name": "DesktopStop", "description": "Latch a stop and release owned input. Resume is local-only."},
+    {"name": "DesktopControl", "description": "Claim or release one interactive task owner across tool calls; never grants local Arm."},
     {"name": "DesktopBatch", "description": "Serial validated input steps with one final observation."},
     {"name": "Screenshot", "description": "Efficient image observations with safe coordinate references."},
     {"name": "Click", "description": "Smooth movement and left/right/middle/extra-button clicks."},

@@ -32,6 +32,12 @@ owned keys/buttons on every exit path. Prefer atomic chords and drags over
 holding a key across model round trips. Do not retry non-idempotent input
 automatically after partial success.
 
+Serialization of individual calls is not ownership of a multi-step task.
+`DesktopControl` binds desktop actions/observations to one MCP session until
+release, disconnect or local revocation. A non-owner cannot interleave a second
+planner's edits, nor revoke the owner merely by disconnecting after a denied call.
+Research helpers still need restricted tools and a genuinely read-only assignment.
+
 ## D-005: Efficient observations, not imaginary video streaming
 
 MCP tool responses are request/response observations, not a continuous video
@@ -39,6 +45,15 @@ feed into the model. Reuse unchanged image content, adapt polling inside bounded
 wait-for-change calls, crop deliberately, and provide actual encoded image
 blocks with exact coordinate metadata. Input references a bounded-lifetime frame;
 the server, not the model, translates image pixels to desktop pixels.
+
+Keep post-action observations in the action RPC and surface when one was skipped.
+Do not spend a long transcript wait before checking an unobserved action.
+Automatic image reuse is limited to the same client and generation; another
+client is not assumed to have received those pixels. Concise text accompanies
+full structured metadata; verbose repeated text is an explicit compatibility option.
+
+Application postconditions remain separate from input delivery and pixel
+settlement. A generator-based substitute is not a completed manual-authoring task.
 
 ## D-006: Local, explicit control surface
 
@@ -116,6 +131,11 @@ No idle-model wakeup or automatic mirroring of CLI output is claimed.
 Only one MCP session holds the transcript listener lease. Messages stay pending
 until a matching reply; disconnection or lease expiry permits another listener
 without losing the question. The UI reports actual listening/delivery/queue state.
+
+Queued corrections must be read and acknowledged before another changing
+desktop operation. This blocks the old plan without disarming or requiring an
+extra user go-ahead after an ordinary check-in. A long transcript read can also
+yield when the owner needs to observe an action that just completed.
 
 Text chat and transcript show/hide work while desktop access is stopped. They
 never arm input, capture pixels, launch/focus applications, or permit writing

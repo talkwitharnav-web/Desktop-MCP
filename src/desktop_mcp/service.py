@@ -14,7 +14,6 @@ import sys
 import tempfile
 import time
 from typing import TYPE_CHECKING
-import uuid
 
 import anyio
 from platformdirs import user_state_dir
@@ -81,10 +80,15 @@ async def _rpc_stream(channel: PipeChannel, application: DesktopApplication) -> 
     from desktop_mcp.app import create_server
 
     chat_sessions: set[str] = set()
-    server = create_server(application, manage_application=False, on_chat_session=chat_sessions.add)
+    desktop_sessions: set[str] = set()
+    server = create_server(
+        application,
+        manage_application=False,
+        on_chat_session=chat_sessions.add,
+        on_desktop_session=desktop_sessions.add,
+    )
     inbound, read_stream = anyio.create_memory_object_stream[SessionMessage | Exception](1)
     write_stream, outbound = anyio.create_memory_object_stream[SessionMessage](1)
-    used_desktop = False
     token = set_transport("stdio")
     try:
         # This follows FastMCP's stdio adapter. The application itself is owned by
@@ -93,7 +97,6 @@ async def _rpc_stream(channel: PipeChannel, application: DesktopApplication) -> 
             async with anyio.create_task_group() as tasks:
 
                 async def receive() -> None:
-                    nonlocal used_desktop
                     try:
                         async with inbound:
                             while True:
@@ -102,23 +105,8 @@ async def _rpc_stream(channel: PipeChannel, application: DesktopApplication) -> 
                                     message = JSONRPCMessage.model_validate_json(packet)
                                 except ValidationError:
                                     raise ValueError("Invalid MCP JSON-RPC message.") from None
-                                root = message.root
-                                if getattr(root, "method", None) == "tools/call":
-                                    params = getattr(root, "params", None)
-                                    tool_name = (
-                                        params.get("name") if isinstance(params, dict) else None
-                                    )
-                                    if isinstance(tool_name, str) and tool_name not in {
-                                        "DesktopStatus",
-                                        "DesktopStop",
-                                        "Transcript",
-                                        "TranscriptRead",
-                                    }:
-                                        used_desktop = True
                                 await inbound.send(SessionMessage(message))
                     finally:
-                        if used_desktop:
-                            application.controller.stop("The desktop client disconnected.")
                         tasks.cancel_scope.cancel()
 
                 async def send() -> None:
@@ -139,6 +127,8 @@ async def _rpc_stream(channel: PipeChannel, application: DesktopApplication) -> 
     except* EOFError, OSError, ValueError, anyio.BrokenResourceError, anyio.ClosedResourceError:
         logger.info("An MCP connection ended.")
     finally:
+        for owner in desktop_sessions:
+            application.interaction.release(owner, disconnected=True)
         for owner in chat_sessions:
             application.teaching.conversation.release_listener(owner)
         reset_transport(token)
@@ -164,7 +154,7 @@ async def run_host(
             active.start()
             listener = PipeListener(name)
             cleanup.callback(listener.close)
-            instance_id = uuid.uuid4().hex
+            instance_id = str(active.host_info["instance_id"])
             state.write(closed=False, pid=os.getpid(), instance=instance_id, version=__version__)
             connections: set[PipeChannel] = set()
 

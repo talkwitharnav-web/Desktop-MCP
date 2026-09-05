@@ -15,6 +15,7 @@ from desktop_mcp.contracts import CaptureContext, Observation
 from desktop_mcp.runtime import Controller
 from desktop_mcp.image_files import ImageFiles
 from desktop_mcp.teaching import TeachingSession
+from desktop_mcp.interaction import Interaction, host_identity
 from tests.test_desktop_runtime import FakeInput
 
 
@@ -59,6 +60,8 @@ class FixtureApplication:
         self.controller.set_interface_ready(True)
         if armed:
             self.controller.arm_local()
+        self.interaction = Interaction(self.controller)
+        self.host_info = host_identity()
         self.vision = FixtureVision(self.controller)
         self.capture = SimpleNamespace(
             context=lambda: CaptureContext(1, (0, 0, 1000, 1000), (0, 0, 1000, 1000))
@@ -100,6 +103,7 @@ class FixtureApplication:
 EXPECTED_TOOLS = {
     "DesktopStatus",
     "DesktopStop",
+    "DesktopControl",
     "DesktopBatch",
     "Screenshot",
     "Click",

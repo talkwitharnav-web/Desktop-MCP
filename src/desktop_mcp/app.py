@@ -21,6 +21,7 @@ from desktop_mcp.image_files import ImageFiles
 from desktop_mcp.policy import ControlPolicy
 from desktop_mcp.teaching_tools import register_teaching_tools
 from desktop_mcp.tools import register_tools
+from desktop_mcp.interaction import Interaction, host_identity
 
 if TYPE_CHECKING:
     from desktop_mcp.native import WindowsInput
@@ -49,6 +50,8 @@ class DesktopApplication:
         self.exit_requested = threading.Event()
         self.backend: WindowsInput = WindowsInput()
         self.controller = Controller(self.backend)
+        self.interaction = Interaction(self.controller)
+        self.host_info = host_identity()
         self.surface: ControlSurface = ControlSurface(
             self.controller,
             control_windows=self.window_handles,
@@ -133,6 +136,37 @@ class DesktopApplication:
 
     def export_observation(self, observation: Observation) -> Observation:
         return self.image_files.export(observation)
+
+    def observe_focused(self, window_id: int) -> Observation:
+        """After one successful focus request, retry only observation of that same target."""
+        from desktop_mcp.capture import ForegroundUnavailable
+
+        deadline = time.monotonic() + 0.5
+        while True:
+            self.controller.checkpoint()
+            current = self.backend.foreground()
+            if current not in (0, window_id):
+                raise RuntimeError(
+                    "A different window took foreground after focus. No focus or input was replayed."
+                )
+            if current == window_id:
+                try:
+                    observation = self.vision.observe()
+                except ForegroundUnavailable:
+                    pass
+                else:
+                    self.controller.checkpoint()
+                    if self.backend.foreground() != window_id:
+                        raise RuntimeError(
+                            "The focused target changed before its observation returned."
+                        )
+                    return observation
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    "The focused window is not ready for capture; observe the desktop again."
+                )
+            self.controller.wait(min(0.025, remaining))
 
     def windows(self) -> list[dict[str, object]]:
         import win32gui
@@ -266,6 +300,7 @@ def create_server(
     *,
     manage_application: bool = True,
     on_chat_session: Callable[[str], None] | None = None,
+    on_desktop_session: Callable[[str], None] | None = None,
 ) -> FastMCP:
     holder: dict[str, DesktopApplication] = {}
 
@@ -291,9 +326,9 @@ def create_server(
         name="Desktop-MCP",
         instructions=read_agent_guide(),
         lifespan=lifespan,
-        middleware=[ControlPolicy(lambda: get_application().controller)],
+        middleware=[ControlPolicy(get_application, on_desktop_session)],
     )
-    register_tools(server, get_application)
+    register_tools(server, get_application, on_desktop_session=on_desktop_session)
     register_teaching_tools(server, get_application, on_chat_session=on_chat_session)
 
     @server.resource(

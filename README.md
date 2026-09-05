@@ -184,8 +184,9 @@ want it to remain running.
 After an explicit Quit, automatic MCP reconnects do not reopen the app behind
 your back. Open **Desktop-MCP** from Start, then reconnect it in `/mcp`. The new
 instance starts stopped. Closing a Copilot terminal alone leaves the desktop
-application available; disconnecting a client that used the desktop revokes
-access until local re-arming.
+application available; disconnecting the interactive task owner revokes access
+until local re-arming. A rejected non-owner request or a chat-only client leaving
+does not stop the owner's task.
 
 **Pause on interruption** stops an active automated input sequence when you use
 the mouse or keyboard. Moving while reading instructions or while the assistant
@@ -203,8 +204,9 @@ or locked desktop may be refused.
 
 | Tool | Purpose |
 |---|---|
-| `DesktopStatus` | State, stop reason, activity and transcript visibility/listener/queue status. |
+| `DesktopStatus` | State, running-host identity, task owner, feedback and transcript status. |
 | `DesktopStop` | Latch a stop; never resumes control. |
+| `DesktopControl` | Claim/release a multi-step interactive task; never grants local Arm. |
 | `DesktopBatch` | Validate and run a short ordered sequence; observe once afterward. |
 | `Screenshot` | Fast visual observation, adaptive waiting, encoding and frame references. |
 | `Click`, `Move`, `Scroll` | Smooth pointer movement, any supported button, drags and wheel gestures. |
@@ -231,6 +233,17 @@ Arm once. The assistant can publish instructions, highlight a button, operate it
 and publish the next explanation using ordinary tool calls. It can also wait for
 you to try a step before continuing. No mode switches or extra authorization are
 needed unless you stop or interrupt an active automated input sequence.
+
+One interactive MCP session owns the multi-step task. The agent can explicitly
+claim it with `DesktopControl(action="claim", task="short label")`; first desktop
+use also claims automatically. Research helpers must return facts to that owner,
+not interleave edits in the same application. Releasing ownership stops desktop
+access, and local Stop/Resume permits a new owner.
+
+Unanswered transcript corrections block new desktop-changing calls until the
+agent reads and acknowledges them. Observations and chat remain available, so
+it can inspect the current state and answer before continuing. This does not
+disarm the session or turn a check-in into a request to abandon the task.
 
 The transcript opens with the application. Its message box is separate from the
 read-only conversation history: **Enter sends**, **Shift+Enter adds a line**, and
@@ -357,6 +370,23 @@ changed frames, and encodes only the observation it returns. Crop deliberately
 and tune `max_dimension`, `encoding` and `quality` instead of capturing a giant
 desktop for a small dialog. Timing and encoded-size metadata describe actual
 work; these choices do not remove model inference latency.
+
+Keep observation enabled for meaningful actions. The result contains its
+post-action frame in the same round trip, with a brief change wait when a suitable
+previous image exists. If the agent deliberately skips the picture, status and
+the result say that observation is due; a long `TranscriptRead` yields rather
+than hiding the unfinished visual check behind another 25-second wait.
+The same signal can interrupt a read that was already waiting.
+
+`wait_for_change` is explicitly 0..5 seconds and `settle` is 0..1 in the tool
+schema. Compact text is returned alongside one complete structured metadata
+record and the image. Use `detail="full"` on Screenshot/DesktopBatch if a client
+needs the complete metadata repeated as text.
+
+Input delivery is never a saved/finished-task claim. Check the application's
+actual postcondition: a dialog closed, text editing is active, the intended
+wording appears, or saving really completed. `Saving...`, a Find/Replace match
+count or whole-image settlement is not proof of persistence.
 
 Automatic capture prefers the verified one-shot DXCAM path, then MSS/Pillow.
 Display access loss falls back instead of retrying DXCAM recovery indefinitely.

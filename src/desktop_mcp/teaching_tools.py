@@ -97,11 +97,23 @@ def register_teaching_tools(
             on_chat_session(owner)
         if release:
             return {"released": app.teaching.conversation.release_listener(owner)}
-        result = await app.teaching.conversation.listen(owner, label=listener_name, timeout=timeout)
+        result = await app.teaching.conversation.listen(
+            owner,
+            label=listener_name,
+            timeout=timeout,
+            interrupt=lambda: "observation_due" if app.interaction.observation_due(owner) else None,
+        )
+        due = app.interaction.observation_due(owner)
         return {
             **result,
             "transcript_visible": app.teaching_surface.visible,
             "transcript_enabled": app.teaching_surface.enabled,
+            "observation_due": due,
+            "wait_skipped": (
+                "Observe the last desktop action before waiting."
+                if result.get("interrupted") == "observation_due"
+                else None
+            ),
         }
 
     @mcp.tool(

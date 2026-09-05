@@ -11,6 +11,10 @@ import time
 from desktop_mcp.contracts import CaptureContext, CaptureScope, RawCapture, Rect
 
 
+class ForegroundUnavailable(RuntimeError):
+    """A desktop transition temporarily has no foreground window."""
+
+
 def context_identity(context: CaptureContext) -> tuple:
     return (
         context.window_id,
@@ -68,7 +72,9 @@ class WindowsCapture:
         bounds = desktop
         if scope == "active":
             if not handle:
-                raise RuntimeError("No foreground window is available; request scope='desktop'.")
+                raise ForegroundUnavailable(
+                    "No foreground window is available; request scope='desktop'."
+                )
             if handle in self._control_windows():
                 raise RuntimeError(
                     "Minimize the Desktop-MCP control window before observing an app."

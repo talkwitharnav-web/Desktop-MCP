@@ -242,13 +242,13 @@ class Controller:
         self._check_generation(generation)
 
     @contextmanager
-    def request(self) -> Iterator[None]:
+    def request(self) -> Iterator[int]:
         """Stamp an RPC before it can wait in the tool runner's worker queue."""
         generation = self.snapshot().generation
         self._check_generation(generation)
         token = _request_ticket.set((self, generation))
         try:
-            yield
+            yield generation
         finally:
             _request_ticket.reset(token)
 

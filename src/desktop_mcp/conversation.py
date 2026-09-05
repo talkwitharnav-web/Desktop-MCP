@@ -152,7 +152,12 @@ class Conversation:
             return entry
 
     async def listen(
-        self, owner: str, *, label: str = "Copilot", timeout: float = 25.0
+        self,
+        owner: str,
+        *,
+        label: str = "Copilot",
+        timeout: float = 25.0,
+        interrupt: Callable[[], str | None] | None = None,
     ) -> dict[str, object]:
         if (
             isinstance(timeout, bool)
@@ -196,6 +201,19 @@ class Conversation:
                     if now >= started + timeout:
                         self._lease_until = now + _LEASE_SECONDS
                         return {"message": None, "pending_messages": 0, "timed_out": True}
+                reason = interrupt() if interrupt is not None else None
+                if reason is not None:
+                    with self._lock:
+                        if self._owner != owner or self._waiting_token is not token:
+                            raise RuntimeError("The transcript listener disconnected.")
+                        if self._pending:
+                            continue
+                        return {
+                            "message": None,
+                            "pending_messages": 0,
+                            "timed_out": False,
+                            "interrupted": reason,
+                        }
                 await asyncio.sleep(min(0.1, max(0.0, started + timeout - now)))
         finally:
             with self._lock:

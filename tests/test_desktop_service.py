@@ -83,8 +83,8 @@ async def test_two_copilot_clients_share_one_desktop_and_can_disconnect_independ
     async with host(tmp_path) as (app, name, _):
         async with Client(transport(name)) as first:
             async with Client(transport(name)) as second:
-                assert len(await first.list_tools()) == 21
-                assert len(await second.list_tools()) == 21
+                assert len(await first.list_tools()) == 22
+                assert len(await second.list_tools()) == 22
                 one, two = await asyncio.gather(
                     first.call_tool("DesktopStatus"), second.call_tool("DesktopStatus")
                 )

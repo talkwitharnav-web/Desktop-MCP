@@ -222,6 +222,18 @@ class ControlSurface:
         with self._lock:
             return self._handles
 
+    def window_roles(self) -> dict[int, str]:
+        """Content-free roles for capture exclusion and protected-target diagnostics."""
+        handles = self.window_handles()
+        return {
+            handle: "main-control"
+            if index == 0
+            else "cursor-overlay"
+            if index == 1
+            else "main-controls"
+            for index, handle in enumerate(handles)
+        }
+
     @contextmanager
     def capture_guard(self) -> Iterator[None]:
         """Hide both windows, wait for acknowledgement, and restore on exit.

@@ -11,6 +11,7 @@ implementation lives under `src/desktop_mcp`.
 |---|---|
 | Shared types | `desktop_mcp/contracts.py`; coordinates are physical virtual-desktop pixels unless explicitly identified as image pixels. |
 | Controller and input | `runtime.py`, `actions.py`, `native.py`; serial actions, generation-based revocation, cancellation, fast Unicode input and minimum-jerk pointer motion. |
+| Task ownership and feedback | `interaction.py`, `policy.py`; per-session task owner, caller identity, unobserved-action receipts and running-host identity. |
 | Control window and overlay | Native Windows UI; local arming, global stop, input takeover, capture exclusion and rounded monochrome cursor. |
 | Observation service | Frame identity, image encoding, unchanged-frame detection, adaptive bounded waits and coordinate conversion. |
 | Teaching state/rendering | `teaching.py`, `teaching_render.py`; bounded ink, context expiry and learner dwell state without OS input. |
@@ -39,6 +40,23 @@ implementation lives under `src/desktop_mcp`.
   native state. A client that used the desktop revokes control on disconnect.
   Chat-only connections do not revoke another client's desktop work; their
   registered conversation session ids are released from listener ownership.
+- Desktop ownership is task-wide, not merely a per-call mutex. Policy claims
+  the initialized MCP session under the same generation as the request ticket.
+  Local revocation invalidates ownership; only the current owner can release it.
+  Service disconnect cleanup uses registered owner ids, not a pre-validation
+  `tools/call` flag, so a denied helper cannot stop the coordinator.
+- `Interaction` tracks delivered actions separately from returned observations;
+  neither means an application outcome was verified. Automatic image references
+  are scoped to the same client and generation and recorded only after successful
+  response preparation. A long transcript read yields for pending observation,
+  including when an action finishes after the read started.
+- Pending user corrections prevent another changing desktop call until replied
+  to, while screenshots and chat remain usable. The rule does not disarm access.
+- Status identifies the running version, PID, instance and a fingerprint of the
+  installed package files at startup, not an inferred Git revision.
+- After successful focus, only a temporary no-foreground condition is retried
+  for at most 0.5 seconds. A different selected window aborts recovery; focus,
+  launch and input are never replayed to obtain an image.
 - Per-user/session named pipes have protected current-user/SYSTEM ACLs, reject
   remote clients, and carry bounded UTF-8 JSON messages, never pickled objects.
   Overlapped I/O cancellation is acknowledged before buffers/handles are freed.

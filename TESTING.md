@@ -35,6 +35,12 @@ disconnection; leaving a transport alive is not evidence of a disconnect.
 Transcript UI tests cover Send/draft retention, Enter/Shift+Enter/IME handling,
 compact history/composer/status/control layout, and capture-safe local toggles.
 
+`test_desktop_interaction.py` covers task-wide ownership, rejected-helper
+disconnects, queued corrections, timely post-input observation, per-client image
+reuse, schema bounds and bounded observation-only focus recovery. These use
+synthetic desktops/images and real MCP/IPC where relevant, never the report's
+live Chrome/Slides document or historical frame ids.
+
 Launch/lifecycle changes use `test_desktop_pipe_transport.py` and
 `test_desktop_service.py`: real current-user Windows named pipes and subprocess
 stdio clients around a fake desktop, without hotkeys, input or screenshots.
