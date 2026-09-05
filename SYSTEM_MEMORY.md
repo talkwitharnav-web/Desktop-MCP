@@ -68,6 +68,8 @@ implementation lives under `src/desktop_mcp`.
   separately from actual monitor/cursor DPI. Native STATIC children expose
   rejection/activity text; the takeover button's native name carries its On/Off
   state. These extra HWNDs remain in the combined input-target exclusion list.
+  Completed window movement also reflows the panel, covering same-DPI monitors
+  with different work areas without resizing or activating it during the drag.
 - Teaching starts before the control surface makes local arming available.
   Shutdown stops/releases input before closing either UI, and attempts all cleanup
   even if one surface fails. UI-thread snapshots never acquire the operation lock.

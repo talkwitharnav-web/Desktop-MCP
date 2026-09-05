@@ -27,6 +27,7 @@ _REQUEST_TIMEOUT = 3.0
 _CLOSE_TIMEOUT = 5.0
 _REFRESH_MS = 8
 _WAKE_MESSAGE = 0x8000 + 41
+_EXIT_SIZE_MOVE = 0x0232
 _HOTKEY_ID = 0x444D
 _STOP_MODIFIERS = 0x0002 | 0x0004 | 0x4000  # Control, Shift, no repeat.
 _PANEL_STYLE = 0x02CA0000  # Caption, system menu, minimize, clip native children.
@@ -1217,7 +1218,7 @@ class _Win32Adapter:
                     self.gui.SetTextColor(wparam, self.api.RGB(grey, grey, grey))
                     self.gui.SetBkColor(wparam, self.api.RGB(background, background, background))
                     return self._detail_background if detail else self._background
-                if message in (self.con.WM_SIZE, self.con.WM_DISPLAYCHANGE) or (
+                if message in (self.con.WM_SIZE, self.con.WM_DISPLAYCHANGE, _EXIT_SIZE_MOVE) or (
                     message == self.con.WM_SETTINGCHANGE and wparam == self.con.SPI_SETWORKAREA
                 ):
                     if self._layout_ready and not self.gui.IsIconic(self._panel):

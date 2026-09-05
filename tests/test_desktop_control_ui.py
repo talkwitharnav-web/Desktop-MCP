@@ -1341,6 +1341,63 @@ def test_reflow_clamps_origin_without_activation_or_recursive_layout():
     assert not adapter._laying_out
 
 
+def test_completed_same_dpi_monitor_move_reflows_into_smaller_work_area():
+    from ctypes import wintypes
+    import win32con
+
+    adapter = object.__new__(ui._Win32Adapter)
+    adapter.ctypes, adapter.wintypes, adapter.con = ctypes, wintypes, win32con
+    adapter._panel, adapter._overlay = 101, 102
+    adapter._labels = {}
+    adapter._dpi, adapter._layout_scale = 192, 2.0
+    adapter._layout_ready, adapter._laying_out = True, False
+    adapter._destroying = False
+    rectangle = [2000, 100, 2944, 874]
+    work = (1920, 0, 2720, 600)
+    calls = []
+
+    def adjust(pointer, *args):
+        rect = pointer._obj
+        rect.left -= 16
+        rect.right += 16
+        rect.top -= 62
+        rect.bottom += 16
+        return True
+
+    def position(window, after, x, y, width, height, flags):
+        calls.append((x, y, width, height, flags))
+        rectangle[:] = [x, y, x + width, y + height]
+        adapter._wndproc(101, win32con.WM_SIZE, 0, 0)
+
+    adapter._adjust_rect = adjust
+    adapter._check = lambda result, operation: result
+    adapter._work_area = lambda: work
+    adapter._make_fonts = lambda: None
+    adapter._layout_buttons = lambda: None
+    adapter._surface = SimpleNamespace(
+        _record_failure=lambda error: pytest.fail(f"Unexpected native dispatch failure: {error}")
+    )
+    adapter.gui = SimpleNamespace(
+        IsIconic=lambda window: False,
+        GetWindowRect=lambda window: tuple(rectangle),
+        SetWindowPos=position,
+        InvalidateRect=lambda *args: None,
+        DefWindowProc=lambda *args: 99,
+    )
+    assert adapter._outer_size() == (944, 774)
+    assert adapter._wndproc(101, win32con.WM_MOVE, 0, 0) == 99
+    assert not calls
+    assert adapter._wndproc(101, 0x0232, 0, 0) == 0
+    assert adapter._dpi == 192
+    assert adapter._outer_size() == (716, 600)
+    assert len(calls) == 1
+    x, y, width, height, flags = calls[0]
+    assert work[0] <= x and x + width <= work[2]
+    assert work[1] <= y and y + height <= work[3]
+    assert flags & win32con.SWP_NOACTIVATE
+    assert not adapter._laying_out
+
+
 def test_native_fonts_use_logfont_objects_and_scale_for_dpi():
     adapter = object.__new__(ui._Win32Adapter)
     adapter._dpi = 144
