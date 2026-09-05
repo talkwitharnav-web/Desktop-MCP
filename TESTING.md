@@ -16,6 +16,11 @@ live alongside them. Dependency versions are resolved in `uv.lock`.
 Do not reinstall dependencies before validation unless a manifest changed or
 the selected command reports a missing dependency.
 
+`test_screenshot_capture.py` includes a synthetic execution of the installed
+DXCAM `grab`/recovery call chain, COM-failure fallback and cancellation checks.
+No display is disconnected or modified to provoke recovery. Unknown DXCAM
+versions must fail over until their one-shot recovery boundary is verified.
+
 Core input/revocation checks are in `test_desktop_runtime.py` and
 `test_desktop_native.py`; observation checks are in `test_desktop_vision.py`.
 `test_desktop_control_ui.py` and `test_desktop_cursor.py` use native fakes and
@@ -63,6 +68,9 @@ MCP still has no remote arm or teaching-mode input path.
 It also opens only Desktop-MCP's own system menus and verifies capture-guard
 acknowledgement plus both control/transcript shutdowns while Windows is running
 those modal menu loops.
+Set `DESKTOP_MCP_LIVE_BACKEND=auto` for a separate owned-fixture run of the actual
+DXCAM/MSS/Pillow selection path; its chosen backend is reported. The default
+native harness backend remains `mss` for deterministic fixture checks.
 The artifact directory records the exact owned PID/window handles for recovery
 if the fixture fails. Never terminate a process by name or infer a cleanup root.
 

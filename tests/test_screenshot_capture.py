@@ -6,6 +6,9 @@ without going through ``Desktop.get_screenshot``.
 
 from typing import Tuple
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from contextlib import contextmanager
+from _ctypes import COMError
 
 import pytest
 from PIL import Image
@@ -42,6 +45,7 @@ def _isolate_backend_instances(monkeypatch):
     monkeypatch.setattr(screenshot, "_backend_instances", {})
     monkeypatch.setattr(screenshot, "_degraded_backends", set())
     monkeypatch.setattr(screenshot, "dxcam", None)
+    monkeypatch.setattr(screenshot, "_DXCAM_VERSION", "0.3.0")
     monkeypatch.setattr(screenshot, "mss", None)
 
     def unexpected_capture(*args, **kwargs):
@@ -188,6 +192,7 @@ class TestDxcamBackend:
 
     def test_get_camera_caches_instance(self, monkeypatch):
         fake_camera = MagicMock()
+        fake_camera.is_capturing = False
         fake_dxcam = MagicMock()
         fake_dxcam.create.return_value = fake_camera
         monkeypatch.setattr(screenshot, "dxcam", fake_dxcam)
@@ -204,6 +209,7 @@ class TestDxcamBackend:
 
     def test_capture_returns_image(self, monkeypatch):
         fake_camera = MagicMock()
+        fake_camera.is_capturing = False
         fake_camera.grab.return_value = [[[255, 0, 0]]]
         fake_dxcam = MagicMock()
         fake_dxcam.create.return_value = fake_camera
@@ -226,6 +232,7 @@ class TestDxcamBackend:
 
     def test_capture_uses_output_relative_region_for_sub_region(self, monkeypatch):
         fake_camera = MagicMock()
+        fake_camera.is_capturing = False
         fake_camera.grab.return_value = [[[255, 0, 0]]]
         fake_dxcam = MagicMock()
         fake_dxcam.create.return_value = fake_camera
@@ -246,6 +253,7 @@ class TestDxcamBackend:
 
     def test_capture_raises_on_none_frame(self, monkeypatch):
         fake_camera = MagicMock()
+        fake_camera.is_capturing = False
         fake_camera.grab.return_value = None
         fake_dxcam = MagicMock()
         fake_dxcam.create.return_value = fake_camera
@@ -255,6 +263,159 @@ class TestDxcamBackend:
         backend = _DxcamBackend()
         with pytest.raises(RuntimeError, match="no frame"):
             backend.capture(MONITOR_1)
+
+
+def test_actual_dxcam_grab_never_enters_display_recovery_retry_loop(monkeypatch):
+    from dxcam.dxcam import DXCamera
+    from dxcam.core.display_recovery import DisplayRecoveryHandler
+    import dxcam.core.display_recovery as recovery
+
+    events = []
+    camera = object.__new__(DXCamera)
+    camera._is_released = False
+    camera.is_capturing = False
+    camera.backend = "dxgi"
+    camera.width, camera.height, camera.rotation_angle = 1920, 1080, 0
+    camera.region = (0, 0, 1920, 1080)
+    camera._region_set_by_user = False
+    camera._DXCamera__last_grab_entry = None
+    camera._duplicator = SimpleNamespace(
+        update_frame=lambda **kwargs: False,
+        release=lambda: events.append("release-duplicator"),
+    )
+    camera._stagesurf = SimpleNamespace(release=lambda: events.append("release-stage"))
+    camera.stop = lambda: events.append("stop-one-shot")
+
+    def unavailable(**kwargs):
+        raise RuntimeError("Synthetic display remains disconnected")
+
+    camera._display_recovery = DisplayRecoveryHandler(
+        backend="dxgi",
+        output_recovery=SimpleNamespace(handle=unavailable),
+        release_resources=lambda: events.append("unbounded-recovery-entered"),
+        rebuild_stage_surface=lambda: None,
+        create_duplicator=lambda: None,
+        rebuild_frame_buffer=lambda region: None,
+    )
+    monkeypatch.setattr(
+        recovery.time, "sleep", lambda delay: pytest.fail("DXCAM entered its retry sleep")
+    )
+    monkeypatch.setattr(screenshot, "dxcam", SimpleNamespace(create=lambda **kwargs: camera))
+    monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: DXGI_OUTPUTS))
+    monkeypatch.setattr(screenshot, "mss", object())
+
+    def fallback(self, rectangle):
+        events.append("fallback")
+        return Image.new("RGB", (2, 2))
+
+    monkeypatch.setattr(_MssBackend, "capture", fallback)
+
+    @contextmanager
+    def guard():
+        events.append("hide")
+        try:
+            yield
+        finally:
+            events.append("restore")
+
+    with guard():
+        image, name = capture(MONITOR_0, backend="auto")
+    image.close()
+    assert name == "mss"
+    assert events == [
+        "hide",
+        "stop-one-shot",
+        "release-duplicator",
+        "release-stage",
+        "fallback",
+        "restore",
+    ]
+    assert camera.is_released
+    assert not _get_backend("dxcam")._camera_cache
+    assert "dxcam" in screenshot._degraded_backends
+
+
+def test_dxgi_unsupported_com_error_uses_working_mss_fallback(monkeypatch):
+    def unsupported(**kwargs):
+        raise COMError(-2005270524, "Synthetic DXGI_ERROR_UNSUPPORTED", None)
+
+    monkeypatch.setattr(screenshot, "dxcam", SimpleNamespace(create=unsupported))
+    monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: DXGI_OUTPUTS))
+    monkeypatch.setattr(screenshot, "mss", object())
+    monkeypatch.setattr(_MssBackend, "capture", lambda self, rect: Image.new("RGB", (2, 2)))
+    image, name = capture(MONITOR_0, backend="auto")
+    assert name == "mss"
+    assert "dxcam" in screenshot._degraded_backends
+    image.close()
+
+
+def test_unknown_dxcam_version_is_not_allowed_to_run_unverified_recovery(monkeypatch):
+    fake = MagicMock()
+    monkeypatch.setattr(screenshot, "dxcam", fake)
+    monkeypatch.setattr(screenshot, "_DXCAM_VERSION", "0.3.1")
+    monkeypatch.setattr(screenshot, "mss", object())
+    monkeypatch.setattr(_MssBackend, "capture", lambda self, rect: Image.new("RGB", (2, 2)))
+    image, name = capture(MONITOR_0, backend="auto")
+    assert name == "mss"
+    fake.create.assert_not_called()
+    image.close()
+
+
+def test_already_threaded_camera_is_not_borrowed_or_released(monkeypatch):
+    camera = MagicMock()
+    camera.is_capturing = True
+    monkeypatch.setattr(screenshot, "dxcam", SimpleNamespace(create=lambda **kwargs: camera))
+    with pytest.raises(RuntimeError, match="threaded"):
+        _DxcamBackend()._get_camera(0, 0)
+    camera.grab.assert_not_called()
+    camera.release.assert_not_called()
+
+
+@pytest.mark.parametrize("cancel_stage", ["creation", "grab", "result"])
+def test_capture_cancellation_cannot_fall_through_to_another_backend(monkeypatch, cancel_stage):
+    class Cancelled(RuntimeError):
+        pass
+
+    revoked = False
+    events = []
+    cancelled = Cancelled("Synthetic request revoked")
+    camera = MagicMock()
+    camera.is_capturing = False
+
+    def create(**kwargs):
+        nonlocal revoked
+        events.append("create")
+        if cancel_stage == "creation":
+            revoked = True
+        return camera
+
+    def grab(**kwargs):
+        nonlocal revoked
+        events.append("grab")
+        revoked = True
+        if cancel_stage == "grab":
+            raise COMError(-2005270524, "Synthetic capture failure after stop", None)
+        return [[[0, 0, 0]]]
+
+    def checkpoint():
+        if revoked:
+            raise cancelled
+
+    camera.grab.side_effect = grab
+    monkeypatch.setattr(screenshot, "dxcam", SimpleNamespace(create=create))
+    monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: DXGI_OUTPUTS))
+    monkeypatch.setattr(screenshot, "mss", object())
+    monkeypatch.setattr(
+        _MssBackend, "capture", lambda *args: pytest.fail("A cancelled request used fallback")
+    )
+    with pytest.raises(Cancelled) as caught:
+        capture(MONITOR_0, backend="auto", checkpoint=checkpoint)
+    assert caught.value is cancelled
+    if cancel_stage == "creation":
+        assert events == ["create"]
+        camera.grab.assert_not_called()
+    else:
+        assert events == ["create", "grab"]
 
 
 # ---------------------------------------------------------------------------

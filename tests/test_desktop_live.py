@@ -624,7 +624,9 @@ async def test_native_control_input_images_and_global_stop(monkeypatch):
         # our windows capturable for native appearance evidence; hide/flush guards stay real.
         monkeypatch.setattr(ctypes, "WinDLL", load_visible_library)
 
-    monkeypatch.setenv("WINDOWS_MCP_SCREENSHOT_BACKEND", "mss")
+    monkeypatch.setenv(
+        "WINDOWS_MCP_SCREENSHOT_BACKEND", os.getenv("DESKTOP_MCP_LIVE_BACKEND", "mss")
+    )
     monkeypatch.setenv("DESKTOP_MCP_IMAGE_FILES", "false")
     application = DesktopApplication()
     fixture = FixtureWindow()
@@ -724,6 +726,7 @@ async def test_native_control_input_images_and_global_stop(monkeypatch):
             decoded = Image.open(io.BytesIO(base64.b64decode(images[0].data)))
             assert decoded.width > 200 and decoded.height > 100
             assert frame.structured_content["observation"]["capture_bounds"] == list(bounds)
+            print(f"Native screenshot backend used: {application.capture.last_backend}")
             if artifact_root:
                 decoded.save(artifact_root / "mcp-fixture.png", format="PNG")
             start = win32gui.ClientToScreen(fixture.hwnd, (160, 340))
@@ -841,3 +844,56 @@ async def test_native_control_input_images_and_global_stop(monkeypatch):
                     win32api.SetCursorPos(previous_pointer)
                 finally:
                     assert user32.SetThreadDpiAwarenessContext(previous_dpi)
+
+
+def test_native_auto_capture_owned_fixture(monkeypatch):
+    """Exercise real backend selection without needing foreground permission or input."""
+    import win32con
+    import win32gui
+    from windows_mcp.desktop import screenshot
+    from windows_mcp.uia import Rect
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    previous_dpi = user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+    assert previous_dpi
+    fixture = FixtureWindow()
+    try:
+        fixture.start()
+        win32gui.SetWindowPos(
+            fixture.hwnd,
+            win32con.HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE,
+        )
+        origin = win32gui.ClientToScreen(fixture.hwnd, (0, 0))
+        bounds = (origin[0] + 20, origin[1] + 320, origin[0] + 700, origin[1] + 420)
+        safe = own_capture_bounds(fixture.hwnd)
+        assert safe[0] <= bounds[0] < bounds[2] <= safe[2]
+        assert safe[1] <= bounds[1] < bounds[3] <= safe[3]
+        dwm = ctypes.WinDLL("dwmapi", use_last_error=True)
+        dwm.DwmFlush.restype = ctypes.c_long
+        assert dwm.DwmFlush() >= 0
+        assert_owned_region(fixture.hwnd, bounds)
+        assert fixture.painted.is_set() and fixture.error is None
+        used = []
+        for _ in range(3):
+            assert_owned_region(fixture.hwnd, bounds)
+            image, name = screenshot.capture(Rect(*bounds), backend="auto")
+            try:
+                assert image.size == (680, 100)
+                assert image.getpixel((650, 80)) == (242, 242, 242)
+                used.append(name)
+            finally:
+                image.close()
+        print("Native owned-fixture auto capture backends:", used)
+    finally:
+        try:
+            if fixture.thread.ident is not None:
+                fixture.close()
+        finally:
+            assert user32.SetThreadDpiAwarenessContext(previous_dpi)

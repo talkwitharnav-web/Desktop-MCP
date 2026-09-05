@@ -42,6 +42,12 @@ implementation lives under `src/desktop_mcp`.
   execution reports completed actions and does not replay them.
 - Captures exclude our overlays. Images, window titles and typed text are not
   telemetry or committed artifacts.
+  DXCAM uses only the verified 0.3.0 one-shot recovery boundary: access loss fails
+  immediately to MSS/Pillow instead of entering its unbounded recovery loop.
+  Unknown versions and already-threaded cameras are not used. Failed owned
+  one-shot cameras are released before fallback, with the capture guard still held.
+  Controller checkpoints before/after capture stages propagate cancellation
+  separately from native/COM failures; no timed-out capture thread is abandoned.
 - `DesktopApplication` owns both native surfaces. `window_handles` combines every
   control/transcript/canvas/cursor handle for input targeting and capture exclusion.
   Its capture guard enters both acknowledged hide/flush guards with `ExitStack`;

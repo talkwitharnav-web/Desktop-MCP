@@ -72,6 +72,7 @@ class DesktopApplication:
         self.capture = WindowsCapture(
             capture_guard=self.capture_guard,
             control_windows=self.window_handles,
+            checkpoint=self.controller.checkpoint,
         )
         self.vision: VisionService = VisionService(
             self.capture,

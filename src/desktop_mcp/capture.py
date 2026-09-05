@@ -29,6 +29,7 @@ class WindowsCapture:
         *,
         capture_guard: Callable[[], AbstractContextManager] = nullcontext,
         control_windows: Callable[[], tuple[int, ...]] = lambda: (),
+        checkpoint: Callable[[], None] = lambda: None,
     ) -> None:
         import windows_mcp.uia as uia
         from windows_mcp.desktop import screenshot
@@ -38,6 +39,7 @@ class WindowsCapture:
         self._capture_backend = screenshot
         self._capture_guard = capture_guard
         self._control_windows = control_windows
+        self._checkpoint = checkpoint
         self._repair_text = repair_surrogates
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
         self._user32.GetForegroundWindow.restype = wintypes.HWND
@@ -107,7 +109,9 @@ class WindowsCapture:
         ):
             raise ValueError("The capture region does not intersect a connected monitor.")
         with self._capture_guard():
-            image, self.last_backend = self._capture_backend.capture(self._uia.Rect(*bounds))
+            image, self.last_backend = self._capture_backend.capture(
+                self._uia.Rect(*bounds), checkpoint=self._checkpoint
+            )
             captured_at = time.monotonic()
         after = self.context(scope)
         if context_identity(before) != context_identity(after):

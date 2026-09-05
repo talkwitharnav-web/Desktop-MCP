@@ -243,6 +243,11 @@ and tune `max_dimension`, `encoding` and `quality` instead of capturing a giant
 desktop for a small dialog. Timing and encoded-size metadata describe actual
 work; these choices do not remove model inference latency.
 
+Automatic capture prefers the verified one-shot DXCAM path, then MSS/Pillow.
+Display access loss falls back instead of retrying DXCAM recovery indefinitely.
+An unverified DXCAM version is skipped until its recovery behavior is checked;
+normal native capture calls still depend on Windows returning promptly.
+
 A short batch in an already-focused blank editor:
 
 ```json
