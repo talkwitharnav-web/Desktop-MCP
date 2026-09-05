@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass, field
@@ -105,20 +105,23 @@ class TeachingSurface:
     def show(self, stacking: Literal["unchanged", "front", "back"] = "unchanged") -> None:
         if stacking not in {"unchanged", "front", "back"}:
             raise ValueError("Unknown transcript stacking action.")
+        generation = self.controller.snapshot().generation
         self.controller.checkpoint()
-        self._request("show", stacking, generation=self.controller.snapshot().generation)
+        self._request("show", stacking, generation=generation)
 
     def close(self) -> None:
         thread = self._thread
         if thread is None or not thread.is_alive():
             return
-        if self._panel and not self._finished.is_set():
-            self._request("close")
-        else:
+        try:
+            if self._panel and not self._finished.is_set():
+                self._request("close")
+        finally:
             self._exit = True
-        thread.join(3)
-        if thread.is_alive():
-            raise RuntimeError("The teaching interface did not shut down.")
+            thread.join(3)
+            if thread.is_alive():
+                self.controller.set_interface_ready(False, "The teaching interface did not stop.")
+                raise RuntimeError("The teaching interface did not shut down.")
 
     def _request(self, command: str, argument: str = "", generation: int | None = None) -> None:
         if self._thread is None or self._finished.is_set() or not self._panel:
@@ -127,7 +130,14 @@ class TeachingSurface:
         self._requests.put(request)
         import win32gui
 
-        win32gui.PostMessage(self._panel, _COMMAND, 0, 0)
+        try:
+            win32gui.PostMessage(self._panel, _COMMAND, 0, 0)
+        except Exception as error:
+            with request.lock:
+                if command not in {"restore", "close"}:
+                    request.cancelled.set()
+            self.controller.set_interface_ready(False, "The teaching interface is unavailable.")
+            raise RuntimeError("The guidance request could not be posted.") from error
         deadline = time.monotonic() + 3.0
         while not request.done.wait(0.02):
             if self._finished.is_set() or time.monotonic() >= deadline:
@@ -152,6 +162,22 @@ class TeachingSurface:
             self._request("restore")
 
     def _run(self) -> None:
+        try:
+            self._run_windows()
+        except Exception as error:
+            self._error = error
+            self.controller.set_interface_ready(
+                False, f"Guidance interface failed: {type(error).__name__}"
+            )
+        finally:
+            self._ready.set()
+            self._finished.set()
+            while not self._requests.empty():
+                request = self._requests.get_nowait()
+                request.error = RuntimeError("The guidance interface closed.")
+                request.done.set()
+
+    def _run_windows(self) -> None:
         import win32api
         import win32con
         import win32gui
@@ -160,6 +186,8 @@ class TeachingSurface:
         self._api, self._con, self._gui = win32api, win32con, win32gui
         self._native_error = pywintypes.error
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
+        self._user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        self._user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
         self._user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
         self._user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
         self._user32.SetTimer.argtypes = [
@@ -197,6 +225,9 @@ class TeachingSurface:
         instance = win32api.GetModuleHandle(None)
         class_name = f"DesktopMCPGuidance{uuid.uuid4().hex}"
         registered = False
+        previous_dpi = self._user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+        if not previous_dpi:
+            raise ctypes.WinError(ctypes.get_last_error())
         try:
             self._background = win32gui.CreateSolidBrush(win32api.RGB(23, 24, 27))
             cls = win32gui.WNDCLASS()
@@ -306,6 +337,9 @@ class TeachingSurface:
             self._set_font()
             self._dock("bottom")
             self._layout()
+            self._refresh()
+            win32gui.ShowWindow(self._panel, win32con.SW_SHOWNOACTIVATE)
+            self._shown = True
             if not self._user32.SetTimer(self._panel, 1, 33, None):
                 raise ctypes.WinError(ctypes.get_last_error())
             self._ready.set()
@@ -319,30 +353,25 @@ class TeachingSurface:
                         self._user32.TranslateMessage(ctypes.byref(message))
                         self._user32.DispatchMessageW(ctypes.byref(message))
                 self._finished.wait(0.004)
-        except Exception as error:
-            self._error = error
-            self.controller.set_interface_ready(
-                False, f"Guidance interface failed: {type(error).__name__}"
-            )
-            self._ready.set()
         finally:
-            if self._panel and win32gui.IsWindow(self._panel):
-                self._user32.KillTimer(self._panel, 1)
-            for handle in (self._canvas, self._panel):
-                if handle and win32gui.IsWindow(handle):
-                    win32gui.DestroyWindow(handle)
-            self._canvas = self._panel = 0
-            if self._font:
-                win32gui.DeleteObject(self._font)
-            if registered:
-                win32gui.UnregisterClass(class_name, instance)
-            elif self._background:
-                win32gui.DeleteObject(self._background)
-            self._finished.set()
-            while not self._requests.empty():
-                request = self._requests.get_nowait()
-                request.error = RuntimeError("The guidance interface closed.")
-                request.done.set()
+            try:
+                with ExitStack() as cleanup:
+                    cleanup.callback(self._user32.SetThreadDpiAwarenessContext, previous_dpi)
+                    if registered:
+                        cleanup.callback(win32gui.UnregisterClass, class_name, instance)
+                    elif self._background:
+                        cleanup.callback(win32gui.DeleteObject, self._background)
+                    if self._font:
+                        cleanup.callback(win32gui.DeleteObject, self._font)
+                    for handle in (self._panel, self._canvas):
+                        if handle and win32gui.IsWindow(handle):
+                            cleanup.callback(win32gui.DestroyWindow, handle)
+                    if self._panel and win32gui.IsWindow(self._panel):
+                        self._user32.KillTimer(self._panel, 1)
+            finally:
+                self._canvas = self._panel = self._editor = self._status = 0
+                self._buttons.clear()
+                self._font = self._background = 0
 
     def _procedure(self, handle, message, wparam, lparam):
         gui, con = self._gui, self._con
@@ -351,6 +380,7 @@ class TeachingSurface:
                 self._drain_requests()
                 return 0
             if message == con.WM_TIMER and handle == self._panel:
+                self._drain_requests()
                 self._refresh()
                 return 0
             if message == con.WM_CLOSE and handle == self._panel:
@@ -665,7 +695,8 @@ class TeachingSurface:
         if entries != self._last_text:
             text = "\r\n\r\n".join(f"{entry.title}\r\n{entry.text}" for entry in snapshot.entries)
             gui.SetWindowText(self._editor, text)
-            gui.SendMessage(self._editor, con.EM_SETSEL, len(text), len(text))
+            length = len(text.encode("utf-16-le")) // 2
+            gui.SendMessage(self._editor, con.EM_SETSEL, length, length)
             gui.SendMessage(self._editor, con.EM_SCROLLCARET, 0, 0)
             self._last_text = entries
         status = f"{control.mode.title()} | {control.state.title()} | Ctrl+Shift+H stops"

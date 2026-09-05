@@ -109,6 +109,59 @@ def test_stale_model_window_requests_do_not_show_after_stop(surface):
     assert surface._gui.events == []
 
 
+def test_show_cannot_stamp_a_new_generation_after_its_checkpoint(surface, monkeypatch):
+    original_checkpoint = surface.controller.checkpoint
+
+    def stop_after_checking():
+        original_checkpoint()
+        surface.controller.stop("Fixture generation race")
+        surface.controller.arm_local()
+
+    def deliver(command, argument="", generation=None):
+        request = dispatch(surface, command, argument=argument, generation=generation)
+        if request.error is not None:
+            raise request.error
+
+    surface._request = deliver
+    with pytest.raises(RuntimeError, match="revoked"):
+        with surface.controller.operation("Fixture transcript"):
+            monkeypatch.setattr(surface.controller, "checkpoint", stop_after_checking)
+            surface.show("front")
+    assert surface._gui.events == []
+
+
+def test_native_initialization_failure_releases_every_waiter(surface):
+    def unavailable():
+        raise OSError("Fixture native import failure")
+
+    surface._run_windows = unavailable
+    request = _Request("hide")
+    surface._requests.put(request)
+    surface._run()
+    assert surface._ready.is_set()
+    assert surface._finished.is_set()
+    assert request.done.is_set()
+    assert request.error is not None
+    assert not surface.controller.snapshot().armed
+
+
+def test_close_still_joins_the_thread_when_the_command_cannot_be_posted(surface):
+    events = []
+    surface._thread = SimpleNamespace(
+        is_alive=lambda: not surface._exit,
+        join=lambda timeout: events.append(("join", timeout)),
+    )
+
+    def unavailable(command):
+        raise RuntimeError("Fixture post failure")
+
+    surface._request = unavailable
+    with pytest.raises(RuntimeError, match="Fixture post"):
+        surface.close()
+    assert surface._exit
+    assert events == [("join", 3)]
+
+
 def test_ink_window_bounds_are_cropped_to_the_actual_scene():
     snapshot = SimpleNamespace(
         marks=(SimpleNamespace(points=((100, 100), (200, 200))),),
