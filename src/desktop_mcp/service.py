@@ -80,7 +80,8 @@ async def _rpc_stream(channel: PipeChannel, application: DesktopApplication) -> 
     from pydantic import ValidationError
     from desktop_mcp.app import create_server
 
-    server = create_server(application, manage_application=False)
+    chat_sessions: set[str] = set()
+    server = create_server(application, manage_application=False, on_chat_session=chat_sessions.add)
     inbound, read_stream = anyio.create_memory_object_stream[SessionMessage | Exception](1)
     write_stream, outbound = anyio.create_memory_object_stream[SessionMessage](1)
     used_desktop = False
@@ -110,6 +111,8 @@ async def _rpc_stream(channel: PipeChannel, application: DesktopApplication) -> 
                                     if isinstance(tool_name, str) and tool_name not in {
                                         "DesktopStatus",
                                         "DesktopStop",
+                                        "Transcript",
+                                        "TranscriptRead",
                                     }:
                                         used_desktop = True
                                 await inbound.send(SessionMessage(message))
@@ -136,6 +139,8 @@ async def _rpc_stream(channel: PipeChannel, application: DesktopApplication) -> 
     except* EOFError, OSError, ValueError, anyio.BrokenResourceError, anyio.ClosedResourceError:
         logger.info("An MCP connection ended.")
     finally:
+        for owner in chat_sessions:
+            application.teaching.conversation.release_listener(owner)
         reset_transport(token)
         await read_stream.aclose()
         await write_stream.aclose()

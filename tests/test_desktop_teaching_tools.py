@@ -27,10 +27,14 @@ def teaching_tools():
     app = FixtureApplication(armed=True)
     calls = []
     context = CaptureContext(1, (0, 0, 1000, 1000), (0, 0, 1000, 1000))
+    conversation = app.teaching.conversation
+    original_reply = conversation.reply
 
-    def publish(text, *, title):
+    def publish(text, *, title, **kwargs):
         calls.append(("publish", text, title))
-        return SimpleNamespace(sequence=1, text=text)
+        return original_reply(text, title=title, **kwargs)
+
+    conversation.reply = publish
 
     def draw(kind, points, **kwargs):
         calls.append(("draw", kind, points, kwargs))
@@ -45,12 +49,17 @@ def teaching_tools():
     app.teaching_context = lambda expected: context
     app.teaching = SimpleNamespace(
         publish=publish,
+        conversation=conversation,
         draw=draw,
         erase=lambda identifier: 1,
         cursor_position=lambda: (123, 456),
         wait_for_cursor=lambda target, **kwargs: {"status": "reached", "cursor": list(target)},
     )
-    app.teaching_surface = SimpleNamespace(show=lambda action: calls.append(("show", action)))
+    app.teaching_surface = SimpleNamespace(
+        show=lambda action: calls.append(("show", action)),
+        visible=True,
+        enabled=True,
+    )
     registry = ToolRegistry()
     register_teaching_tools(registry, lambda: app)
     yield app, registry.tools, calls
@@ -98,7 +107,6 @@ def test_transcript_stacking_does_not_republish_content(teaching_tools):
 @pytest.mark.parametrize(
     "name,arguments",
     [
-        ("Transcript", {"text": "must not publish"}),
         ("Laser", {"loc": (50, 50)}),
         ("Draw", {"kind": "path", "points": [(1, 1), (2, 2)]}),
         ("Erase", {}),

@@ -30,8 +30,8 @@ AI model, a remote-desktop service, or a sandbox.
 - Teaching and control in **one armed session**: explain, circle a control,
   click the next tab, and keep explaining without changing modes.
 - A draggable, Alt-Tab-accessible transcript with local pin and top/bottom docking.
-  The model publishes instruction steps explicitly; presentation never moves the
-  learner's pointer or steals keyboard focus.
+  Type questions into its message box and receive agent replies in the same
+  window. The main panel has a **Transcript: On/Off** toggle.
 
 ## Requirements and installation
 
@@ -142,7 +142,9 @@ connect only clients you intend to give desktop access.
 
 ## Start, stop and take over
 
-The application starts **stopped**. Press **Arm / Resume** locally when ready.
+The application and transcript open together. Desktop access starts **stopped**.
+Text conversation and the transcript toggle work even while desktop control is
+paused. Press **Arm / Resume** locally when you want screenshots or desktop actions.
 That single authorization enables guidance, observations and desktop input
 together; there is no Control/Teach selector. The panel minimizes so it does not intercept input;
 it remains reachable through Alt-Tab. If Windows activates the transcript instead
@@ -152,7 +154,8 @@ The panel compacts to fit the current monitor's work area without changing the
 physical pointer scale. Native accessibility text exposes takeover On/Off,
 arm-rejection details and current activity, rather than relying only on painted text.
 
-**Ctrl+Shift+H** and the panel's Stop control revoke input and captures. Pending
+**Ctrl+Shift+H** and the panel's Stop control revoke input, captures and annotations.
+Text conversation stays available so you can ask questions or explain a problem. Pending
 commands from the old generation stay cancelled even after you resume. Keys and
 buttons held by Desktop-MCP are released. The model has no `Arm` or `Resume` tool.
 **X on either the control window or the instruction window quits Desktop-MCP**:
@@ -182,7 +185,7 @@ or locked desktop may be refused.
 
 | Tool | Purpose |
 |---|---|
-| `DesktopStatus` | State, stop reason, input revision and activity, without a capture. |
+| `DesktopStatus` | State, stop reason, activity and transcript visibility/listener/queue status. |
 | `DesktopStop` | Latch a stop; never resumes control. |
 | `DesktopBatch` | Validate and run a short ordered sequence; observe once afterward. |
 | `Screenshot` | Fast visual observation, adaptive waiting, encoding and frame references. |
@@ -192,7 +195,8 @@ or locked desktop may be refused.
 | `App` | List/focus windows or explicitly launch an executable without a shell. |
 | `DisplayInventory` | Physical monitor bounds, DPI and scale. |
 | `Snapshot` | Optional heavier Windows accessibility inspection plus an image. |
-| `Transcript` | Publish instruction text or request front/back stacking without taking focus. |
+| `Transcript` | Publish/reply, show/hide, or request front/back stacking without taking focus. |
+| `TranscriptRead` | Listen for your next typed message and acknowledge it through a reply. |
 | `Laser` | Point, trace a path, or circle a region without moving the real pointer. |
 | `Draw`, `Erase` | Persistent context-bound ink; erase only our annotations, never app content. |
 | `Cursor`, `WaitForCursor` | Observe the real pointer and wait for vicinity plus continuous dwell. |
@@ -210,12 +214,45 @@ and publish the next explanation using ordinary tool calls. It can also wait for
 you to try a step before continuing. No mode switches or extra authorization are
 needed unless you stop or interrupt an active automated input sequence.
 
-Startup shows one main window. The floating instruction window appears when
-the assistant first publishes content, rather than opening a second empty panel.
+The transcript opens with the application. Its message box is separate from the
+read-only conversation history: **Enter sends**, **Shift+Enter adds a line**, and
+the **Send** button also works with input methods such as IME.
 Drag its title bar, use **Top**/**Bottom** to dock, or **Pin** to keep it above other
 windows. A model `Transcript(action="back")` request cannot override a local pin.
+Use **Transcript: On/Off** in the main panel to show or hide it without deleting
+messages or changing desktop permissions. The model can use
+`Transcript(action="show")` or `"hide"` directly; it does not need to Alt+Tab and
+click protected application controls. `DesktopStatus.transcript` reports
+`enabled`, actual `visible`, pending-message count and listener status.
+
 Closing either main window quits the application. Minimize the instruction window
 instead when you just want it out of the way.
+
+### Have a conversation here
+
+Start a task in Copilot with a prompt such as:
+
+> Use Desktop-MCP to teach me Blender. Put explanations and replies in the
+> transcript, and keep using TranscriptRead to listen for my questions until
+> I say we're done.
+
+Then write in the transcript and press Enter or Send. The active agent receives
+the message through `TranscriptRead`, answers with `Transcript(reply_to=...)`,
+and listens again. You do not need to return to the terminal for each question.
+Only one MCP session listens at a time, so unrelated Copilot tabs cannot both
+consume the same question. It can release its listener explicitly; disconnection
+releases it automatically. A silent listener lease expires after two minutes.
+
+The status line distinguishes **Agent listening**, **Awaiting reply** and
+**Queued**. A queued message is retained until answered, not silently discarded.
+The app does not contain its own AI and cannot wake a completely idle/disconnected
+Copilot model. Keep the Copilot task active (Autopilot can do that); if nobody is
+listening, ask the intended Copilot session to use the transcript.
+
+Chat is bounded and held in memory: up to 32 displayed entries and 32 unanswered
+messages, with 16,000 characters per message. A full queue reports an error and
+keeps your draft. Closing Desktop-MCP clears its local chat; the connected
+Copilot client may retain its normal session history.
 
 An agent can publish a step, mark the relevant area, and wait for your pointer:
 
@@ -243,7 +280,7 @@ away; afterward input tools are available again if access is still armed.
 Marks disappear when their context becomes stale or control stops.
 
 The transcript is not automatic mirroring of every Copilot CLI token. The model
-must call `Transcript` to publish a useful step. Ink, laser, cursor and control
+uses `TranscriptRead` and `Transcript` to receive and answer messages. Ink, laser, cursor and control
 windows are excluded from server screenshots so guidance does not feed back into
 the model's view of the application.
 

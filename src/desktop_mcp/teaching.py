@@ -12,26 +12,17 @@ from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 from desktop_mcp.contracts import CaptureContext, ControlSnapshot, Point, Rect
+from desktop_mcp.conversation import Conversation, TranscriptEntry
 from desktop_mcp.runtime import DesktopStopped
 
 if TYPE_CHECKING:
     from desktop_mcp.runtime import Controller
 
-MAX_ENTRIES = 16
-MAX_TEXT = 16_000
 MAX_MARKS = 64
 MAX_POINTS = 512
 _CONTEXT_INTERVAL = 0.1
 _POLL_INTERVAL = 0.05
 _COLOR = re.compile(r"#[0-9a-fA-F]{6}\Z")
-
-
-@dataclass(frozen=True)
-class TranscriptEntry:
-    sequence: int
-    title: str
-    text: str
-    created_at: float
 
 
 @dataclass(frozen=True)
@@ -191,19 +182,6 @@ def _expected_revision(state: ControlSnapshot, revision: int | None) -> None:
             )
 
 
-def _text(value: object, name: str, maximum: int, *, multiline: bool = False) -> str:
-    if not isinstance(value, str) or not value.strip() or len(value) > maximum:
-        raise ValueError(f"{name} must contain 1..{maximum} characters.")
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise ValueError(f"{name} contains invalid Unicode.") from error
-    allowed = "\t\r\n" if multiline else ""
-    if any((ord(char) < 32 or 127 <= ord(char) <= 159) and char not in allowed for char in value):
-        raise ValueError(f"{name} contains unsupported control characters.")
-    return value
-
-
 class TeachingSession:
     """Presentation state shared by serialized agent operations and read-only UI frames.
 
@@ -228,11 +206,13 @@ class TeachingSession:
         self._context = context
         self._clock = clock
         self._lock = threading.RLock()
-        self._entries: tuple[TranscriptEntry, ...] = ()
+        self.conversation = Conversation(
+            is_closed=lambda: self._controller.snapshot().state == "closed", clock=clock
+        )
         self._marks: dict[str, _MarkState] = {}
         self._waiting: _WaitState | None = None
         self._cursor: Point | None = None
-        self._revision = self._sequence = self._visual_epoch = self._text_epoch = 0
+        self._revision = self._visual_epoch = 0
         self._generation = self._input_revision = -1
         self._last_time = -math.inf
 
@@ -247,38 +227,8 @@ class TeachingSession:
         )
 
     def publish(self, text: str, *, title: str = "Instructions") -> TranscriptEntry:
-        """Publish plain text explicitly, retaining only the latest sixteen entries."""
-        text = _text(text, "text", MAX_TEXT, multiline=True)
-        title = _text(title, "title", 256)
-        state = self._authorize()
-        now = self._now()
-        with self._lock:
-            self._require_sync(state, now)
-            epoch = self._text_epoch
-        state = self._authorize(generation=state.generation)
-        with self._lock:
-            self._require_sync(state, now)
-            if epoch != self._text_epoch:
-                raise RuntimeError("The transcript was cleared locally during publication.")
-            self._sequence += 1
-            entry = TranscriptEntry(self._sequence, title, text, self._last_time)
-            previous = self._entries
-            updated = self._entries = (*previous, entry)[-MAX_ENTRIES:]
-            self._revision += 1
-        accepted = False
-        try:
-            self._authorize(generation=state.generation)
-            accepted = True
-            return entry
-        finally:
-            if not accepted:
-                with self._lock:
-                    self._entries = (
-                        previous
-                        if self._entries is updated
-                        else tuple(item for item in self._entries if item is not entry)
-                    )
-                    self._revision += 1
+        """Text conversation remains available while desktop control is paused."""
+        return self.conversation.reply(text, title=title)
 
     def draw(
         self,
@@ -630,10 +580,7 @@ class TeachingSession:
 
     def clear_transcript_local(self) -> None:
         """Local UI only: erase retained transcript text without requiring arming."""
-        with self._lock:
-            self._entries = ()
-            self._text_epoch += 1
-            self._revision += 1
+        self.conversation.clear_local()
 
     def _authorize(self, *, generation: int | None = None) -> ControlSnapshot:
         ticket = self._controller.snapshot().generation
@@ -684,7 +631,7 @@ class TeachingSession:
     def _snapshot_locked(self) -> TeachingSnapshot:
         return TeachingSnapshot(
             self._revision,
-            self._entries,
+            self.conversation.entries(),
             tuple(item.mark for item in self._marks.values()),
             self._waiting.target if self._waiting is not None else None,
             self._cursor,

@@ -74,15 +74,17 @@ def bridge_script(name):
 
 
 def transport(name):
-    return StdioTransport(command=sys.executable, args=["-c", bridge_script(name)])
+    return StdioTransport(
+        command=sys.executable, args=["-c", bridge_script(name)], keep_alive=False
+    )
 
 
 async def test_two_copilot_clients_share_one_desktop_and_can_disconnect_independently(tmp_path):
     async with host(tmp_path) as (app, name, _):
         async with Client(transport(name)) as first:
             async with Client(transport(name)) as second:
-                assert len(await first.list_tools()) == 20
-                assert len(await second.list_tools()) == 20
+                assert len(await first.list_tools()) == 21
+                assert len(await second.list_tools()) == 21
                 one, two = await asyncio.gather(
                     first.call_tool("DesktopStatus"), second.call_tool("DesktopStatus")
                 )
@@ -161,6 +163,23 @@ async def test_stop_remains_global_but_status_probes_do_not_disarm_other_clients
         async with Client(transport(name)) as second:
             await second.call_tool("DesktopStop")
         assert not app.controller.snapshot().armed
+
+
+async def test_chat_listener_disconnect_releases_its_lease_without_revoking_control(tmp_path):
+    async with host(tmp_path) as (app, name, _):
+        app.controller.arm_local()  # Fake desktop only.
+        generation = app.controller.snapshot().generation
+        question = app.teaching.conversation.send_user("Which control is this?")
+        async with Client(transport(name)) as first:
+            assert (await first.call_tool("TranscriptRead", {"timeout": 0.0})).data["message"][
+                "id"
+            ] == question.sequence
+        async with Client(transport(name)) as second:
+            received = await second.call_tool("TranscriptRead", {"timeout": 0.0})
+            assert received.data["message"]["id"] == question.sequence
+        assert app.controller.snapshot().generation == generation
+        assert app.controller.snapshot().armed
+        assert app.teaching.conversation.status()["pending_messages"] == 1
 
 
 def test_explicit_quit_state_is_recorded_without_private_content(tmp_path):

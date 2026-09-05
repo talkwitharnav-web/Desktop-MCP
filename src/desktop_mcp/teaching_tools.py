@@ -6,6 +6,7 @@ from collections.abc import Callable
 import math
 from typing import TYPE_CHECKING, Literal
 
+from fastmcp import Context
 from mcp.types import ToolAnnotations
 from pydantic import StrictFloat, StrictInt
 
@@ -17,7 +18,12 @@ if TYPE_CHECKING:
 StrictPoint = tuple[StrictInt, StrictInt]
 
 
-def register_teaching_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
+def register_teaching_tools(
+    mcp,
+    get_app: Callable[[], DesktopApplication],
+    *,
+    on_chat_session: Callable[[str], None] | None = None,
+) -> None:
     presentation = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False)
     read = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True)
 
@@ -37,36 +43,66 @@ def register_teaching_tools(mcp, get_app: Callable[[], DesktopApplication]) -> N
 
     @mcp.tool(
         name="Transcript",
-        description="Publish an instruction/status step to the floating transcript so the user need not return to the terminal. Plain text, no scripts or automatic CLI token mirroring. action=front/back changes stacking without stealing keyboard focus; a local pin preference wins. Guidance and control share the same armed session; no mode change is needed.",
+        description="Reply or publish to the on-screen conversation. For a user message from TranscriptRead, include its id as reply_to so it is acknowledged. action=show/hide toggles visibility directly; front/back changes stacking without stealing focus, with local pin preference respected. Chat works while desktop control is paused, but never grants input permission. A publish shows the transcript; it is not automatic mirroring of CLI output.",
         annotations=presentation,
     )
     def transcript(
         text: str | None = None,
         title: str = "Instructions",
-        action: Literal["publish", "front", "back"] = "publish",
+        action: Literal["publish", "front", "back", "show", "hide"] = "publish",
+        reply_to: StrictInt | None = None,
+        ctx: Context | None = None,
     ) -> dict[str, object]:
         app = get_app()
-        with app.controller.operation("Updating instructions"):
-            if action == "publish":
-                if text is None:
-                    raise ValueError("Publishing an instruction requires text.")
-                entry = app.teaching.publish(text, title=title)
-                try:
-                    app.teaching_surface.show("unchanged")
-                except RuntimeError as error:
-                    raise RuntimeError(
-                        "The instruction was stored, but its window could not be shown. "
-                        "Do not duplicate the message."
-                    ) from error
-                return {
-                    "sequence": entry.sequence,
-                    "characters": len(entry.text),
-                    "display": "shown",
-                }
-            if text is not None:
-                raise ValueError("front/back does not accept text; publish a step separately.")
-            app.teaching_surface.show(action)
-            return {"display": action}
+        app.teaching.conversation.ensure_open()
+        if action == "publish":
+            if text is None:
+                raise ValueError("Publishing an instruction requires text.")
+            owner = ctx.session_id if ctx is not None else None
+            if owner is not None and on_chat_session is not None:
+                on_chat_session(owner)
+            entry = app.teaching.conversation.reply(
+                text, title=title, reply_to=reply_to, owner=owner
+            )
+            try:
+                app.teaching_surface.show("unchanged")
+            except RuntimeError as error:
+                raise RuntimeError(
+                    "The reply was stored, but its window could not be shown. "
+                    "Do not duplicate the message; use Transcript(action='show')."
+                ) from error
+            return {"sequence": entry.sequence, "characters": len(entry.text), "display": "shown"}
+        if text is not None or reply_to is not None:
+            raise ValueError("Visibility/stacking actions do not accept text or reply_to.")
+        if action == "hide":
+            app.teaching_surface.set_visible(False)
+        else:
+            app.teaching_surface.show("front" if action == "show" else action)
+        return {"display": action, "visible": app.teaching_surface.visible}
+
+    @mcp.tool(
+        name="TranscriptRead",
+        description="Listen for the user's next on-screen message (bounded wait, default 25s). Reply in Transcript with reply_to=message.id, then listen again while the conversation is active. Messages remain queued until answered. Only one MCP session listens at a time; release=true hands the conversation back. No screenshots or desktop input, and no requirement to Arm for chat. This does not wake an idle model automatically.",
+        annotations=read,
+    )
+    async def transcript_read(
+        ctx: Context,
+        timeout: StrictFloat = 25.0,
+        listener_name: str = "Copilot",
+        release: bool = False,
+    ) -> dict[str, object]:
+        app = get_app()
+        owner = ctx.session_id
+        if on_chat_session is not None:
+            on_chat_session(owner)
+        if release:
+            return {"released": app.teaching.conversation.release_listener(owner)}
+        result = await app.teaching.conversation.listen(owner, label=listener_name, timeout=timeout)
+        return {
+            **result,
+            "transcript_visible": app.teaching_surface.visible,
+            "transcript_enabled": app.teaching_surface.enabled,
+        }
 
     @mcp.tool(
         name="Laser",

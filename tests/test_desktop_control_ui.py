@@ -573,7 +573,23 @@ def test_there_is_no_mutually_exclusive_mode_selector():
         ui._LocalCommand.ARM,
         ui._LocalCommand.STOP,
         ui._LocalCommand.TAKEOVER,
+        ui._LocalCommand.TRANSCRIPT,
     }
+
+
+def test_main_transcript_toggle_is_visibility_only(surface_factory):
+    surface, controller, adapter = surface_factory()
+    visibility = [True]
+    surface._transcript_visible = lambda: visibility[0]
+    surface._on_transcript_toggle = lambda: visibility.__setitem__(0, not visibility[0])
+    surface.start()
+    generation = controller.snapshot().generation
+    adapter.invoke(lambda: surface._local_command(ui._LocalCommand.TRANSCRIPT))
+    assert not adapter.models[-1].transcript_visible
+    assert not controller.snapshot().armed
+    assert controller.snapshot().generation == generation
+    adapter.invoke(lambda: surface._local_command(ui._LocalCommand.TRANSCRIPT))
+    assert adapter.models[-1].transcript_visible
 
 
 def test_capture_does_not_change_unified_permission(surface_factory):
@@ -1217,7 +1233,7 @@ def test_native_unified_controls_expose_owned_handles_without_mode_tabs():
     )
     assert dict(titles)[adapter._panel] == "Desktop-MCP · Stopped"
     assert enabled[adapter._buttons[ui._LocalCommand.ARM]]
-    assert len(adapter._buttons) == 3
+    assert len(adapter._buttons) == 4
     assert set(adapter._buttons.values()) <= set(adapter.window_handles())
     assert set(adapter._labels.values()) <= set(adapter.window_handles())
 

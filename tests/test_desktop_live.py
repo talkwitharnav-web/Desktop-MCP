@@ -438,7 +438,7 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
 
     transcript = application.teaching_surface._panel
     editor = application.teaching_surface._editor
-    assert not win32gui.IsWindowVisible(transcript)
+    assert win32gui.IsWindowVisible(transcript)
     assert not win32gui.GetWindowLong(transcript, win32con.GWL_EXSTYLE) & win32con.WS_EX_TOOLWINDOW
     assert win32gui.GetWindowLong(editor, win32con.GWL_STYLE) & win32con.ES_READONLY
     pointer = win32api.GetCursorPos()

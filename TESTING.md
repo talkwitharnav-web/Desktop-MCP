@@ -27,6 +27,14 @@ Core input/revocation checks are in `test_desktop_runtime.py` and
 synthetic renderings. `test_desktop_teaching.py` exercises the pure teaching model
 and renderer. These are not evidence of real Windows hook behavior or appearance.
 
+`test_desktop_conversation.py` covers the real MCP chat tools around a fake
+desktop: incoming delivery, reply acknowledgements, exclusive listeners, queue
+limits, timeout/cancellation, paused chat and visibility without input grants.
+Service tests use `StdioTransport(keep_alive=False)` when testing actual client
+disconnection; leaving a transport alive is not evidence of a disconnect.
+Transcript UI tests cover Send/draft retention, Enter/Shift+Enter/IME handling,
+compact history/composer/status/control layout, and capture-safe local toggles.
+
 Launch/lifecycle changes use `test_desktop_pipe_transport.py` and
 `test_desktop_service.py`: real current-user Windows named pipes and subprocess
 stdio clients around a fake desktop, without hotkeys, input or screenshots.
@@ -36,9 +44,12 @@ tests retain the default owned lifespan; the production shared host uses one
 application and independent per-client protocol lifespans.
 
 `test_desktop_launch_live.py` is a separately opt-in, **no-input** native launch
-exercise. It starts only its own instance, posts X only to its own window handles,
-and requires the application to exit. It does not arm, type, capture, or close
-other apps. Stop any previous Desktop-MCP instance normally before running it.
+exercise. It starts only its own instance, sends a known message to its owned
+composer/Send-command handler, reads/replies through the real MCP connection,
+checks visibility, and posts X only to its own window handles. It requires the
+application to exit. This verifies native control plumbing, not physical
+click/foreground behavior. It does not arm, inject desktop input, capture, or
+close other apps. Stop any previous Desktop-MCP instance normally before running it.
 
 ## Opt-in native exercise
 

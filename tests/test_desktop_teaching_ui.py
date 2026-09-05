@@ -37,9 +37,13 @@ class Gui:
 @pytest.fixture
 def surface():
     application = FixtureApplication(armed=True)
-    session = SimpleNamespace(clear_local=lambda: None)
+    session = SimpleNamespace(
+        clear_local=lambda: None,
+        conversation=application.teaching.conversation,
+    )
     surface = TeachingSurface(application.controller, session)
     surface._panel, surface._canvas = 1, 2
+    surface._composer, surface._send = 7, 8
     surface._gui = Gui()
     surface._con = SimpleNamespace(
         SW_HIDE=0,
@@ -70,7 +74,7 @@ def dispatch(surface, command, *, argument="", generation=None):
 def test_every_guidance_child_is_protected_from_input_targeting(surface):
     surface._editor, surface._status = 3, 4
     surface._buttons = {201: 5, 202: 6}
-    assert surface.window_handles() == (1, 2, 3, 4, 5, 6)
+    assert surface.window_handles() == (1, 2, 3, 7, 8, 4, 5, 6)
 
 
 def test_transcript_x_requests_whole_application_exit_not_minimize(surface):
@@ -110,6 +114,8 @@ def test_transcript_font_uses_logfont_and_updates_every_child(surface):
     assert events == [
         ("font", 3, 0x30, 60, True),
         ("font", 4, 0x30, 60, True),
+        ("font", 7, 0x30, 60, True),
+        ("font", 8, 0x30, 60, True),
         ("font", 5, 0x30, 60, True),
         ("delete", 50),
     ]
@@ -118,7 +124,7 @@ def test_transcript_font_uses_logfont_and_updates_every_child(surface):
 
 @pytest.mark.parametrize("work", [(0, 0, 2560, 1528), (0, 0, 640, 360)])
 def test_docking_accounts_for_scaled_minimum_size_before_positioning(surface, work):
-    surface._scale = 1.5
+    surface._scale = surface._dpi_scale = 1.5
     surface._work_area = lambda: work
     surface._gui.GetWindowRect = lambda handle: (80, 600, 760, 890)
     surface._con.SWP_NOZORDER = 4
@@ -132,7 +138,7 @@ def test_docking_accounts_for_scaled_minimum_size_before_positioning(surface, wo
 
 @pytest.mark.parametrize("scale,client", [(1.0, (444, 201)), (1.5, (666, 302)), (2.0, (888, 402))])
 def test_wait_progress_has_its_own_readable_line_without_hiding_stop(surface, scale, client):
-    surface._scale = scale
+    surface._scale = surface._dpi_scale = scale
     surface._editor, surface._status = 3, 4
     surface._buttons = {201 + index: 10 + index for index in range(5)}
     surface._gui.GetClientRect = lambda window: (0, 0, *client)
@@ -142,10 +148,12 @@ def test_wait_progress_has_its_own_readable_line_without_hiding_stop(surface, sc
     )
     surface._layout()
     status_box = positions[4]
-    assert status_box[3] >= round(48 * scale)
+    assert status_box[3] >= round(48 * surface._scale)
     stop_box = positions[14]
     assert stop_box[1] + stop_box[3] <= client[1]
-    assert positions[3][3] >= round(16 * scale)
+    assert positions[3][3] >= round(16 * surface._scale)
+    assert positions[7][3] >= round(16 * surface._scale)
+    assert positions[8][3] >= round(16 * surface._scale)
 
     snapshot = TeachingSnapshot(1, (), (), WaitTarget((10, 10), 28, True, 1.0, 1.0), None)
     surface.session.snapshot = lambda: snapshot
@@ -159,9 +167,9 @@ def test_wait_progress_has_its_own_readable_line_without_hiding_stop(surface, sc
     lines = texts[4].splitlines()
     assert len(lines) == 2
     assert "Ctrl+Shift+H" in lines[0]
-    assert lines[1] == "Waiting for your cursor (100%)"
+    assert "Your cursor: 100%" in lines[1]
     try:
-        font = ImageFont.truetype("segoeui.ttf", round(16 * scale))
+        font = ImageFont.truetype("segoeui.ttf", round(16 * surface._scale))
     except OSError:
         pytest.skip("Segoe UI font metrics unavailable on this test host")
     assert all(font.getlength(line) <= status_box[2] for line in lines)
@@ -176,7 +184,7 @@ def test_wait_progress_has_its_own_readable_line_without_hiding_stop(surface, sc
     ],
 )
 def test_clamped_work_area_keeps_readable_editor_status_and_stop(surface, scale, work, chrome):
-    surface._scale = scale
+    surface._scale = surface._dpi_scale = scale
     surface._work_area = lambda: work
     surface._gui.GetWindowRect = lambda window: (80, 600, 760, 890)
     surface._con.SWP_NOZORDER = 4
@@ -191,9 +199,10 @@ def test_clamped_work_area_keeps_readable_editor_status_and_stop(surface, scale,
         {window: (x, y, width, height)}
     )
     surface._layout()
-    font_height = round(16 * scale)
+    font_height = round(16 * surface._scale)
     assert positions[3][3] >= font_height
     assert positions[14][3] >= font_height
+    assert positions[7][3] >= font_height and positions[8][3] >= font_height
     assert surface._status_lines >= 1
     for x, y, width, height in positions.values():
         assert 0 <= x < x + width <= client[0]
@@ -289,25 +298,87 @@ def test_stale_model_window_requests_do_not_show_after_stop(surface):
     assert surface._gui.events == []
 
 
-def test_show_cannot_stamp_a_new_generation_after_its_checkpoint(surface, monkeypatch):
-    original_checkpoint = surface.controller.checkpoint
-
-    def stop_after_checking():
-        original_checkpoint()
-        surface.controller.stop("Fixture generation race")
-        surface.controller.arm_local()
-
+def test_chat_visibility_works_while_paused_but_never_after_close(surface):
     def deliver(command, argument="", generation=None):
         request = dispatch(surface, command, argument=argument, generation=generation)
         if request.error is not None:
             raise request.error
 
     surface._request = deliver
-    with pytest.raises(RuntimeError, match="revoked"):
-        with surface.controller.operation("Fixture transcript"):
-            monkeypatch.setattr(surface.controller, "checkpoint", stop_after_checking)
-            surface.show("front")
-    assert surface._gui.events == []
+    surface.controller.stop()
+    surface.show("front")
+    assert surface.visible
+    assert not surface.controller.snapshot().armed
+    surface.controller.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        surface.show("front")
+
+
+def test_local_visibility_toggle_posts_without_blocking_the_stop_thread(surface):
+    requests = []
+    surface._shown = True
+    surface._post = lambda *args, **kwargs: requests.append(args)
+    surface._request = lambda *args, **kwargs: pytest.fail("Local toggle blocked on another UI")
+    surface.toggle_local()
+    assert requests == [("visibility", "off")]
+
+
+def test_visibility_toggle_during_capture_is_applied_after_the_guard(surface):
+    surface._shown = True
+    assert dispatch(surface, "hide").error is None
+    assert dispatch(surface, "visibility", argument="off").error is None
+    assert not surface.enabled
+    assert dispatch(surface, "restore").error is None
+    assert not surface._gui.visible[1]
+    assert dispatch(surface, "visibility", argument="on").error is None
+    assert surface.visible
+    assert not surface.controller.snapshot().input_active
+
+
+def test_native_send_keeps_failed_drafts_and_clears_only_accepted_messages(surface):
+    texts = {7: "I see it, but what does it do?"}
+    surface._gui.GetWindowText = lambda handle: texts.get(handle, "")
+    surface._gui.SetWindowText = lambda handle, text: texts.update({handle: text})
+    surface._refresh = lambda: None
+    surface.controller.stop()
+    surface._send_user()
+    assert texts[7] == ""
+    assert surface.session.conversation.status()["pending_messages"] == 1
+    assert not surface.controller.snapshot().armed
+    texts[7] = " "  # Invalid input is retained, not silently discarded.
+    surface._send_user()
+    assert texts[7] == " "
+    assert surface._message_error
+
+
+def test_enter_sends_once_shift_enter_and_ime_stay_with_the_editor(surface):
+    from ctypes import wintypes
+
+    calls = []
+    surface._con.WM_KEYDOWN, surface._con.VK_RETURN, surface._con.VK_SHIFT = 0x100, 13, 16
+    surface._user32 = SimpleNamespace(GetKeyState=lambda key: 0)
+    surface._composition_active = lambda: False
+    surface._send_user = lambda: calls.append("send")
+    message = wintypes.MSG(hWnd=7, message=0x100, wParam=13, lParam=0)
+    assert surface._composer_key(message)
+    message.lParam = 1 << 30
+    assert surface._composer_key(message)
+    assert calls == ["send"]
+    message.lParam = 0
+    surface._user32.GetKeyState = lambda key: 0x8000
+    assert not surface._composer_key(message)
+    surface._user32.GetKeyState = lambda key: 0
+    surface._composition_active = lambda: True
+    assert not surface._composer_key(message)
+
+
+def test_clicking_the_chat_window_uses_normal_windows_activation(surface):
+    import win32con
+
+    surface._con = win32con
+    surface._gui.DefWindowProc = lambda *args: 47
+    surface._gui.GetForegroundWindow = lambda: 999
+    assert surface._procedure(surface._panel, win32con.WM_MOUSEACTIVATE, 0, 0) == 47
 
 
 def test_native_initialization_failure_releases_every_waiter(surface):

@@ -26,6 +26,9 @@ python -m uv sync --frozen --extra dev
   error and report success.
 - Keep the native UI thread independent of the serial action lock. Revocation
   must invalidate old queued work; local re-arming is not permission to revive it.
+- Keep conversation independent of desktop permission. Transcript reads must not
+  hold the input sequence lock, replies acknowledge only their listener's message,
+  and visibility toggles never arm input. Keep local composer drafts on send errors.
 - Use Ruff formatting, 100-character lines, descriptive snake_case functions,
   type annotations and concise docstrings for public interfaces.
 - Update the canonical documentation for any changed contract. Follow

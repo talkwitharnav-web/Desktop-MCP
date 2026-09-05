@@ -22,7 +22,7 @@ class ControlPolicy(Middleware):
         context: MiddlewareContext[CallToolRequestParams],
         call_next: CallNext[CallToolRequestParams, ToolResult],
     ) -> ToolResult:
-        if context.message.name in {"DesktopStatus", "DesktopStop"}:
+        if context.message.name in {"DesktopStatus", "DesktopStop", "Transcript", "TranscriptRead"}:
             return await call_next(context)
         try:
             with self._get_controller().request():

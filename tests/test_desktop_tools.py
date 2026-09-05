@@ -14,6 +14,7 @@ from desktop_mcp.app import create_server
 from desktop_mcp.contracts import CaptureContext, Observation
 from desktop_mcp.runtime import Controller
 from desktop_mcp.image_files import ImageFiles
+from desktop_mcp.teaching import TeachingSession
 from tests.test_desktop_runtime import FakeInput
 
 
@@ -62,6 +63,17 @@ class FixtureApplication:
         self.capture = SimpleNamespace(
             context=lambda: CaptureContext(1, (0, 0, 1000, 1000), (0, 0, 1000, 1000))
         )
+        self.teaching_context = lambda expected: self.capture.context()
+        self.teaching = TeachingSession(
+            self.controller, position=self.backend.position, context=self.teaching_context
+        )
+        self.teaching_surface = SimpleNamespace(visible=True, enabled=True)
+
+        def visible(value):
+            self.teaching_surface.visible = self.teaching_surface.enabled = value
+
+        self.teaching_surface.show = lambda stacking: visible(True)
+        self.teaching_surface.set_visible = visible
         self.export_frames = False
         self.image_files = ImageFiles()
 
@@ -101,6 +113,7 @@ EXPECTED_TOOLS = {
     "DisplayInventory",
     "Snapshot",
     "Transcript",
+    "TranscriptRead",
     "Laser",
     "Draw",
     "Erase",
@@ -212,7 +225,6 @@ async def test_snapshot_rejects_context_or_input_changes_between_compound_phases
         ("App", {}),
         ("DisplayInventory", {}),
         ("Snapshot", {}),
-        ("Transcript", {"text": "must not publish"}),
         ("Laser", {"loc": [10, 10]}),
         ("Draw", {"kind": "path", "points": [[10, 10], [20, 20]]}),
         ("Erase", {}),

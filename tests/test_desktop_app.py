@@ -6,6 +6,7 @@ import pytest
 
 from desktop_mcp.app import DesktopApplication
 from desktop_mcp.contracts import CaptureContext
+from desktop_mcp.conversation import Conversation
 from desktop_mcp.runtime import Controller, DesktopStopped
 from tests.test_desktop_runtime import FakeInput
 
@@ -18,6 +19,11 @@ def app():
     application.controller.arm_local()
     application.surface = SimpleNamespace(window_handles=lambda: (10, 11))
     application.teaching_surface = SimpleNamespace(window_handles=lambda: (20, 21))
+    application.teaching = SimpleNamespace(
+        conversation=Conversation(
+            is_closed=lambda: application.controller.snapshot().state == "closed"
+        )
+    )
     yield application
     application.controller.close()
 

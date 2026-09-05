@@ -12,6 +12,8 @@ second supervised server.
 
 Ctrl+Shift+H and the local Stop button revoke Desktop-MCP access. Start stopped;
 re-arming is available only in the local control window, never through MCP.
+Plain-text conversation can continue while desktop actions are paused (D-011);
+it does not grant input or capture permission.
 Commands queued before a stop must not become executable after re-arming.
 The control window and hotkey must remain responsive during work. This is not
 a sandbox and cannot stop unrelated Copilot shell tools or another MCP server.
@@ -70,7 +72,8 @@ Keep required attribution while preventing automated changes.
 ## D-009: Guidance and control share one authorization
 
 The user explicitly removed the mutually exclusive Teach/Control modes. One
-local Arm enables observations, laser/ink, transcript, cursor waits and input.
+local Arm enables observations, laser/ink, cursor waits and input. Transcript
+chat is available independently of that desktop grant (D-011).
 An assistant can explain, highlight, click the next tab and explain again without
 a mode switch or re-arming. Stop remains latched and can never be bypassed.
 
@@ -83,8 +86,8 @@ Physical clicks/keys invalidate observations regardless of interruption preferen
 Laser/ink are separate visual layers, not movements of the user's pointer and
 not edits to the underlying application. Erase removes only our annotations.
 The transcript is an independently draggable, Alt-Tab-accessible window with
-local pin/dock controls. It appears on first content, not as a second empty
-startup window. The model publishes content explicitly through tools;
+local pin/dock controls. Per the user's follow-up, it opens with the main app
+and has a main-panel visibility toggle. The model publishes content explicitly through tools;
 this is not automatic mirroring of every Copilot terminal token.
 
 Cursor proximity is not proof that a button was clicked or an application action
@@ -102,3 +105,19 @@ The searchable Start-menu entry opens or reveals the same host. MCP sessions
 have distinct protocol connections but share one physical controller and local
 permission state. Only one host owns the hotkey; startup is serialized through
 Windows mutexes, not a stale PID file. No launcher or reconnect arms the desktop.
+
+## D-011: Two-way conversation is not a desktop permission grant
+
+The local transcript composer sends user messages to a bounded, in-memory queue.
+An active MCP agent listens with `TranscriptRead`, answers via `Transcript` with
+the received message id, and continues listening while that conversation is active.
+No idle-model wakeup or automatic mirroring of CLI output is claimed.
+
+Only one MCP session holds the transcript listener lease. Messages stay pending
+until a matching reply; disconnection or lease expiry permits another listener
+without losing the question. The UI reports actual listening/delivery/queue state.
+
+Text chat and transcript show/hide work while desktop access is stopped. They
+never arm input, capture pixels, launch/focus applications, or permit writing
+into the protected composer through desktop-input tools. Ctrl+Shift+H stops
+desktop work, not conversation. X still quits the whole application.

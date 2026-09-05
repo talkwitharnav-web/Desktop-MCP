@@ -1,7 +1,6 @@
 """The actual MCP tools can guide and operate in one locally armed session."""
 
 from fastmcp import Client
-from types import SimpleNamespace
 
 from desktop_mcp.app import create_server
 from desktop_mcp.contracts import CaptureContext
@@ -16,7 +15,6 @@ def unified_application():
     app.teaching = TeachingSession(
         app.controller, position=app.backend.position, context=app.teaching_context
     )
-    app.teaching_surface = SimpleNamespace(show=lambda stacking: None)
     return app
 
 

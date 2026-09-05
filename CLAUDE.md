@@ -18,6 +18,10 @@ Read [SYSTEM_MEMORY.md](SYSTEM_MEMORY.md) for current architecture,
 - Ctrl+Shift+H stops Desktop-MCP. A stop is latched until local human re-arming;
   no MCP tool may arm the controller. X on either main window quits the host and
   its connections; never replace Quit with minimize or automatic resurrection.
+- Transcript chat/show/hide is available while desktop actions are stopped.
+  It does not grant input/capture permission. User messages are delivered through
+  an explicitly active `TranscriptRead` listener; never claim an idle model was
+  notified or that a queued message was answered.
 - All desktop input must pass through the shared serial controller, including
   compatibility tools. Cancellation must release every key/button we hold.
   Neither an overlay nor a tool permission prompt is a sandbox.

@@ -86,7 +86,15 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
         annotations=read,
     )
     def status() -> dict[str, object]:
-        return asdict(get_app().controller.snapshot())
+        app = get_app()
+        return {
+            **asdict(app.controller.snapshot()),
+            "transcript": {
+                "visible": app.teaching_surface.visible,
+                "enabled": app.teaching_surface.enabled,
+                **app.teaching.conversation.status(),
+            },
+        }
 
     @mcp.tool(
         name="DesktopStop",

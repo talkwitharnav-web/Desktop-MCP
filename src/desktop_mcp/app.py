@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 from typing import TYPE_CHECKING, Iterator
+from collections.abc import Callable
 
 from fastmcp import FastMCP
 
@@ -56,6 +57,22 @@ editing the app; Erase removes only our ink. Cursor and WaitForCursor observe
 the learner's real pointer. A reached vicinity is not proof of a click or task
 success. Inspect the resulting application when that matters. Local transcript
 pinning wins over model front/back requests, which never take keyboard focus.
+The transcript is two-way chat. When the user asks to talk there, call
+TranscriptRead to listen for a message, then reply with Transcript(text=...,
+reply_to=message.id). Keep listening while that conversation is active; no
+separate model runs in the desktop app and it cannot wake an idle CLI model.
+An empty read is a timeout, not the end of the conversation. Do not invent
+messages or claim a listener is connected when it is not. Only one MCP session
+claims transcript messages at a time. Prefer replies in the transcript when
+the user writes there. When that conversation is finished, call
+TranscriptRead(release=True) so another session can listen. Transcript(show/hide) changes only conversation-window
+visibility, never desktop permission. Chat remains available while control is
+paused; input, captures and annotations still require local Arm/Resume.
+When the user writes in the transcript, the target app may no longer have focus.
+Never type into the transcript using desktop-input tools: use Transcript replies.
+Refocus the target app with App when an actual desktop action is needed and
+permission is armed. If input was interrupted, check queued transcript messages
+before trying to continue the old action.
 """
 
 
@@ -72,7 +89,11 @@ class DesktopApplication:
         self.backend: WindowsInput = WindowsInput()
         self.controller = Controller(self.backend)
         self.surface: ControlSurface = ControlSurface(
-            self.controller, control_windows=self.window_handles, on_exit=self.request_exit
+            self.controller,
+            control_windows=self.window_handles,
+            on_exit=self.request_exit,
+            transcript_visible=lambda: self.teaching_surface.enabled,
+            on_transcript_toggle=lambda: self.teaching_surface.toggle_local(),
         )
         self.capture = WindowsCapture(
             capture_guard=self.capture_guard,
@@ -103,7 +124,10 @@ class DesktopApplication:
         try:
             self.controller.stop("Desktop-MCP is quitting.")
         finally:
-            self.exit_requested.set()
+            try:
+                self.teaching.conversation.close()
+            finally:
+                self.exit_requested.set()
 
     def start(self) -> None:
         try:
@@ -120,6 +144,7 @@ class DesktopApplication:
             cleanup.callback(self.vision.invalidate)
             cleanup.callback(self.surface.close)
             cleanup.callback(self.teaching_surface.close)
+            cleanup.callback(self.teaching.conversation.close)
             cleanup.callback(self.controller.close)
 
     def window_handles(self) -> tuple[int, ...]:
@@ -276,7 +301,10 @@ class DesktopApplication:
 
 
 def create_server(
-    application: DesktopApplication | None = None, *, manage_application: bool = True
+    application: DesktopApplication | None = None,
+    *,
+    manage_application: bool = True,
+    on_chat_session: Callable[[str], None] | None = None,
 ) -> FastMCP:
     holder: dict[str, DesktopApplication] = {}
 
@@ -305,5 +333,5 @@ def create_server(
         middleware=[ControlPolicy(lambda: get_application().controller)],
     )
     register_tools(server, get_application)
-    register_teaching_tools(server, get_application)
+    register_teaching_tools(server, get_application, on_chat_session=on_chat_session)
     return server

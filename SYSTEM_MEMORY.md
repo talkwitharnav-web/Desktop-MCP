@@ -13,8 +13,9 @@ implementation lives under `src/desktop_mcp`.
 | Controller and input | `runtime.py`, `actions.py`, `native.py`; serial actions, generation-based revocation, cancellation, fast Unicode input and minimum-jerk pointer motion. |
 | Control window and overlay | Native Windows UI; local arming, global stop, input takeover, capture exclusion and rounded monochrome cursor. |
 | Observation service | Frame identity, image encoding, unchanged-frame detection, adaptive bounded waits and coordinate conversion. |
-| Teaching state/rendering | `teaching.py`, `teaching_render.py`; bounded transcript/ink, context expiry and learner dwell state without OS input. |
-| Teaching windows/tools | `teaching_ui.py`, `teaching_tools.py`; native transcript, separate click-through ink/laser layer and six explicitly registered presentation/cursor tools. |
+| Teaching state/rendering | `teaching.py`, `teaching_render.py`; bounded ink, context expiry and learner dwell state without OS input. |
+| Conversation state | `conversation.py`; canonical user/assistant history, pending messages, bounded async reads, per-MCP-session delivery/acknowledgement and listener lease. |
+| Teaching windows/tools | `teaching_ui.py`, `teaching_tools.py`; native two-way transcript, visibility toggle, separate ink/laser layer and seven presentation/conversation/cursor tools. |
 | Capture/Windows engine | Reuse `windows_mcp.desktop.screenshot` and `windows_mcp.uia`; do not copy the UIA implementation. |
 | MCP entry point | `app.py`, `tools.py`, `policy.py`, `__main__.py`; explicit supervised registration and dispatch-time request tickets. Stdout is reserved for MCP. |
 | Shared host and launcher | `service.py`, `pipe_transport.py`, `stdio_bridge.py`, `launcher.py`; one Windows user/session host, per-client MCP streams, explicit Quit, searchable local launch. |
@@ -23,7 +24,8 @@ implementation lives under `src/desktop_mcp`.
 
 ## Cross-layer invariants
 
-- A stopped controller rejects input and capture. Status and Stop remain usable.
+- A stopped controller rejects input, capture and annotations. Status, Stop and
+  plain-text conversation/visibility remain usable without granting desktop access.
   Only local UI can arm. A generation change invalidates queued operations.
   Closed is terminal: late UI notifications or input-release failures may retain
   diagnostics, but cannot make the controller available again.
@@ -34,6 +36,8 @@ implementation lives under `src/desktop_mcp`.
   application once; each MCP connection uses `create_server(...,
   manage_application=False)` so a client cannot reinitialize/close the shared
   native state. A client that used the desktop revokes control on disconnect.
+  Chat-only connections do not revoke another client's desktop work; their
+  registered conversation session ids are released from listener ownership.
 - Per-user/session named pipes have protected current-user/SYSTEM ACLs, reject
   remote clients, and carry bounded UTF-8 JSON messages, never pickled objects.
   Overlapped I/O cancellation is acknowledged before buffers/handles are freed.
@@ -118,9 +122,22 @@ implementation lives under `src/desktop_mcp`.
   second status line when space permits. Work-area-clamped clients reduce spacing
   and use compact status copy so readable instructions and the Stop row still fit.
 - `Transcript` explicitly publishes bounded plain text; it is not a CLI token
-  mirror. Front/back requests use no-activate window operations, and local pinning
-  wins. Only the main panel is visible at startup; the transcript appears when
-  the first instruction is published and then remains accessible through Alt-Tab.
+  mirror. `TranscriptRead` waits at most 30 seconds for a user message without
+  holding the desktop sequence lock. Replies include the received message id;
+  the message remains pending until the listener acknowledges it with a reply.
+  Listener ownership is session-scoped, expires after 120 inactive seconds, and
+  is released when that MCP connection ends. Nothing launches an AI model.
+- Both main and transcript windows open at startup. The main visibility toggle
+  posts asynchronously to the transcript UI thread so it cannot block the stop
+  hotkey loop. Temporary capture hiding preserves the user's on/off intent.
+  Front/back requests use no-activate operations, and local pinning wins.
+  The composer and Send button are included in own-window input protection.
+  A real user click can activate the chat window normally so typing reaches
+  its composer; programmatic show/front updates still never steal keyboard focus.
+  Enter sends once, Shift+Enter inserts a line, and an active IME composition
+  receives Enter instead of accidentally sending an incomplete message.
+  Layout fits history/status/composer/Send/Stop using a compact font scale when
+  necessary, separately from physical monitor/cursor DPI.
   Docking and minimum sizes share the current monitor's work-area/DPI constraints;
   panel minimum tracking sizes never apply to the separately sized ink canvas.
   Transcript close/fatal-exit handling sends owned `WM_CANCELMODE`, so native

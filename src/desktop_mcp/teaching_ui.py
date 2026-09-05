@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 _COMMAND = 0x8000 + 73
 _PIN, _TOP, _BOTTOM, _CLEAR, _STOP = range(201, 206)
+_SEND = 206
 
 
 @dataclass
@@ -79,11 +80,14 @@ class TeachingSurface:
         self._panel = 0
         self._canvas = 0
         self._editor = 0
+        self._composer = 0
+        self._send = 0
         self._status = 0
         self._buttons: dict[int, int] = {}
         self._hide_count = 0
         self._restore_panel: tuple[bool, bool] = (False, False)
         self._shown = False
+        self._minimized = False
         self._pinned = False
         self._last_text: tuple = ()
         self._last_scene: tuple | None = None
@@ -91,8 +95,10 @@ class TeachingSurface:
         self._font = 0
         self._background = 0
         self._scale = 1.0
+        self._dpi_scale = 1.0
         self._status_lines = 2
         self._compact_status = False
+        self._message_error: str | None = None
 
     def start(self) -> None:
         if self._thread is not None:
@@ -115,6 +121,8 @@ class TeachingSurface:
                 self._panel,
                 self._canvas,
                 self._editor,
+                self._composer,
+                self._send,
                 self._status,
                 *self._buttons.values(),
             )
@@ -124,9 +132,24 @@ class TeachingSurface:
     def show(self, stacking: Literal["unchanged", "front", "back"] = "unchanged") -> None:
         if stacking not in {"unchanged", "front", "back"}:
             raise ValueError("Unknown transcript stacking action.")
-        generation = self.controller.snapshot().generation
-        self.controller.checkpoint()
-        self._request("show", stacking, generation=generation)
+        self.session.conversation.ensure_open()
+        self._request("show", stacking)
+
+    @property
+    def enabled(self) -> bool:
+        return self._shown and not self._finished.is_set()
+
+    @property
+    def visible(self) -> bool:
+        return self.enabled and not self._minimized and not self._hide_count
+
+    def set_visible(self, visible: bool) -> None:
+        self.session.conversation.ensure_open()
+        self._request("visibility", "on" if visible else "off")
+
+    def toggle_local(self) -> None:
+        """Post from the control UI without blocking its global stop message loop."""
+        self._post("visibility", "off" if self._shown else "on")
 
     def close(self) -> None:
         thread = self._thread
@@ -142,7 +165,7 @@ class TeachingSurface:
                 self.controller.set_interface_ready(False, "The teaching interface did not stop.")
                 raise RuntimeError("The teaching interface did not shut down.")
 
-    def _request(self, command: str, argument: str = "", generation: int | None = None) -> None:
+    def _post(self, command: str, argument: str = "", generation: int | None = None) -> _Request:
         if self._thread is None or self._finished.is_set() or not self._panel:
             raise RuntimeError("The teaching interface is unavailable.")
         request = _Request(command, argument, generation)
@@ -157,6 +180,10 @@ class TeachingSurface:
                     request.cancelled.set()
             self.controller.set_interface_ready(False, "The teaching interface is unavailable.")
             raise RuntimeError("The guidance request could not be posted.") from error
+        return request
+
+    def _request(self, command: str, argument: str = "", generation: int | None = None) -> None:
+        request = self._post(command, argument, generation)
         deadline = time.monotonic() + 3.0
         while not request.done.wait(0.02):
             if self._finished.is_set() or time.monotonic() >= deadline:
@@ -232,6 +259,8 @@ class TeachingSurface:
         self._user32.TranslateMessage.restype = wintypes.BOOL
         self._user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
         self._user32.DispatchMessageW.restype = ctypes.c_ssize_t
+        self._user32.GetKeyState.argtypes = [ctypes.c_int]
+        self._user32.GetKeyState.restype = ctypes.c_short
         self._dwm = ctypes.WinDLL("dwmapi", use_last_error=True)
         self._dwm.DwmFlush.restype = ctypes.c_long
         self._dwm.DwmSetWindowAttribute.argtypes = [
@@ -260,12 +289,12 @@ class TeachingSurface:
             self._panel = win32gui.CreateWindowEx(
                 win32con.WS_EX_APPWINDOW | win32con.WS_EX_CONTROLPARENT,
                 class_name,
-                "Desktop-MCP - Instructions",
+                "Desktop-MCP - Transcript",
                 win32con.WS_OVERLAPPEDWINDOW,
                 80,
                 620,
                 680,
-                290,
+                430,
                 0,
                 0,
                 instance,
@@ -298,7 +327,7 @@ class TeachingSurface:
             self._editor = win32gui.CreateWindowEx(
                 0,
                 "EDIT",
-                "Instructions will appear here when the agent publishes a step.",
+                "Your messages and the agent's replies appear here.",
                 win32con.WS_CHILD
                 | win32con.WS_VISIBLE
                 | win32con.WS_VSCROLL
@@ -326,6 +355,43 @@ class TeachingSurface:
                 20,
                 self._panel,
                 302,
+                instance,
+                None,
+            )
+            self._composer = win32gui.CreateWindowEx(
+                win32con.WS_EX_CLIENTEDGE,
+                "EDIT",
+                "",
+                win32con.WS_CHILD
+                | win32con.WS_VISIBLE
+                | win32con.WS_TABSTOP
+                | win32con.ES_MULTILINE
+                | win32con.ES_AUTOVSCROLL
+                | win32con.ES_WANTRETURN,
+                16,
+                240,
+                530,
+                48,
+                self._panel,
+                303,
+                instance,
+                None,
+            )
+            win32gui.SendMessage(self._composer, win32con.EM_SETLIMITTEXT, 16_000, 0)
+            self._send = win32gui.CreateWindowEx(
+                0,
+                "BUTTON",
+                "Send",
+                win32con.WS_CHILD
+                | win32con.WS_VISIBLE
+                | win32con.WS_TABSTOP
+                | win32con.BS_OWNERDRAW,
+                556,
+                240,
+                80,
+                48,
+                self._panel,
+                _SEND,
                 instance,
                 None,
             )
@@ -357,6 +423,7 @@ class TeachingSurface:
             self._dock("bottom")
             self._layout()
             self._refresh()
+            self._apply_visibility(True)
             if not self._user32.SetTimer(self._panel, 1, 33, None):
                 raise ctypes.WinError(ctypes.get_last_error())
             self._ready.set()
@@ -366,6 +433,8 @@ class TeachingSurface:
                     if message.message == win32con.WM_QUIT:
                         self._exit = True
                         break
+                    if self._composer_key(message):
+                        continue
                     if not self._user32.IsDialogMessageW(self._panel, ctypes.byref(message)):
                         self._user32.TranslateMessage(ctypes.byref(message))
                         self._user32.DispatchMessageW(ctypes.byref(message))
@@ -387,6 +456,7 @@ class TeachingSurface:
                         self._user32.KillTimer(self._panel, 1)
             finally:
                 self._canvas = self._panel = self._editor = self._status = 0
+                self._composer = self._send = 0
                 self._buttons.clear()
                 self._font = self._background = 0
 
@@ -414,14 +484,16 @@ class TeachingSurface:
                     gui.SendMessage(handle, con.WM_CANCELMODE, 0, 0)
                 return 0
             if message == con.WM_SIZE and handle == self._panel and self._editor:
-                self._layout()
+                self._minimized = wparam == con.SIZE_MINIMIZED
+                if not self._minimized:
+                    self._layout()
                 return 0
             if message == con.WM_GETMINMAXINFO and handle == self._panel:
                 info = ctypes.cast(lparam, ctypes.POINTER(_MinMaxInfo)).contents
                 info.min_track.x, info.min_track.y = self._minimum_size(self._work_area())
                 return 0
             if message == con.WM_SETFOCUS and handle == self._panel and self._editor:
-                gui.SetFocus(self._editor)
+                gui.SetFocus(self._composer or self._editor)
                 return 0
             if message == 0x02E0 and handle == self._panel:  # WM_DPICHANGED
                 rect = ctypes.cast(lparam, ctypes.POINTER(wintypes.RECT)).contents
@@ -437,9 +509,6 @@ class TeachingSurface:
                 self._set_font()
                 self._layout()
                 return 0
-            if message == con.WM_MOUSEACTIVATE and handle == self._panel:
-                if gui.GetForegroundWindow() != handle:
-                    return con.MA_NOACTIVATE
             if message in (con.WM_CTLCOLORSTATIC, con.WM_CTLCOLOREDIT):
                 gui.SetTextColor(wparam, self._api.RGB(238, 239, 241))
                 gui.SetBkColor(wparam, self._api.RGB(23, 24, 27))
@@ -464,19 +533,29 @@ class TeachingSurface:
         return gui.DefWindowProc(handle, message, wparam, lparam)
 
     def _set_font(self):
-        gui, con = self._gui, self._con
         get_dpi = getattr(self._user32, "GetDpiForWindow", None)
         if get_dpi is not None:
             get_dpi.argtypes = [wintypes.HWND]
             get_dpi.restype = wintypes.UINT
-            self._scale = (get_dpi(self._panel) or 96) / 96
+            self._dpi_scale = (get_dpi(self._panel) or 96) / 96
+        self._scale = self._dpi_scale
+        self._replace_font()
+
+    def _replace_font(self):
+        gui, con = self._gui, self._con
         description = gui.LOGFONT()
         description.lfFaceName = "Segoe UI"
         description.lfHeight = -round(16 * self._scale)
         description.lfWeight = 400
         description.lfQuality = con.CLEARTYPE_QUALITY
         font = gui.CreateFontIndirect(description)
-        for handle in (self._editor, self._status, *self._buttons.values()):
+        for handle in (
+            self._editor,
+            self._status,
+            self._composer,
+            self._send,
+            *self._buttons.values(),
+        ):
             if handle:
                 gui.SendMessage(handle, con.WM_SETFONT, font, True)
         old, self._font = self._font, font
@@ -486,47 +565,42 @@ class TeachingSurface:
     def _layout(self):
         gui = self._gui
         _, _, width, height = gui.GetClientRect(self._panel)
-        preferred_pad = round(14 * self._scale)
-        button_height = round(32 * self._scale)
-        line_height = round(24 * self._scale)
-        editor_minimum = line_height
-        status_lines = 2
-        if height < button_height + 2 * line_height + editor_minimum:
-            line_height = round(20 * self._scale)
-            editor_minimum = line_height
-            button_height = round(24 * self._scale)
-        if height < button_height + 2 * line_height + editor_minimum:
-            status_lines = 1
-            button_height = line_height
-        if height < button_height + line_height + editor_minimum:
-            status_lines = 0
-        button_height = min(button_height, max(1, height))
-        status_height = status_lines * line_height
-        pad = max(
-            0, min(preferred_pad, (height - button_height - status_height - editor_minimum) // 4)
-        )
-        button_y = max(0, height - pad - button_height)
-        status_y = max(pad, button_y - pad - status_height)
+        if width <= 0 or height <= 0:
+            return
+        scale = min(self._dpi_scale, width / 360, height / 218)
+        if abs(scale - self._scale) > 0.001:
+            self._scale = scale
+            if self._font:
+                self._replace_font()
+        pad, gap = max(1, round(10 * scale)), max(1, round(6 * scale))
+        button_height, composer_height = max(1, round(28 * scale)), max(1, round(40 * scale))
+        status_height = max(1, round(48 * scale))
+        button_y = height - pad - button_height
+        composer_y = button_y - pad - composer_height
+        status_y = composer_y - pad - status_height
         body_height = max(1, status_y - 2 * pad)
-        self._status_lines = status_lines
-        self._compact_status = width - 2 * pad < round(320 * self._scale) or status_lines < 2
-        gui.MoveWindow(self._editor, pad, pad, max(40, width - 2 * pad), body_height, True)
+        self._status_lines, self._compact_status = 2, scale < self._dpi_scale
+        body_width = max(1, width - 2 * pad)
+        gui.MoveWindow(self._editor, pad, pad, body_width, body_height, True)
+        gui.MoveWindow(self._status, pad, status_y, body_width, status_height, True)
+        send_width = max(1, round(68 * scale))
         gui.MoveWindow(
-            self._status,
+            self._composer,
             pad,
-            status_y,
-            max(40, width - 2 * pad),
-            status_height,
+            composer_y,
+            max(1, body_width - send_width - gap),
+            composer_height,
             True,
         )
-        gap = min(round(8 * self._scale), pad)
-        button_width = max(30, (width - 2 * pad - 4 * gap) // 5)
-        y = button_y
+        gui.MoveWindow(
+            self._send, width - pad - send_width, composer_y, send_width, composer_height, True
+        )
+        button_width = max(1, (body_width - 4 * gap) // 5)
         for index, handle in enumerate(self._buttons.values()):
             gui.MoveWindow(
                 handle,
                 pad + index * (button_width + gap),
-                y,
+                button_y,
                 button_width,
                 button_height,
                 True,
@@ -579,7 +653,9 @@ class TeachingSurface:
 
     def _button(self, identifier):
         gui, con = self._gui, self._con
-        if identifier == _PIN:
+        if identifier == _SEND:
+            self._send_user()
+        elif identifier == _PIN:
             self._pinned = not self._pinned
             gui.SetWindowText(self._buttons[_PIN], "Unpin" if self._pinned else "Pin")
             gui.SetWindowPos(
@@ -598,15 +674,70 @@ class TeachingSurface:
         elif identifier == _STOP:
             self.controller.stop("Stopped from the instruction window.")
 
+    def _composition_active(self) -> bool:
+        imm = ctypes.WinDLL("imm32", use_last_error=True)
+        imm.ImmGetContext.argtypes, imm.ImmGetContext.restype = [wintypes.HWND], wintypes.HANDLE
+        imm.ImmReleaseContext.argtypes = [wintypes.HWND, wintypes.HANDLE]
+        imm.ImmReleaseContext.restype = wintypes.BOOL
+        imm.ImmGetCompositionStringW.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        imm.ImmGetCompositionStringW.restype = ctypes.c_long
+        context = imm.ImmGetContext(self._composer)
+        if not context:
+            return False
+        try:
+            return imm.ImmGetCompositionStringW(context, 8, None, 0) > 0
+        finally:
+            imm.ImmReleaseContext(self._composer, context)
+
+    def _composer_key(self, message) -> bool:
+        if (
+            not self._composer
+            or message.hWnd != self._composer
+            or message.message != self._con.WM_KEYDOWN
+            or message.wParam != self._con.VK_RETURN
+        ):
+            return False
+        if self._user32.GetKeyState(self._con.VK_SHIFT) & 0x8000 or self._composition_active():
+            return False
+        if not message.lParam & (1 << 30):
+            self._send_user()
+        return True
+
+    def _send_user(self) -> None:
+        draft = self._gui.GetWindowText(self._composer)
+        try:
+            self.session.conversation.send_user(draft)
+        except (ValueError, RuntimeError) as error:
+            self._message_error = str(error)
+        else:
+            self._message_error = None
+            self._gui.SetWindowText(self._composer, "")
+        self._refresh()
+
+    def _apply_visibility(self, visible: bool) -> None:
+        self._shown = visible
+        self._minimized = False
+        if self._hide_count:
+            self._restore_panel = (visible, False)
+            return
+        self._gui.ShowWindow(
+            self._panel, self._con.SW_SHOWNOACTIVATE if visible else self._con.SW_HIDE
+        )
+
     def _work_area(self):
         monitor = self._api.MonitorFromWindow(self._panel, 2)
         return self._api.GetMonitorInfo(monitor)["Work"]
 
     def _minimum_size(self, work):
-        margin = round(12 * self._scale)
+        margin = round(12 * self._dpi_scale)
         return (
-            max(1, min(round(460 * self._scale), work[2] - work[0] - 2 * margin)),
-            max(1, min(round(240 * self._scale), work[3] - work[1] - 2 * margin)),
+            max(1, min(round(460 * self._dpi_scale), work[2] - work[0] - 2 * margin)),
+            max(1, min(round(300 * self._dpi_scale), work[3] - work[1] - 2 * margin)),
         )
 
     def _dock(self, edge):
@@ -644,15 +775,23 @@ class TeachingSurface:
                 if request.command == "close":
                     self._exit = True
                     self._cancel_modal()
+                elif request.command == "visibility":
+                    if self._exit or self.controller.snapshot().state == "closed":
+                        raise RuntimeError("The transcript is closing.")
+                    if request.argument not in {"on", "off"}:
+                        raise ValueError("Visibility must be on or off.")
+                    self._apply_visibility(request.argument == "on")
                 elif request.command == "show":
+                    if self._exit or self.controller.snapshot().state == "closed":
+                        raise RuntimeError("The transcript is closing.")
                     if self._hide_count:
                         raise RuntimeError(
                             "A capture is in progress; show the transcript afterward."
                         )
                     if request.argument == "back" and self._pinned:
                         raise RuntimeError("The transcript is pinned by the user.")
-                    if not self._shown or request.argument == "front":
-                        gui.ShowWindow(self._panel, con.SW_SHOWNOACTIVATE)
+                    if not self._shown or self._minimized or request.argument == "front":
+                        self._apply_visibility(True)
                     if request.argument != "unchanged":
                         target = (
                             con.HWND_BOTTOM
@@ -721,6 +860,7 @@ class TeachingSurface:
                 self._panel,
                 self._con.SW_SHOWMINNOACTIVE if iconic else self._con.SW_SHOWNOACTIVATE,
             )
+        self._minimized = iconic
 
     def _cancel_modal(self):
         if self._panel:
@@ -741,32 +881,34 @@ class TeachingSurface:
         gui, con = self._gui, self._con
         control = self.controller.snapshot()
         snapshot = self.session.snapshot()
-        entries = tuple((entry.sequence, entry.title, entry.text) for entry in snapshot.entries)
+        entries = tuple(
+            (entry.sequence, entry.title, entry.text, entry.role) for entry in snapshot.entries
+        )
         if entries != self._last_text:
-            text = "\r\n\r\n".join(f"{entry.title}\r\n{entry.text}" for entry in snapshot.entries)
+            text = "\r\n\r\n".join(
+                f"{'You' if entry.role == 'user' else 'Assistant · ' + entry.title}\r\n{entry.text}"
+                for entry in snapshot.entries
+            )
             gui.SetWindowText(self._editor, text)
             length = len(text.encode("utf-16-le")) // 2
             gui.SendMessage(self._editor, con.EM_SETSEL, length, length)
             gui.SendMessage(self._editor, con.EM_SCROLLCARET, 0, 0)
             self._last_text = entries
-        if self._compact_status:
-            if snapshot.waiting is not None:
-                progress = f"{snapshot.waiting.dwell_progress:.0%}"
-                status = (
-                    f"Ctrl+Shift+H | {progress}"
-                    if self._status_lines < 2
-                    else f"Ctrl+Shift+H stops\r\nYour cursor: {progress}"
-                )
-            else:
-                status = (
-                    "Ctrl+Shift+H stops"
-                    if self._status_lines < 2
-                    else f"{control.state.title()}\r\nCtrl+Shift+H stops"
-                )
+        chat = self.session.conversation.status()
+        if self._message_error:
+            chat_line = self._message_error
+        elif chat["listener_waiting"]:
+            chat_line = "Agent listening · Enter sends, Shift+Enter adds a line"
+        elif chat["awaiting_reply"]:
+            chat_line = "Awaiting the agent's reply"
+        elif chat["pending_messages"]:
+            chat_line = f"{chat['pending_messages']} queued · ask Copilot to listen here"
         else:
-            status = f"{control.state.title()} | Ctrl+Shift+H stops"
-            if snapshot.waiting is not None:
-                status += f"\r\nWaiting for your cursor ({snapshot.waiting.dwell_progress:.0%})"
+            chat_line = "Type below · ask Copilot to use this transcript"
+        if snapshot.waiting is not None:
+            chat_line = f"Your cursor: {snapshot.waiting.dwell_progress:.0%} · {chat['pending_messages']} messages queued"
+        desktop_state = "ready" if control.armed else "paused"
+        status = f"Desktop {desktop_state} | Ctrl+Shift+H stops\r\n{chat_line}"
         if gui.GetWindowText(self._status) != status:
             gui.SetWindowText(self._status, status)
         if self._hide_count or not control.armed:

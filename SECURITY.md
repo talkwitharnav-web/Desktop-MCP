@@ -1,5 +1,31 @@
 # Security Policy
 
+## Desktop-MCP application boundaries
+
+The supported entry point is `desktop_mcp`; it has a current-user/local-session
+named-pipe host and an explicit supervised tool set. It does not register the
+retained engine's PowerShell, registry, file deletion or process-killing tools.
+This is still real desktop control, not a sandbox or an undo mechanism.
+
+- Only local Arm/Resume enables input, captures and annotations. Ctrl+Shift+H
+  revokes those operations. X on either main window quits the application.
+- Plain-text transcript messaging and visibility remain available while paused;
+  neither operation grants desktop access. Agents cannot inject text into the
+  protected user composer through mouse/keyboard tools to forge user messages.
+- One MCP session leases the user-message listener at a time. Pending messages
+  remain until a matching reply. Queue/history sizes and waits are bounded.
+  No automatic idle-model wakeup is claimed.
+- Chat stays in Desktop-MCP memory. The connected MCP client/model service can
+  process and retain its normal conversation history. Screenshots exclude the
+  transcript and its unsent draft; image exports are explicit and bounded.
+- Never bypass a stop through another MCP server or shell. The application's
+  controls cannot revoke unrelated tools or protect against other software
+  already running with the same Windows account's privileges.
+
+Current usage and recovery instructions are in [README.md](README.md). The
+remaining sections below are **retained Windows-MCP engine guidance**, not a
+description of Desktop-MCP's currently registered tools or transport.
+
 ## Overview
 
 Windows-MCP provides powerful automation capabilities that interact directly with your Windows operating system. This document outlines security considerations, best practices, and our commitment to maintaining a secure project.

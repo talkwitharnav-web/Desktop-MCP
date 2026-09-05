@@ -13,9 +13,9 @@ import pytest
 
 from desktop_mcp.contracts import CaptureContext, Point
 from desktop_mcp.runtime import Controller, DesktopStopped
+from desktop_mcp.conversation import MAX_ENTRIES
 from desktop_mcp import teaching
 from desktop_mcp.teaching import (
-    MAX_ENTRIES,
     MAX_MARKS,
     Mark,
     TeachingSession,
@@ -126,28 +126,18 @@ def test_transcript_is_explicit_bounded_immutable_and_readable_when_stopped(rig:
         entry.text = "replace"
     rig.controller.stop()
     assert rig.session.snapshot().entries == snapshot.entries
-    with pytest.raises(DesktopStopped):
-        rig.call("publish", "must not be added")
+    rig.session.publish("Chat still works while desktop control is paused.")
     rig.session.clear_transcript_local()
     assert rig.session.snapshot().entries == ()
     assert rig.position_calls == 0
     assert rig.context_calls == []
 
 
-def test_revoked_publication_rolls_back_without_losing_prior_instructions(
-    rig: Rig, monkeypatch
-) -> None:
+def test_closed_app_cannot_publish_more_messages(rig: Rig) -> None:
     first = rig.call("publish", "Previously accepted instruction")
-    checkpoint = rig.controller.checkpoint
-
-    def stop_after_commit() -> None:
-        if rig.session._entries[-1].sequence == 2:
-            rig.controller.stop()
-        checkpoint()
-
-    monkeypatch.setattr(rig.controller, "checkpoint", stop_after_commit)
-    with pytest.raises(DesktopStopped):
-        rig.call("publish", "Revoked update")
+    rig.controller.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        rig.session.publish("After close")
     assert rig.session.snapshot().entries == (first,)
 
 
@@ -161,9 +151,9 @@ def test_text_validation_does_not_echo_content_or_accept_invalid_unicode(rig: Ri
     assert rig.session.snapshot().entries == ()
 
 
-def test_agent_mutations_require_an_operation_but_ui_reads_and_clears_do_not(rig: Rig) -> None:
+def test_annotations_require_an_operation_but_text_and_ui_reads_do_not(rig: Rig) -> None:
     with pytest.raises(RuntimeError, match="active controller operation"):
-        rig.session.publish("Outside operation")
+        rig.session.draw("path", [(0, 0), (20, 20)])
     assert rig.session.snapshot().marks == ()
     rig.session.clear_local()
     rig.session.clear_transcript_local()

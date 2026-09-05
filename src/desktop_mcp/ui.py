@@ -42,6 +42,7 @@ class _LocalCommand(IntEnum):
     ARM = 1001
     STOP = 1002
     TAKEOVER = 1003
+    TRANSCRIPT = 1004
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class _PanelModel:
     stop_enabled: bool
     human_takeover: bool
     settings_enabled: bool
+    transcript_visible: bool = True
 
 
 def _fit_layout_scale(work: Rect, dpi: int, chrome: Point) -> float:
@@ -64,7 +66,7 @@ def _fit_layout_scale(work: Rect, dpi: int, chrome: Point) -> float:
     return min(dpi / 96, width / _PANEL_WIDTH, height / _PANEL_HEIGHT)
 
 
-def _panel_model(snapshot: ControlSnapshot) -> _PanelModel:
+def _panel_model(snapshot: ControlSnapshot, *, transcript_visible: bool = True) -> _PanelModel:
     headings = {
         "stopped": "Stopped · local approval required",
         "ready": "Ready · guidance and control",
@@ -85,6 +87,7 @@ def _panel_model(snapshot: ControlSnapshot) -> _PanelModel:
         stop_enabled=snapshot.state != "closed",
         human_takeover=snapshot.human_takeover,
         settings_enabled=snapshot.interface_ready and snapshot.state != "closed",
+        transcript_visible=transcript_visible,
     )
 
 
@@ -115,10 +118,14 @@ class ControlSurface:
         *,
         control_windows: Callable[[], tuple[int, ...]] | None = None,
         on_exit: Callable[[], None] | None = None,
+        transcript_visible: Callable[[], bool] | None = None,
+        on_transcript_toggle: Callable[[], None] | None = None,
     ) -> None:
         self._controller = controller
         self._control_windows = control_windows or self.window_handles
         self._on_exit = on_exit
+        self._transcript_visible = transcript_visible or (lambda: True)
+        self._on_transcript_toggle = on_transcript_toggle
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._adapter: _Win32Adapter | None = None
@@ -365,7 +372,7 @@ class ControlSurface:
         # Never take a controller snapshot while holding the lifecycle lock.
         snapshot = self._controller.snapshot()
         adapter.remember_foreground(self._control_windows())
-        model = _panel_model(snapshot)
+        model = _panel_model(snapshot, transcript_visible=self._transcript_visible())
         if self._local_rejection is not None:
             generation, message = self._local_rejection
             if (
@@ -423,6 +430,8 @@ class ControlSurface:
                 return
         elif command == _LocalCommand.TAKEOVER:
             self._controller.set_human_takeover(not snapshot.human_takeover)
+        elif command == _LocalCommand.TRANSCRIPT and self._on_transcript_toggle is not None:
+            self._on_transcript_toggle()
         self._refresh()
 
     def _stop_local(self, reason: str) -> None:
@@ -887,6 +896,7 @@ class _Win32Adapter:
             _LocalCommand.ARM: "Arm / Resume",
             _LocalCommand.STOP: "&Stop",
             _LocalCommand.TAKEOVER: "&Human takeover",
+            _LocalCommand.TRANSCRIPT: "Transcript: On",
         }
         for command, label in labels.items():
             self._buttons[command] = self.gui.CreateWindowEx(
@@ -1114,6 +1124,7 @@ class _Win32Adapter:
             (_LocalCommand.ARM, (22, 224, 284, 264)),
             (_LocalCommand.STOP, (296, 224, 434, 264)),
             (_LocalCommand.TAKEOVER, (22, 277, 434, 302)),
+            (_LocalCommand.TRANSCRIPT, (276, 20, 434, 48)),
         ):
             left, top, right, bottom = self._rect(*rectangle)
             self.gui.SetWindowPos(
@@ -1264,11 +1275,16 @@ class _Win32Adapter:
             self._buttons[_LocalCommand.TAKEOVER],
             f"&Pause on interruption: {'On' if model.human_takeover else 'Off'}",
         )
+        self.gui.SetWindowText(
+            self._buttons[_LocalCommand.TRANSCRIPT],
+            f"Transcript: {'On' if model.transcript_visible else 'Off'}",
+        )
         self.gui.SetWindowText(self._labels["detail"], model.detail)
         self.gui.SetWindowText(self._labels["action"], f"Current action: {model.action}")
         self.gui.EnableWindow(self._buttons[_LocalCommand.ARM], model.arm_enabled)
         self.gui.EnableWindow(self._buttons[_LocalCommand.STOP], model.stop_enabled)
         self.gui.EnableWindow(self._buttons[_LocalCommand.TAKEOVER], model.settings_enabled)
+        self.gui.EnableWindow(self._buttons[_LocalCommand.TRANSCRIPT], model.settings_enabled)
         self.gui.InvalidateRect(self._panel, None, False)
         for button in self._buttons.values():
             self.gui.InvalidateRect(button, None, False)
@@ -1336,7 +1352,16 @@ class _Win32Adapter:
         rectangle = (rc.left, rc.top, rc.right, rc.bottom)
         self.gui.FillRect(item.hDC, rectangle, self._background)
         flags = self.con.DT_CENTER | self.con.DT_VCENTER | self.con.DT_SINGLELINE
-        if command == _LocalCommand.TAKEOVER:
+        if command == _LocalCommand.TRANSCRIPT:
+            self._rounded_box(item.hDC, rectangle, 65 if self._view.transcript_visible else 42, 7)
+            self._text(
+                item.hDC,
+                f"Transcript: {'On' if self._view.transcript_visible else 'Off'}",
+                rectangle,
+                role="small",
+                flags=flags,
+            )
+        elif command == _LocalCommand.TAKEOVER:
             checked = self._view.human_takeover
             self._rounded_box(item.hDC, self._rect(1, 5, 17, 21), 188 if checked else 65, 3)
             if checked:
