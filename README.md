@@ -100,8 +100,8 @@ administrator elevation, or login startup task is required.
 
 ## Start, stop and take over
 
-The control window starts **stopped**. Select **Control** or **Teach** and allow
-that mode locally when ready. Changing modes stops the session and requires
+The control window starts **stopped**. Select **Control** or **Teach** and press
+**Arm** (or **Resume**) locally when ready. Changing modes stops the session and requires
 another local allow action. The panel minimizes so it does not intercept input;
 it remains reachable through Alt-Tab.
 
@@ -150,7 +150,7 @@ launch the supervised entry point.
 
 ## Teaching without taking over
 
-Select Teach and allow it in the local panel. The floating instruction window is
+Select Teach and press Arm/Resume in the local panel. The floating instruction window is
 available immediately, including through Alt-Tab before the first model message.
 Drag its title bar, use **Top**/**Bottom** to dock, or **Pin** to keep it above other
 windows. A model `Transcript(action="back")` request cannot override a local pin.

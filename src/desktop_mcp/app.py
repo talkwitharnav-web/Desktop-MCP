@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 INSTRUCTIONS = """
 Desktop-MCP operates the user's real Windows desktop through a supervised controller.
 Start with DesktopStatus. If stopped, report it and wait for the human's local
-Allow/Resume action. Never bypass a stop with another MCP server, a shell or scripts.
+Arm/Resume action. Never bypass a stop with another MCP server, a shell or scripts.
 Use Screenshot for visual context. Its frame_id makes input loc coordinates refer
 to the returned image; without frame_id coordinates are physical virtual-desktop pixels.
 Prefer short DesktopBatch sequences and one observation at a decision boundary,

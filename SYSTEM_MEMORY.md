@@ -46,6 +46,9 @@ implementation lives under `src/desktop_mcp`.
   control/transcript/canvas/cursor handle for input targeting and capture exclusion.
   Its capture guard enters both acknowledged hide/flush guards with `ExitStack`;
   a failed guard never falls back to an unguarded capture.
+  Base-UI requests are also serviced by the native wake-message handler during
+  Windows modal move/menu loops, with reentrancy protection. Shutdown sends
+  `WM_CANCELMODE` to the owned panel so those loops cannot strand its UI thread.
 - Teaching starts before the control surface makes local arming available.
   Shutdown stops/releases input before closing either UI, and attempts all cleanup
   even if one surface fails. UI-thread snapshots never acquire the operation lock.

@@ -85,7 +85,7 @@ class FixtureWindow:
             cls.hInstance = instance
             cls.lpszClassName = name
             cls.lpfnWndProc = procedure
-            cls.hbrBackground = brush
+            cls.hbrBackground = 0
             win32gui.RegisterClass(cls)
             registered = True
             self.hwnd = win32gui.CreateWindowEx(
@@ -199,6 +199,55 @@ def click_local_button(parent, prefix):
     win32gui.SendMessage(matches[0], win32con.BM_CLICK, 0, 0)
 
 
+def arm_fixture_locally(panel):
+    import win32con
+    import win32gui
+
+    button = win32gui.GetDlgItem(panel, 1001)
+    assert win32gui.GetClassName(button).casefold() == "button"
+    wait_until(lambda: win32gui.IsWindowEnabled(button))
+    win32gui.SendMessage(button, win32con.BM_CLICK, 0, 0)
+
+
+def own_ui_modal_flags(panel):
+    from ctypes import wintypes
+    import win32process
+
+    class GuiThreadInfo(ctypes.Structure):
+        _fields_ = [
+            ("size", wintypes.DWORD),
+            ("flags", wintypes.DWORD),
+            ("active", wintypes.HWND),
+            ("focus", wintypes.HWND),
+            ("capture", wintypes.HWND),
+            ("menu_owner", wintypes.HWND),
+            ("move_size", wintypes.HWND),
+            ("caret", wintypes.HWND),
+            ("caret_rect", wintypes.RECT),
+        ]
+
+    info = GuiThreadInfo(size=ctypes.sizeof(GuiThreadInfo))
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.POINTER(GuiThreadInfo)]
+    user32.GetGUIThreadInfo.restype = wintypes.BOOL
+    thread, _ = win32process.GetWindowThreadProcessId(panel)
+    assert user32.GetGUIThreadInfo(thread, ctypes.byref(info))
+    return info.flags
+
+
+def open_own_ui_system_menu(panel):
+    import win32con
+    import win32gui
+
+    if own_ui_modal_flags(panel) & 0x04:
+        return
+    win32gui.ShowWindow(panel, win32con.SW_SHOWNOACTIVATE)
+    win32gui.SetForegroundWindow(panel)
+    wait_until(lambda: win32gui.GetForegroundWindow() == panel)
+    win32gui.PostMessage(panel, win32con.WM_SYSCOMMAND, win32con.SC_KEYMENU, ord(" "))
+    wait_until(lambda: own_ui_modal_flags(panel) & 0x04)
+
+
 def press_fixture_stop_hotkey(application, foreground):
     import win32api
     import win32gui
@@ -303,7 +352,7 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
     click_local_button(main_window, "Teach")
     wait_until(lambda: application.controller.snapshot().mode == "teach")
     assert not application.controller.snapshot().armed
-    click_local_button(main_window, "Allow")
+    arm_fixture_locally(main_window)
     wait_until(lambda: application.controller.snapshot().armed)
     wait_until(lambda: win32gui.IsIconic(main_window))
     assert win32gui.GetForegroundWindow() == fixture.hwnd
@@ -418,7 +467,7 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
     assert win32gui.GetWindowText(fixture.editor) == before_text
 
     win32gui.ShowWindow(main_window, win32con.SW_SHOWNOACTIVATE)
-    click_local_button(main_window, "Allow")
+    arm_fixture_locally(main_window)
     wait_until(lambda: application.controller.snapshot().armed)
     wait_until(lambda: win32gui.IsIconic(main_window))
     waiting = asyncio.create_task(
@@ -505,7 +554,7 @@ async def test_native_control_input_images_and_global_stop(monkeypatch):
 
             monkeypatch.setattr(application.backend, "ensure_target", fixture_only_target)
             # Exercise the actual local button, never an MCP arming method.
-            click_local_button(main_window, "Allow")
+            arm_fixture_locally(main_window)
             wait_until(lambda: application.controller.snapshot().armed)
             wait_until(lambda: win32gui.IsIconic(main_window))
             assert win32gui.GetForegroundWindow() == fixture.hwnd
@@ -613,8 +662,16 @@ async def test_native_control_input_images_and_global_stop(monkeypatch):
             assert denied_capture.is_error
             print(f"Native hotkey stop latency: {stop_latency:.3f}s")
             await exercise_native_teaching(client, application, fixture, main_window, artifact_root)
+            open_own_ui_system_menu(main_window)
+            with application.surface.capture_guard():
+                assert not win32gui.IsWindowVisible(main_window)
+            assert application.controller.snapshot().interface_ready
+            assert application.surface._error is None
+            open_own_ui_system_menu(main_window)
+            # Lifespan shutdown must leave the owned system-menu modal loop without user input.
         assert application.window_handles() == ()
         assert application.controller.snapshot().state == "closed"
+        print("Native owned-menu capture acknowledgement and modal shutdown passed")
     finally:
         application.controller.stop("Live fixture ended.")
         try:

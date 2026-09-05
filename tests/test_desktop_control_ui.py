@@ -100,6 +100,7 @@ class FakeWin32:
         self.initialize_gate = None
         self.pump_gate = None
         self.pump_blocked = threading.Event()
+        self.modal_exit = None
 
     def _owned(self):
         assert self.owner == threading.get_ident()
@@ -123,6 +124,12 @@ class FakeWin32:
 
     def wake(self):
         self.wakeup.set()
+
+    def cancel_modal(self):
+        self._owned()
+        self.events.append("cancel-modal")
+        if self.modal_exit is not None:
+            self.modal_exit.set()
 
     def pump(self, timeout_ms):
         self._owned()
@@ -1031,6 +1038,145 @@ def test_native_commands_only_map_clicked_owned_buttons_and_global_hotkey():
         ("hotkey",),
         ("close",),
     ]
+
+
+@pytest.mark.parametrize("closing", [False, True])
+def test_wake_dispatch_services_capture_and_shutdown_inside_a_native_modal_loop(
+    surface_factory, closing
+):
+    wndproc = ui._Win32Adapter._wndproc
+    surface, controller, adapter = surface_factory()
+    surface.start()
+    controller.update(mode="teach", state="ready")
+    adapter.modal_exit = threading.Event()
+    entered = threading.Event()
+    errors = []
+    native = SimpleNamespace(_surface=surface, _wake_posted=True)
+
+    def modal_loop():
+        entered.set()
+        while not adapter.modal_exit.is_set():
+            if adapter.wakeup.wait(0.01):
+                adapter.wakeup.clear()
+                wndproc(native, 101, ui._WAKE_MESSAGE, 0, 0)
+
+    def enter_modal():
+        try:
+            adapter.invoke(modal_loop)
+        except Exception as error:
+            errors.append(error)
+
+    opener = threading.Thread(target=enter_modal)
+    opener.start()
+    try:
+        assert entered.wait(1)
+        if closing:
+            surface.close()
+            assert "cancel-modal" in adapter.events
+            assert not surface._thread.is_alive()
+        else:
+            with surface.capture_guard():
+                assert adapter.hidden
+                assert not adapter.modal_exit.is_set()
+            assert not adapter.hidden
+            assert controller.snapshot().interface_ready
+            assert surface._error is None
+    finally:
+        adapter.modal_exit.set()
+        adapter.wake()
+        opener.join(2)
+    assert not opener.is_alive()
+    assert not errors
+
+
+def test_reentrant_wake_does_not_acknowledge_another_capture_before_flush_finishes(
+    surface_factory,
+):
+    wndproc = ui._Win32Adapter._wndproc
+    surface, _, adapter = surface_factory()
+    surface.start()
+    native = SimpleNamespace(_surface=surface, _wake_posted=True)
+    original_hide = adapter.hide_for_capture
+    pending = ui._Request("capture_begin", object())
+
+    def hide_with_reentrant_message():
+        original_hide()
+        surface._requests.put(pending)
+        wndproc(native, 101, ui._WAKE_MESSAGE, 0, 0)
+        assert not pending.done.is_set()
+        with pytest.raises(RuntimeError, match="already being serviced"):
+            surface._request("show")
+
+    adapter.hide_for_capture = hide_with_reentrant_message
+    with surface.capture_guard():
+        assert pending.done.wait(1)
+        assert pending.error is None
+        surface._request("capture_end", pending.token)
+        assert adapter.hidden
+    assert not adapter.hidden
+    assert surface._error is None
+
+
+def test_native_modal_cancellation_targets_only_our_panel():
+    adapter = object.__new__(ui._Win32Adapter)
+    calls = []
+    adapter._panel = 101
+    adapter.con = SimpleNamespace(WM_CANCELMODE=0x1F)
+    adapter.gui = SimpleNamespace(SendMessage=lambda *args: calls.append(args))
+    adapter.cancel_modal()
+    assert calls == [(101, 0x1F, 0, 0)]
+
+
+@pytest.mark.parametrize("registration_fails", [False, True])
+def test_paint_brush_stays_privately_owned_across_class_registration_and_shutdown(
+    registration_fails,
+):
+    adapter = object.__new__(ui._Win32Adapter)
+    classes, deleted = [], []
+    adapter._instance = 100
+    adapter._class_name = "SyntheticControl"
+    adapter._wndproc_callback = lambda *args: 0
+    adapter._registered_class = False
+    adapter._background = 0
+    adapter._panel = adapter._overlay = 0
+    adapter._hooks = []
+    adapter._hotkey_registered = False
+    adapter._fonts = {}
+    adapter._old_dpi_context = None
+    adapter.con = SimpleNamespace(IDC_ARROW=1, IDI_APPLICATION=2)
+    adapter.api = SimpleNamespace(RGB=lambda *args: 0)
+
+    def register(window_class):
+        classes.append(window_class)
+        if registration_fails:
+            raise OSError("Fixture class registration failed")
+
+    def delete(handle):
+        assert handle not in deleted, "A class-owned brush was deleted twice"
+        deleted.append(handle)
+
+    def unregister(*args):
+        if classes[0].hbrBackground:
+            delete(classes[0].hbrBackground)
+
+    adapter.gui = SimpleNamespace(
+        CreateSolidBrush=lambda color: 500,
+        WNDCLASS=SimpleNamespace,
+        LoadCursor=lambda *args: 600,
+        LoadIcon=lambda *args: 700,
+        RegisterClass=register,
+        UnregisterClass=unregister,
+        DeleteObject=delete,
+    )
+    if registration_fails:
+        with pytest.raises(OSError, match="registration failed"):
+            adapter._register_window_class()
+    else:
+        adapter._register_window_class()
+    assert classes[0].hbrBackground == 0
+    adapter.shutdown()
+    assert deleted == [500]
+    assert adapter._background == 0
 
 
 def test_native_mode_selector_marks_current_mode_and_exposes_owned_handles():

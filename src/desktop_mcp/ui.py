@@ -120,6 +120,7 @@ class ControlSurface:
         self._model: _PanelModel | None = None
         self._local_rejection: tuple[int, str] | None = None
         self._show_pending = False
+        self._servicing_requests = False
 
     def start(self) -> None:
         """Start disarmed and wait boundedly for windows, hooks, and global stop.
@@ -245,6 +246,9 @@ class ControlSurface:
             raise RuntimeError("The local control interface is not available")
         request = _Request(operation, token)
         if self._thread is threading.current_thread():
+            if self._servicing_requests:
+                raise RuntimeError("A native UI request is already being serviced")
+            self._servicing_requests = True
             try:
                 self._execute(request)
                 if self._closing.is_set():
@@ -252,6 +256,9 @@ class ControlSurface:
             except Exception as error:
                 self._record_failure(error)
                 raise RuntimeError(f"Local control {operation} failed: {error}") from error
+            finally:
+                self._servicing_requests = False
+                self._continue_dispatch()
             return
         self._requests.put(request)
         self._wake()
@@ -316,6 +323,27 @@ class ControlSurface:
                 request.done.set()
             if self._closing.is_set():
                 return
+
+    def _continue_dispatch(self) -> None:
+        adapter = self._adapter
+        if adapter is not None:
+            if self._closing.is_set():
+                adapter.cancel_modal()
+            elif not self._requests.empty():
+                adapter.wake()
+
+    def _service_requests(self) -> None:
+        if self._servicing_requests:
+            return
+        self._servicing_requests = True
+        try:
+            if not self._closing.is_set():
+                self._drain_requests()
+            if not self._closing.is_set():
+                self._refresh()
+        finally:
+            self._servicing_requests = False
+            self._continue_dispatch()
 
     def _refresh(self) -> None:
         adapter = self._adapter
@@ -453,6 +481,7 @@ class ControlSurface:
         except Exception:
             logger.exception("Desktop-MCP could not report the local interface failure")
         logger.error("Desktop-MCP local control failed: %s", error)
+        self._wake()
 
     def _run(self) -> None:
         adapter: _Win32Adapter | None = None
@@ -473,10 +502,9 @@ class ControlSurface:
             self._refresh()
             self._ready.set()
             while not self._closing.is_set():
-                self._drain_requests()
+                self._service_requests()
                 if self._closing.is_set():
                     break
-                self._refresh()
                 adapter.pump(_REFRESH_MS)
         except Exception as error:
             self._record_failure(error)
@@ -805,16 +833,7 @@ class _Win32Adapter:
         pointer = self.cursor_position()
         monitor = self.api.MonitorFromPoint(pointer, self.con.MONITOR_DEFAULTTONEAREST)
         work = self.api.GetMonitorInfo(monitor)["Work"]
-        self._background = self.gui.CreateSolidBrush(self.api.RGB(21, 21, 21))
-        window_class = self.gui.WNDCLASS()
-        window_class.hInstance = self._instance
-        window_class.lpszClassName = self._class_name
-        window_class.lpfnWndProc = self._wndproc_callback
-        window_class.hCursor = self.gui.LoadCursor(0, self.con.IDC_ARROW)
-        window_class.hIcon = self.gui.LoadIcon(0, self.con.IDI_APPLICATION)
-        window_class.hbrBackground = self._background
-        self.gui.RegisterClass(window_class)
-        self._registered_class = True
+        self._register_window_class()
         width, height = self._outer_size()
         x = work[0] + max(0, (work[2] - work[0] - width) // 2)
         y = work[1] + max(0, (work[3] - work[1] - height) // 2)
@@ -907,6 +926,19 @@ class _Win32Adapter:
         )
         self._register_safety_controls()
         self.gui.ShowWindow(self._panel, self.con.SW_SHOWNOACTIVATE)
+
+    def _register_window_class(self) -> None:
+        self._background = self.gui.CreateSolidBrush(self.api.RGB(21, 21, 21))
+        window_class = self.gui.WNDCLASS()
+        window_class.hInstance = self._instance
+        window_class.lpszClassName = self._class_name
+        window_class.lpfnWndProc = self._wndproc_callback
+        window_class.hCursor = self.gui.LoadCursor(0, self.con.IDC_ARROW)
+        window_class.hIcon = self.gui.LoadIcon(0, self.con.IDI_APPLICATION)
+        # WM_PAINT owns this brush; transferring it to the class would delete it twice.
+        window_class.hbrBackground = 0
+        self.gui.RegisterClass(window_class)
+        self._registered_class = True
 
     def _register_safety_controls(self) -> None:
         if not self.user32.RegisterHotKey(self._panel, _HOTKEY_ID, _STOP_MODIFIERS, ord("H")):
@@ -1022,6 +1054,10 @@ class _Win32Adapter:
                 if not self._destroying:
                     self._check(False, "PostMessageW")
 
+    def cancel_modal(self) -> None:
+        if self._panel:
+            self.gui.SendMessage(self._panel, self.con.WM_CANCELMODE, 0, 0)
+
     def pump(self, timeout_ms: int) -> None:
         result = self.user32.MsgWaitForMultipleObjectsEx(0, None, timeout_ms, 0x04FF, 0x0004)
         if result == 0xFFFFFFFF:
@@ -1043,6 +1079,8 @@ class _Win32Adapter:
         try:
             if message == _WAKE_MESSAGE:
                 self._wake_posted = False
+                # Windows also dispatches this inside title-bar and menu modal loops.
+                self._surface._service_requests()
                 return 0
             if hwnd == self._overlay:
                 if message == self.con.WM_NCHITTEST:
