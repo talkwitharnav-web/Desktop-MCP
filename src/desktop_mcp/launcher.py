@@ -46,6 +46,7 @@ def install_shortcut() -> Path:
     programs = Path(shell.SHGetFolderPath(0, shellcon.CSIDL_PROGRAMS, None, 0))
     shortcut_path = programs / "Desktop-MCP.lnk"
     pythoncom.CoInitialize()
+    shortcut = None
     try:
         shortcut = Dispatch("WScript.Shell").CreateShortcut(str(shortcut_path))
         if shortcut_path.exists() and Path(shortcut.TargetPath).resolve() != executable.resolve():
@@ -71,5 +72,7 @@ def install_shortcut() -> Path:
         shortcut.Save()
         shell.SHChangeNotify(shellcon.SHCNE_CREATE, shellcon.SHCNF_PATHW, str(shortcut_path), None)
     finally:
+        # Release the shell automation object before leaving its COM apartment.
+        shortcut = None
         pythoncom.CoUninitialize()
     return shortcut_path

@@ -68,3 +68,30 @@ def test_our_existing_shortcut_can_be_updated(shortcut_environment):
     path.write_text("old owned shortcut", encoding="utf-8")
     shortcut.TargetPath = str(executable)
     assert launcher.install_shortcut() == path
+
+
+def test_shell_object_is_released_before_its_com_apartment(shortcut_environment, monkeypatch):
+    import pythoncom
+    import win32com.client
+
+    _, path, _, _ = shortcut_environment
+    events = []
+
+    class Shortcut:
+        TargetPath = ""
+
+        def Save(self):
+            path.write_text("owned shortcut", encoding="utf-8")
+
+        def __del__(self):
+            events.append("release")
+
+    monkeypatch.setattr(pythoncom, "CoInitialize", lambda: events.append("initialize"))
+    monkeypatch.setattr(pythoncom, "CoUninitialize", lambda: events.append("uninitialize"))
+    monkeypatch.setattr(
+        win32com.client,
+        "Dispatch",
+        lambda name: SimpleNamespace(CreateShortcut=lambda filename: Shortcut()),
+    )
+    launcher.install_shortcut()
+    assert events == ["initialize", "release", "uninitialize"]
