@@ -17,6 +17,21 @@ from windows_mcp.tree.views import (
 )
 from windows_mcp.uia import Rect, DisplayInfo
 import windows_mcp.__main__ as main_module
+from windows_mcp.desktop import screenshot as screenshot_module
+
+
+@pytest.fixture(autouse=True)
+def isolated_capture_backends(monkeypatch):
+    """Backend caches and installed optional libraries must not leak between fixtures."""
+    monkeypatch.setattr(screenshot_module, "_backend_instances", {})
+    monkeypatch.setattr(screenshot_module, "_degraded_backends", set())
+    monkeypatch.setattr(screenshot_module, "dxcam", None)
+    monkeypatch.setattr(screenshot_module, "mss", None)
+
+    def unexpected_capture(*args, **kwargs):
+        raise AssertionError("A unit test must supply synthetic screenshot pixels.")
+
+    monkeypatch.setattr(screenshot_module.ImageGrab, "grab", unexpected_capture)
 
 
 def make_box(left: int, top: int, right: int, bottom: int) -> BoundingBox:

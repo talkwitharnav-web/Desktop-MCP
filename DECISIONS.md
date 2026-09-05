@@ -64,3 +64,21 @@ are deliberate owner/assistant work, not unattended edits.
 
 Public read access and upstream license notices do not grant anyone write access.
 Keep required attribution while preventing automated changes.
+
+## D-009: Teaching is guidance, not mouse ownership
+
+Local teaching mode permits observations, laser/ink overlays, cursor-vicinity
+waits and transcript updates, but never mouse/keyboard injection or application
+launch/focus. The learner's physical movement does not trigger control-mode
+takeover pauses. Physical clicks/keys invalidate observations; Ctrl+Shift+H still
+stops every agent operation.
+
+Laser/ink are separate visual layers, not movements of the user's pointer and
+not edits to the underlying application. Erase removes only our annotations.
+The transcript is an independently draggable, Alt-Tab-accessible window with
+local pin/dock controls. The model publishes content explicitly through tools;
+this is not automatic mirroring of every Copilot terminal token.
+
+Cursor proximity is not proof that a button was clicked or an application action
+succeeded. Dwell and context checks prevent accidental advancement, and the model
+must inspect the resulting UI when correctness depends on an actual app change.

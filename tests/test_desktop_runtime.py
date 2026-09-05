@@ -1,11 +1,13 @@
 import threading
 import time
+import ctypes
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
 from desktop_mcp.actions import Action, ease_motion, key_code, parse_shortcut
-from desktop_mcp.runtime import BatchInterrupted, Controller, DesktopStopped
+from desktop_mcp.runtime import BatchInterrupted, Controller, DesktopStopped, InputNotAllowed
 
 
 class FakeInput:
@@ -374,3 +376,74 @@ def test_stop_does_not_deadlock_the_ui_thread_behind_a_sendinput_hook(armed):
         controller.close()
     assert finished.is_set()
     assert ("button", "middle", False) in backend.events
+
+
+def test_keyboard_location_cannot_bypass_own_foreground_window_guard(armed):
+    from ctypes import wintypes
+    from desktop_mcp.native import WindowsInput
+
+    controller, backend = armed
+    backend.window = 99
+    backend._control_windows = lambda: (99,)
+
+    def rectangle(handle, pointer):
+        value = ctypes.cast(pointer, ctypes.POINTER(wintypes.RECT)).contents
+        value.left, value.top, value.right, value.bottom = 0, 0, 100, 100
+        return True
+
+    backend._user32 = SimpleNamespace(
+        IsWindowVisible=lambda handle: True,
+        IsIconic=lambda handle: False,
+        GetWindowLongW=lambda handle, index: 0,
+        GetWindowRect=rectangle,
+    )
+    backend.ensure_target = WindowsInput.ensure_target.__get__(backend)
+    with pytest.raises(BatchInterrupted, match="own control window"):
+        with controller.operation("keyboard location"):
+            controller.execute([Action(kind="key", keys=["enter"], loc=(200, 200))])
+    assert not any(event[0] == "key" for event in backend.events)
+
+
+def test_targeted_drag_aborts_if_focus_changes_while_approaching_start(armed):
+    controller, backend = armed
+    backend.on_event = lambda event: setattr(backend, "window", 2) if event[0] == "move" else None
+    with pytest.raises(BatchInterrupted, match="Foreground changed"):
+        with controller.operation("targeted drag"):
+            controller.execute(
+                [
+                    Action(kind="drag", start=(50, 50), loc=(100, 100), duration=0.05),
+                ],
+                window_id=1,
+            )
+    assert not any(event[0] == "button" for event in backend.events)
+
+
+def test_teaching_mode_follows_human_motion_without_allowing_injected_input(armed):
+    controller, backend = armed
+    controller.set_mode_local("teach")
+    assert not controller.snapshot().armed
+    controller.arm_local()
+    revision = controller.input_revision
+    controller.notify_human_input(kind="move", position=(100, 120))
+    assert controller.snapshot().armed
+    assert controller.snapshot().user_cursor == (100, 120)
+    assert controller.input_revision == revision
+    controller.notify_human_input(kind="button", position=(100, 120))
+    assert controller.snapshot().armed
+    assert controller.input_revision > revision
+    with controller.operation("teaching"), pytest.raises(InputNotAllowed):
+        controller.execute([Action(kind="text", text="must not type")])
+    with controller.operation("teaching"), pytest.raises(InputNotAllowed):
+        controller.emit(lambda: backend.text("must not type"))
+    assert backend.events == []
+    controller.stop("Ctrl+Shift+H")
+    assert not controller.snapshot().armed
+
+
+def test_mode_change_revokes_the_existing_operation(armed):
+    controller, backend = armed
+    with pytest.raises(DesktopStopped), controller.operation("old control mode"):
+        controller.set_mode_local("teach")
+        controller.arm_local()
+        controller.checkpoint()
+    assert backend.events == []

@@ -1,4 +1,7 @@
 import subprocess
+import json
+import sys
+import weakref
 from types import SimpleNamespace
 
 import pytest
@@ -60,3 +63,30 @@ def test_accessibility_inspects_only_the_requested_window(monkeypatch):
     app.controller = SimpleNamespace(checkpoint=lambda: None)
     assert app.accessibility_tree(use_dom=True) == "button"
     assert calls[0][-3:] == ["--window", "123", "--dom"]
+
+
+def test_worker_retains_the_desktop_behind_the_trees_weak_reference(monkeypatch, capsys):
+    from desktop_mcp.accessibility import main
+    import comtypes
+    import windows_mcp.desktop.service as desktop_module
+
+    class Tree:
+        def __init__(self, desktop):
+            self.desktop = weakref.proxy(desktop)
+
+        def get_state(self, window, others, use_dom):
+            assert self.desktop.is_browser
+            assert (window, others, use_dom) == (123, [], True)
+            return SimpleNamespace(status=True, semantic_tree_to_string=lambda: "browser DOM")
+
+    class Desktop:
+        def __init__(self):
+            self.is_browser = True
+            self.tree = Tree(self)
+
+    monkeypatch.setattr(desktop_module, "Desktop", Desktop)
+    monkeypatch.setattr(comtypes, "CoInitialize", lambda: None)
+    monkeypatch.setattr(comtypes, "CoUninitialize", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["accessibility", "--window", "123", "--dom"])
+    main()
+    assert json.loads(capsys.readouterr().out)["tree"] == "browser DOM"

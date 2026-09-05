@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
-from typing import Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar
 
 from desktop_mcp.actions import Action, Button, ease_motion, key_code, motion_duration
 from desktop_mcp.contracts import ControlSnapshot, Point
@@ -23,6 +23,10 @@ _request_ticket: ContextVar[tuple[object, int] | None] = ContextVar(
 
 class DesktopStopped(RuntimeError):
     """The local controller has revoked this operation."""
+
+
+class InputNotAllowed(RuntimeError):
+    """Teaching mode is observation/presentation only, never injected input."""
 
 
 class BatchInterrupted(RuntimeError):
@@ -127,7 +131,11 @@ class Controller:
                 self._state = replace(
                     self._state,
                     state="ready",
-                    reason="Desktop control allowed. Ctrl+Shift+H stops immediately.",
+                    reason=(
+                        "Teaching mode: use your own mouse. Ctrl+Shift+H stops the session."
+                        if self._state.mode == "teach"
+                        else "Desktop control allowed. Ctrl+Shift+H stops immediately."
+                    ),
                     action=None,
                     generation=self._state.generation + 1,
                     input_revision=self._state.input_revision + 1,
@@ -201,9 +209,31 @@ class Controller:
         with self._state_lock:
             self._state = replace(self._state, human_takeover=enabled)
 
-    def notify_human_input(self) -> None:
+    def set_mode_local(self, mode: Literal["control", "teach"]) -> None:
+        if mode not in {"control", "teach"}:
+            raise ValueError("Mode must be control or teach.")
+        with self._state_lock:
+            if self._state.state == "closed":
+                raise DesktopStopped("The controller is closed.")
+            if self._state.mode == mode:
+                return
+        self.stop("Mode changed. Allow the new mode locally when ready.")
+        with self._state_lock:
+            self._state = replace(self._state, mode=mode)
+
+    def notify_human_input(
+        self, *, kind: Literal["move", "button", "key"] = "move", position: Point | None = None
+    ) -> None:
+        if kind not in {"move", "button", "key"}:
+            raise ValueError("Unknown physical input kind.")
         status = self.snapshot()
-        if status.armed and status.human_takeover:
+        if position is not None:
+            with self._state_lock:
+                self._state = replace(self._state, user_cursor=position)
+        if status.armed and status.mode == "teach":
+            if kind != "move":
+                self._bump_revision()
+        elif status.armed and status.human_takeover:
             self.stop("Paused because you used the mouse or keyboard.")
 
     def _check_generation(self, generation: int) -> None:
@@ -320,6 +350,11 @@ class Controller:
         """A short critical section closes the stop-versus-new-input race."""
         with self._input_lock:
             self.checkpoint()
+            if self.snapshot().mode != "control":
+                raise InputNotAllowed(
+                    "Teaching mode cannot inject input or launch/focus apps. "
+                    "Change to control mode locally if you want the agent to operate them."
+                )
             result = callback()
             with self._state_lock:
                 self._state = replace(self._state, input_revision=self._state.input_revision + 1)
@@ -329,6 +364,7 @@ class Controller:
         with self._input_lock:
             if down:
                 self.checkpoint()
+                self.backend.ensure_target(window_id=getattr(self._local, "window_id", None))
                 if code in self._keys:
                     return
                 chord = self._keys | {code}
@@ -349,7 +385,9 @@ class Controller:
         with self._input_lock:
             if down:
                 self.checkpoint()
-                self.backend.ensure_target(self.backend.position())
+                self.backend.ensure_target(
+                    self.backend.position(), getattr(self._local, "window_id", None)
+                )
                 if button in self._buttons:
                     raise ValueError(f"The {button} button is already held in this batch.")
                 self._buttons.add(button)
@@ -385,6 +423,9 @@ class Controller:
         last = start
         while True:
             self.checkpoint()
+            expected_window = getattr(self._local, "window_id", None)
+            if expected_window is not None:
+                self.backend.ensure_target(window_id=expected_window)
             progress = min(1.0, (self._clock() - started) / elapsed_duration)
             eased = ease_motion(progress)
             point = (
@@ -411,6 +452,8 @@ class Controller:
         self.checkpoint()
         if not 1 <= len(actions) <= 64:
             raise ValueError("A batch must contain between 1 and 64 actions.")
+        if self.snapshot().mode == "teach" and any(action.kind != "wait" for action in actions):
+            raise InputNotAllowed("Teaching mode does not inject mouse or keyboard input.")
         prepared: list[Action] = []
         held_keys: set[int] = set()
         held_buttons: set[Button] = set()
@@ -454,6 +497,8 @@ class Controller:
                     self.backend.ensure_target(point, window_id)
             prepared.append(normalized)
         results: list[dict[str, object]] = []
+        previous_window = getattr(self._local, "window_id", None)
+        self._local.window_id = window_id
         try:
             for action in prepared:
                 self.checkpoint()
@@ -474,10 +519,13 @@ class Controller:
                 self.stop("Windows rejected input. Inspect the app and resume locally.")
             raise BatchInterrupted(len(results), error) from error
         finally:
-            errors = self._release_inputs()
-            if errors:
-                self._record_release_error(errors)
-                raise RuntimeError("Failed to release owned input at the end of the batch.")
+            try:
+                errors = self._release_inputs()
+                if errors:
+                    self._record_release_error(errors)
+                    raise RuntimeError("Failed to release owned input at the end of the batch.")
+            finally:
+                self._local.window_id = previous_window
         return results
 
     def _execute_one(self, action: Action, window_id: int | None) -> None:

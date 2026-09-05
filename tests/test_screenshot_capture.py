@@ -38,8 +38,16 @@ DXGI_OUTPUTS = [
 
 @pytest.fixture(autouse=True)
 def _isolate_backend_instances(monkeypatch):
-    """Ensure each test gets a fresh backend instance pool."""
+    """Keep installed capture backends from escaping a synthetic unit fixture."""
     monkeypatch.setattr(screenshot, "_backend_instances", {})
+    monkeypatch.setattr(screenshot, "_degraded_backends", set())
+    monkeypatch.setattr(screenshot, "dxcam", None)
+    monkeypatch.setattr(screenshot, "mss", None)
+
+    def unexpected_capture(*args, **kwargs):
+        raise AssertionError("A unit test must supply synthetic screenshot pixels.")
+
+    monkeypatch.setattr(screenshot.ImageGrab, "grab", unexpected_capture)
 
 
 # ---------------------------------------------------------------------------

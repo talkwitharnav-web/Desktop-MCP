@@ -20,7 +20,8 @@ def main() -> None:
 
     comtypes.CoInitialize()
     try:
-        state = Desktop().tree.get_state(arguments.window, [], use_dom=arguments.dom)
+        desktop = Desktop()
+        state = desktop.tree.get_state(arguments.window, [], use_dom=arguments.dom)
         if not state.status:
             raise RuntimeError("Windows accessibility inspection did not complete successfully.")
         tree = repair_surrogates(remove_private_use_chars(state.semantic_tree_to_string()))
