@@ -126,6 +126,75 @@ def test_late_release_failure_cannot_reopen_a_closed_controller(monkeypatch):
         controller.arm_local()
 
 
+@pytest.mark.parametrize("held", ["key", "button"])
+def test_late_interface_failure_cannot_reopen_with_unreleased_owned_input(armed, held):
+    controller, backend = armed
+    with pytest.raises(DesktopStopped), controller.operation("Fixture held input"):
+        if held == "key":
+            controller._key(key_code("ctrl"), True)
+        else:
+            controller._button("middle", True)
+        backend.fail_release = True
+        controller.close()
+        assert controller.snapshot().state == "closed"
+        controller.set_interface_ready(False, "Fixture late interface failure")
+        assert controller.snapshot().state == "closed"
+        assert controller.snapshot().last_error == "Fixture late interface failure"
+        backend.fail_release = False
+        controller.set_interface_ready(True)
+        assert not controller.snapshot().interface_ready
+        with pytest.raises(DesktopStopped):
+            controller.arm_local()
+    assert not controller._keys and not controller._buttons
+    assert controller.snapshot().state == "closed"
+
+
+def test_deferred_release_failure_after_close_remains_terminal(armed):
+    controller, backend = armed
+    entered = threading.Event()
+    errors = []
+    backend.fail_release = True
+
+    def wait_for_close(event):
+        if event[0] == "key" and event[2]:
+            entered.set()
+            deadline = time.monotonic() + 2
+            while controller.snapshot().state != "closed" and time.monotonic() < deadline:
+                time.sleep(0.001)
+            assert controller.snapshot().state == "closed"
+
+    backend.on_event = wait_for_close
+
+    def own_input():
+        try:
+            with controller.operation("Fixture delayed native input"):
+                controller._key(key_code("ctrl"), True)
+        except RuntimeError as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=own_input)
+    worker.start()
+    try:
+        assert entered.wait(1)
+        controller.close()
+        worker.join(2)
+        assert not worker.is_alive()
+        assert errors
+        assert controller.snapshot().state == "closed"
+        assert "release" in controller.snapshot().last_error
+        controller.set_interface_ready(True)
+        assert not controller.snapshot().interface_ready
+        with pytest.raises(DesktopStopped):
+            controller.arm_local()
+    finally:
+        backend.fail_release = False
+        controller.stop("Fixture release cleanup")
+        worker.join(3)
+    assert not worker.is_alive()
+    assert not controller._keys
+    assert controller.snapshot().state == "closed"
+
+
 def test_human_takeover_latches_stop_and_never_auto_resumes(armed):
     controller, _ = armed
     revision = controller.input_revision
