@@ -40,9 +40,11 @@ the server, not the model, translates image pixels to desktop pixels.
 
 ## D-006: Local, explicit control surface
 
-Use local stdio, an Alt-Tab-visible control window, and an explicitly selected
-GUI tool surface. No remote listener, autorun task, registry editor, arbitrary
-shell tool, or auto-arming default is necessary for this project.
+Use local stdio clients connected to a single per-user/session desktop host,
+an Alt-Tab-visible control window, and an explicitly selected GUI tool surface.
+A local Windows named pipe has a current-user ACL and rejects remote clients.
+No network listener, autorun task, registry editor, arbitrary shell tool, or
+auto-arming default is necessary for this project.
 Screen contents and typed text must not be logged or committed.
 
 ## D-007: GitHub sync is not package publication
@@ -82,3 +84,15 @@ this is not automatic mirroring of every Copilot terminal token.
 Cursor proximity is not proof that a button was clicked or an application action
 succeeded. Dwell and context checks prevent accidental advancement, and the model
 must inspect the resulting UI when correctness depends on an actual app change.
+
+## D-010: A close button quits; launching is independent of the MCP client
+
+X on either main window quits the whole Desktop-MCP host and closes its client
+bridges. Minimize remains the explicit way to keep it running. Ctrl+Shift+H is a
+pause/revocation, not Quit. An explicit Quit latches automatic startup off until
+the user opens Desktop-MCP again, so a reconnect cannot reverse a close click.
+
+The searchable Start-menu entry opens or reveals the same host. MCP sessions
+have distinct protocol connections but share one physical controller and local
+permission state. Only one host owns the hotkey; startup is serialized through
+Windows mutexes, not a stale PID file. No launcher or reconnect arms the desktop.

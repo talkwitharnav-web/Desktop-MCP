@@ -27,6 +27,19 @@ Core input/revocation checks are in `test_desktop_runtime.py` and
 synthetic renderings. `test_desktop_teaching.py` exercises the pure teaching model
 and renderer. These are not evidence of real Windows hook behavior or appearance.
 
+Launch/lifecycle changes use `test_desktop_pipe_transport.py` and
+`test_desktop_service.py`: real current-user Windows named pipes and subprocess
+stdio clients around a fake desktop, without hotkeys, input or screenshots.
+They cover simultaneous clients, cancelled I/O, a client leaving early, and X
+ending bridges even while the client still holds stdin open. `create_server`
+tests retain the default owned lifespan; the production shared host uses one
+application and independent per-client protocol lifespans.
+
+`test_desktop_launch_live.py` is a separately opt-in, **no-input** native launch
+exercise. It starts only its own instance, posts X only to its own window handles,
+and requires the application to exit. It does not arm, type, capture, or close
+other apps. Stop any previous Desktop-MCP instance normally before running it.
+
 ## Opt-in native exercise
 
 `tests\test_desktop_live.py` is skipped unless `DESKTOP_MCP_LIVE=1`. Run it only on

@@ -119,9 +119,11 @@ class ControlSurface:
         controller: LocalControl,
         *,
         control_windows: Callable[[], tuple[int, ...]] | None = None,
+        on_exit: Callable[[], None] | None = None,
     ) -> None:
         self._controller = controller
         self._control_windows = control_windows or self.window_handles
+        self._on_exit = on_exit
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._adapter: _Win32Adapter | None = None
@@ -455,9 +457,13 @@ class ControlSurface:
         self._stop_local("Stopped with Ctrl+Shift+H")
 
     def _panel_close(self) -> None:
-        self._stop_local("Control window closed; local re-arming is required")
-        if self._adapter is not None:
-            self._adapter.minimize_panel()
+        try:
+            self._stop_local("Desktop-MCP is quitting.")
+        finally:
+            if self._on_exit is not None:
+                self._on_exit()
+            else:
+                self.close()
 
     def _human_input(
         self,

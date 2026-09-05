@@ -655,17 +655,27 @@ def test_physical_cursor_history_updates_while_stopped_but_injection_is_ignored(
     assert not controller.snapshot().armed
 
 
-def test_panel_close_stops_and_minimizes_without_losing_control_window(surface_factory):
+def test_panel_close_stops_and_ends_the_control_thread(surface_factory):
     surface, controller, adapter = surface_factory()
     surface.start()
     adapter.invoke(lambda: surface._local_command(ui._LocalCommand.ARM))
-    handles = surface.window_handles()
     adapter.invoke(surface._panel_close)
     assert not controller.snapshot().armed
     assert adapter.cursor is None
-    assert adapter.events[-1] == "minimize"
-    assert surface.window_handles() == handles
-    assert surface._thread.is_alive()
+    assert surface._closed.wait(1)
+    assert adapter.events[-1] == "shutdown"
+    assert surface.window_handles() == ()
+
+
+def test_panel_x_requests_application_exit_instead_of_minimizing(surface_factory):
+    surface, controller, adapter = surface_factory()
+    exits = []
+    surface._on_exit = lambda: exits.append("quit")
+    surface.start()
+    adapter.invoke(surface._panel_close)
+    assert exits == ["quit"]
+    assert not controller.snapshot().armed
+    assert "minimize" not in adapter.events
 
 
 def test_nested_capture_hides_until_last_exit_and_defers_show(surface_factory):

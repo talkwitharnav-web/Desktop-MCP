@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +24,13 @@ def app():
 
 def test_all_native_windows_are_protected(app):
     assert app.window_handles() == (10, 11, 20, 21)
+
+
+def test_local_quit_revokes_and_signals_the_host_without_joining_ui_threads(app):
+    app.exit_requested = threading.Event()
+    app.request_exit()
+    assert not app.controller.snapshot().armed
+    assert app.exit_requested.is_set()
 
 
 def test_start_publishes_arming_only_after_teaching_is_ready(app):

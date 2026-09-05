@@ -375,7 +375,7 @@ wheels = [
 
 [[package]]
 name = "desktop-mcp"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -410,7 +410,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.2.1" },
     { name = "comtypes", specifier = ">=1.4.15" },
     { name = "dxcam", specifier = ">=0.3.0" },
-    { name = "fastmcp", specifier = ">=3.0" },
+    { name = "fastmcp", specifier = "==3.4.7" },
     { name = "fuzzywuzzy", specifier = ">=0.18.0" },
     { name = "markdownify", specifier = ">=1.1.0" },
     { name = "mss", specifier = ">=10.1.0" },

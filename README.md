@@ -18,6 +18,8 @@ AI model, a remote-desktop service, or a sandbox.
   clipboard replacement. Long input stays cancellable.
 - An Alt-Tab-accessible control window and a global **Ctrl+Shift+H** stop.
   Control starts stopped and can only be allowed/resumed locally.
+- One shared local application for multiple Copilot sessions. Closing either
+  main window with **X quits the application**, not just its taskbar window.
 - Short serial input batches with a single final observation, instead of a
   model round trip for every key.
 - Cropped, resized, efficiently encoded observations with frame IDs and
@@ -43,6 +45,7 @@ In PowerShell, inside this checkout:
 python -m pip install --user uv
 
 python -m uv sync --frozen --extra dev
+.\.venv\Scripts\desktop-mcp.exe install-shortcut
 ```
 
 UV can install the required Python interpreter into its managed environment.
@@ -52,12 +55,32 @@ This project is local-first. Do **not** assume `uvx desktop-mcp` installs this
 fork: PyPI and MCP registry publication are not part of setting up the checkout.
 `server.json` is release metadata, not a publication receipt.
 
+## Open it from Windows Start
+
+Press the Windows key and search for **Desktop-MCP**. The per-user shortcut
+opens the interface without a console, or reveals the existing instance.
+It does not arm desktop access.
+
+`install-shortcut` above is a one-time setup step; a Git checkout or a Python
+console command does not automatically appear in Windows Start search.
+It creates only the Desktop-MCP shortcut and its application icon.
+
+From the project folder you can also run:
+
+```powershell
+.\.venv\Scripts\desktop-mcp.exe open
+```
+
+Opening the interface before Copilot is fine. Starting more Copilot sessions
+connects them to the same application rather than spawning competing windows
+and global-hotkey registrations.
+
 ## Connect to Copilot CLI
 
 From the project folder:
 
 ```powershell
-copilot.cmd mcp add desktop-mcp -- "$((Get-Location).Path)\.venv\Scripts\python.exe" -m desktop_mcp serve
+copilot.cmd mcp add desktop-mcp --timeout 45000 -- "$((Get-Location).Path)\.venv\Scripts\python.exe" -m desktop_mcp serve
 ```
 
 For an npm-installed Copilot on Windows, use `copilot.cmd`: the PowerShell shim
@@ -82,6 +105,7 @@ The equivalent configuration is:
       "type": "local",
       "command": "C:\\path\\Desktop-MCP\\.venv\\Scripts\\python.exe",
       "args": ["-m", "desktop_mcp", "serve"],
+      "timeout": 45000,
       "tools": ["*"]
     }
   }
@@ -89,18 +113,28 @@ The equivalent configuration is:
 ```
 
 Use the virtual environment's absolute Python path so the connection does not
-depend on the client's working directory or PATH. Do not start a second copy
-manually while the MCP client is already running it: only one process can own
-the global stop hotkey.
+depend on the client's working directory or PATH. `serve` is now a small stdio
+bridge. A single shared host owns the native windows and Ctrl+Shift+H; several
+Copilot sessions can connect without competing for that hotkey.
 
-To launch without an MCP client for local development:
+If loading fails, open **Desktop-MCP** from Start, then use Copilot's `/mcp`
+panel to reconnect the server (disable/enable it if needed). A session created
+before the configuration was installed may need a fresh Copilot session.
 
 ```powershell
-.\.venv\Scripts\desktop-mcp.exe serve
+.\.venv\Scripts\desktop-mcp.exe doctor
 ```
 
-STDIO is the only supported transport. No network listener, firewall rule,
-administrator elevation, or login startup task is required.
+`doctor` reports whether the shared host is running and its latest startup or
+explicit-quit state; it never starts or arms desktop control. The first cold
+startup can take longer than subsequent connections, so the example allows 45
+seconds. Do not respond to a loading problem by disabling the local stop gate.
+
+Clients still use STDIO. The bridge uses a Windows named pipe restricted to the
+current account and interactive session; remote pipe clients are rejected.
+No TCP listener, firewall rule, administrator elevation, or login startup task
+is required. All connected clients share the same local mode/Arm/Stop state;
+connect only clients you intend to give desktop access.
 
 ## Start, stop and take over
 
@@ -117,7 +151,16 @@ arm-rejection details and current activity, rather than relying only on painted 
 **Ctrl+Shift+H** and the panel's Stop control revoke input and captures. Pending
 commands from the old generation stay cancelled even after you resume. Keys and
 buttons held by Desktop-MCP are released. The model has no `Arm` or `Resume` tool.
-Closing the panel stops control rather than leaving an invisible active agent.
+**X on either the control window or the instruction window quits Desktop-MCP**:
+input is revoked, both windows/overlays and the hotkey are released, and the
+application and connected bridges exit. Use the ordinary minimize button if you
+want it to remain running.
+
+After an explicit Quit, automatic MCP reconnects do not reopen the app behind
+your back. Open **Desktop-MCP** from Start, then reconnect it in `/mcp`. The new
+instance starts stopped. Closing a Copilot terminal alone leaves the desktop
+application available; disconnecting a client that used the desktop revokes
+access until local re-arming.
 
 In Control mode, human mouse/keyboard input pauses automation by default. The
 local window can change that preference; the emergency hotkey remains enabled.
@@ -164,8 +207,8 @@ Select Teach and press Arm/Resume in the local panel. The floating instruction w
 available immediately, including through Alt-Tab before the first model message.
 Drag its title bar, use **Top**/**Bottom** to dock, or **Pin** to keep it above other
 windows. A model `Transcript(action="back")` request cannot override a local pin.
-Closing the instruction window minimizes it; closing the control window stops the
-session.
+Closing either main window quits the application. Minimize the instruction window
+instead when you just want it out of the way.
 
 An agent can publish a step, mark the relevant area, and wait for your pointer:
 

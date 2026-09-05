@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.4",
   "name": "Desktop-MCP",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Visible, supervised Windows desktop control built on Windows-MCP",
   "long_description": "Control the real Windows pointer and keyboard through a local supervised MCP server. Smooth accelerated cursor motion, rich input batches, adaptive screenshots, a native control window, and Ctrl+Shift+H emergency stop. Local teaching mode blocks injected input while allowing laser/ink guidance, learner cursor waits and a floating transcript. Starts stopped; only the human can allow or resume. Python 3.14+ required. The stop gate applies to this server, not unrelated shell tools.",
   "author": {

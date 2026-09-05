@@ -17,6 +17,7 @@ implementation lives under `src/desktop_mcp`.
 | Teaching windows/tools | `teaching_ui.py`, `teaching_tools.py`; native transcript, separate click-through ink/laser layer and six explicitly registered presentation/cursor tools. |
 | Capture/Windows engine | Reuse `windows_mcp.desktop.screenshot` and `windows_mcp.uia`; do not copy the UIA implementation. |
 | MCP entry point | `app.py`, `tools.py`, `policy.py`, `__main__.py`; explicit supervised registration and dispatch-time request tickets. Stdout is reserved for MCP. |
+| Shared host and launcher | `service.py`, `pipe_transport.py`, `stdio_bridge.py`, `launcher.py`; one Windows user/session host, per-client MCP streams, explicit Quit, searchable local launch. |
 | Accessibility worker | `accessibility.py`; inspect one selected foreground window in an owned, cancellable subprocess with a five-second bound. |
 | Optional image files | `image_files.py`; bounded exports in a uniquely owned temporary directory, disabled by default. |
 
@@ -26,6 +27,24 @@ implementation lives under `src/desktop_mcp`.
   Only local UI can arm. A generation change invalidates queued operations.
   Closed is terminal: late UI notifications or input-release failures may retain
   diagnostics, but cannot make the controller available again.
+- `DesktopApplication.request_exit` revokes input and signals the host without
+  joining UI threads from a Windows callback. The host closes every MCP stream
+  and then both surfaces. Either main X uses this route; minimize does not.
+- `serve` is a stdio bridge, not another GUI host. `service.run_host` owns the
+  application once; each MCP connection uses `create_server(...,
+  manage_application=False)` so a client cannot reinitialize/close the shared
+  native state. A client that used the desktop revokes control on disconnect.
+- Per-user/session named pipes have protected current-user/SYSTEM ACLs, reject
+  remote clients, and carry bounded UTF-8 JSON messages, never pickled objects.
+  Overlapped I/O cancellation is acknowledged before buffers/handles are freed.
+  Mutexes serialize host startup and disappear safely on process exit.
+- An explicit local Quit is recorded under the current user's Desktop-MCP state
+  folder. Existing bridges exit and never reconnect/replay. New automatic clients
+  report how to reopen the app; the Start-menu launcher can explicitly start it.
+  State stores only lifecycle metadata, not screen contents or tool arguments.
+- FastMCP's low-level stream adapter is isolated in `service._rpc_stream` and
+  follows its stdio lifecycle contract. FastMCP is pinned; transport tests cover
+  real simultaneous clients, framing, reconnect and host-driven exit.
 - The UI thread never waits on a long-running action lock. A stop sets revocation
   before releasing input; a backend emission rechecks revocation under its
   short input lock so no new key-down can race after the release.

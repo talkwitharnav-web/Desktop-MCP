@@ -73,6 +73,17 @@ def test_every_guidance_child_is_protected_from_input_targeting(surface):
     assert surface.window_handles() == (1, 2, 3, 4, 5, 6)
 
 
+def test_transcript_x_requests_whole_application_exit_not_minimize(surface):
+    exits = []
+    surface._on_exit = lambda: exits.append("quit")
+    surface._con.WM_TIMER = 0x113
+    surface._con.WM_CLOSE = 0x10
+    surface._procedure(surface._panel, surface._con.WM_CLOSE, 0, 0)
+    assert exits == ["quit"]
+    assert not surface.controller.snapshot().armed
+    assert not any(event[0] == "show" for event in surface._gui.events)
+
+
 def test_transcript_font_uses_logfont_and_updates_every_child(surface):
     descriptions = []
     events = surface._gui.events

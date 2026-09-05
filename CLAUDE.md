@@ -16,7 +16,8 @@ Read [SYSTEM_MEMORY.md](SYSTEM_MEMORY.md) for current architecture,
 - The user authorizes work toward stated goals, not large unsolicited projects
   in response to questions. Autopilot is not permission to exceed the task.
 - Ctrl+Shift+H stops Desktop-MCP. A stop is latched until local human re-arming;
-  no MCP tool may arm the controller. Closing the control window stops input.
+  no MCP tool may arm the controller. X on either main window quits the host and
+  its connections; never replace Quit with minimize or automatic resurrection.
 - All desktop input must pass through the shared serial controller, including
   compatibility tools. Cancellation must release every key/button we hold.
   Neither an overlay nor a tool permission prompt is a sandbox.

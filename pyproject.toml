@@ -1,6 +1,6 @@
 [project]
 name = "desktop-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Supervised, visible Windows desktop control built on Windows-MCP."
 authors = [
     { name = "Jeomon George", email = "jeogeoalukka@gmail.com" }
@@ -22,7 +22,7 @@ dependencies = [
     "click>=8.2.1",
     "comtypes>=1.4.15",
     "dxcam>=0.3.0",
-    "fastmcp>=3.0",
+    "fastmcp==3.4.7",
     "fuzzywuzzy>=0.18.0",
     "markdownify>=1.1.0",
     "mss>=10.1.0",
@@ -54,6 +54,9 @@ Issues = "https://github.com/talkwitharnav-web/Desktop-MCP/issues"
 [project.scripts]
 desktop-mcp = "desktop_mcp.__main__:main"
 windows-mcp = "desktop_mcp.__main__:main"
+
+[project.gui-scripts]
+desktop-mcp-ui = "desktop_mcp.launcher:main"
 
 [build-system]
 requires = ["setuptools>=61"]

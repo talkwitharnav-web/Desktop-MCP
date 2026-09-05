@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
+from collections.abc import Callable
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass, field
@@ -60,9 +61,16 @@ class _MinMaxInfo(ctypes.Structure):
 class TeachingSurface:
     """Native presentation only; input authority remains with the shared controller."""
 
-    def __init__(self, controller: Controller, session: TeachingSession) -> None:
+    def __init__(
+        self,
+        controller: Controller,
+        session: TeachingSession,
+        *,
+        on_exit: Callable[[], None] | None = None,
+    ) -> None:
         self.controller = controller
         self.session = session
+        self._on_exit = on_exit
         self._ready = threading.Event()
         self._finished = threading.Event()
         self._requests: queue.Queue[_Request] = queue.Queue()
@@ -398,7 +406,14 @@ class TeachingSurface:
                     self._refresh()
                 return 0
             if message == con.WM_CLOSE and handle == self._panel:
-                gui.ShowWindow(handle, con.SW_MINIMIZE)
+                try:
+                    self.controller.stop("Desktop-MCP is quitting.")
+                finally:
+                    if self._on_exit is not None:
+                        self._on_exit()
+                    else:
+                        self._exit = True
+                    gui.SendMessage(handle, con.WM_CANCELMODE, 0, 0)
                 return 0
             if message == con.WM_SIZE and handle == self._panel and self._editor:
                 self._layout()

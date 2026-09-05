@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from typing import TYPE_CHECKING, Iterator
 
@@ -64,10 +65,11 @@ class DesktopApplication:
         from desktop_mcp.ui import ControlSurface
         from desktop_mcp.vision import VisionService
 
+        self.exit_requested = threading.Event()
         self.backend: WindowsInput = WindowsInput()
         self.controller = Controller(self.backend)
         self.surface: ControlSurface = ControlSurface(
-            self.controller, control_windows=self.window_handles
+            self.controller, control_windows=self.window_handles, on_exit=self.request_exit
         )
         self.capture = WindowsCapture(
             capture_guard=self.capture_guard,
@@ -83,13 +85,22 @@ class DesktopApplication:
         self.teaching: TeachingSession = TeachingSession(
             self.controller, position=self.backend.position, context=self.teaching_context
         )
-        self.teaching_surface: TeachingSurface = TeachingSurface(self.controller, self.teaching)
+        self.teaching_surface: TeachingSurface = TeachingSurface(
+            self.controller, self.teaching, on_exit=self.request_exit
+        )
         self.backend.set_control_windows(self.window_handles)
         setting = os.getenv("DESKTOP_MCP_IMAGE_FILES", "false").casefold()
         if setting not in {"true", "1", "yes", "on", "false", "0", "no", "off", ""}:
             raise ValueError("DESKTOP_MCP_IMAGE_FILES must be a boolean setting.")
         self.export_frames = setting in {"true", "1", "yes", "on"}
         self.image_files = ImageFiles()
+
+    def request_exit(self) -> None:
+        """Revoke immediately; the host closes transports and both UI threads."""
+        try:
+            self.controller.stop("Desktop-MCP is quitting.")
+        finally:
+            self.exit_requested.set()
 
     def start(self) -> None:
         try:
@@ -261,7 +272,9 @@ class DesktopApplication:
                 process.communicate(timeout=2)
 
 
-def create_server(application: DesktopApplication | None = None) -> FastMCP:
+def create_server(
+    application: DesktopApplication | None = None, *, manage_application: bool = True
+) -> FastMCP:
     holder: dict[str, DesktopApplication] = {}
 
     @asynccontextmanager
@@ -269,10 +282,12 @@ def create_server(application: DesktopApplication | None = None) -> FastMCP:
         active = application if application is not None else DesktopApplication()
         holder["application"] = active
         try:
-            active.start()
+            if manage_application:
+                active.start()
             yield
         finally:
-            active.close()
+            if manage_application:
+                active.close()
             holder.clear()
 
     def get_application() -> DesktopApplication:
