@@ -1,16 +1,15 @@
-name: Release
+name: Package artifacts (manual)
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  build-and-publish:
-    name: Build GitHub release artifacts
+  build-package:
+    name: Build package artifacts
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
       
     steps:
       - uses: actions/checkout@v7
@@ -25,17 +24,15 @@ jobs:
         with:
           python-version: "3.14"
       
-      # Fails the release if pyproject.toml, uv.lock, manifest.json and
-      # server.json's package entry don't all agree with the tag. At v0.8.5
-      # the latter two were still on 0.8.1, two releases behind, because the
-      # 0.8.2 bump touched only pyproject.toml and nothing checked.
+      # Check coordinated metadata before creating artifacts; this job never publishes.
       - name: Check version consistency
-        run: python scripts/check_versions.py "${{ github.ref_name }}"
+        run: python scripts/check_versions.py
       
       - name: Build package
         run: uv build
       
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create ${{ github.ref_name }} dist/* --title "Release ${{ github.ref_name }}" --generate-notes
+      - name: Upload artifacts without changing repository contents
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-mcp-package
+          path: dist/*

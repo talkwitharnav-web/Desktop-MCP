@@ -11,6 +11,8 @@ Read [SYSTEM_MEMORY.md](SYSTEM_MEMORY.md) for current architecture,
 - Work on `main`. Preserve upstream history, unrelated edits and the MIT notices.
   Commit and sync a baseline before delegating edits. Never force-push, amend,
   reset, or blanket-revert without explicit permission.
+- Repository changes are owner-controlled. Keep Dependabot/update bots and
+  auto-merge disabled, and keep Actions repository permissions read-only.
 - The user authorizes work toward stated goals, not large unsolicited projects
   in response to questions. Autopilot is not permission to exceed the task.
 - Ctrl+Shift+H stops Desktop-MCP. A stop is latched until local human re-arming;

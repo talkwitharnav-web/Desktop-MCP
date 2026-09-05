@@ -40,5 +40,6 @@ fixture owned by that exercise. A simulated backend is not proof of real input,
 and a transport image assertion is not proof a particular model client sees it.
 
 Package, lockfile, extension and registry-template versions are coupled through
-`scripts/check_versions.py`. Tags build GitHub release artifacts; they do not
-publish to PyPI. Package publication needs a separate deliberate setup.
+`scripts/check_versions.py`. The manually started packaging workflow uploads
+artifacts without writing repository contents or publishing to PyPI. Dependency
+updates and merges are owner-controlled, not delegated to bots.

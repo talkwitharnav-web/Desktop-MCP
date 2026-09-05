@@ -47,9 +47,20 @@ Screen contents and typed text must not be logged or committed.
 
 ## D-007: GitHub sync is not package publication
 
-Commit and sync to the requested GitHub repository. Release tags may build
-GitHub artifacts, but automatic PyPI publication is disabled. `server.json`
+Commit and sync to the requested GitHub repository. A manually started read-only
+workflow may build artifacts, but automatic publication is disabled. `server.json`
 is a release metadata template, not proof that this package name is owned or
 published on PyPI or registered with the MCP registry. Run the local checkout
 through its virtual environment rather than downloading an unrelated package
 with the same name.
+
+## D-008: Owner-controlled personal development
+
+Only the owner's account is granted repository write access; the assistant uses
+that same authorized account for requested changes. No Dependabot/Renovate
+update configuration, automated dependency PRs, auto-merge, or Actions approval
+of pull requests. Actions receive read-only repository access. Dependency changes
+are deliberate owner/assistant work, not unattended edits.
+
+Public read access and upstream license notices do not grant anyone write access.
+Keep required attribution while preventing automated changes.
