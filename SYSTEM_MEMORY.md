@@ -87,8 +87,9 @@ implementation lives under `src/desktop_mcp`.
   Native sizing uses the renderer's same stroke/glow-aware bounds and allocation
   limits; an oversized transient scene is hidden with a diagnostic, not a UI crash.
   Outline ink keeps its requested hue above a neutral contrast edge; shared bounds
-  include the extra stroke and antialiasing margin. Cursor-wait progress has a
-  reserved second status line, leaving the readable font and Stop row intact.
+  include the extra stroke and antialiasing margin. Cursor-wait progress uses a
+  second status line when space permits. Work-area-clamped clients reduce spacing
+  and use compact status copy so readable instructions and the Stop row still fit.
 - `Transcript` explicitly publishes bounded plain text; it is not a CLI token
   mirror. Front/back requests use no-activate window operations, and local pinning
   wins. The transcript is available through Alt-Tab before the first message.

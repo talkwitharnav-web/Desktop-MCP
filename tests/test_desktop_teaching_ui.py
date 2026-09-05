@@ -157,6 +157,58 @@ def test_wait_progress_has_its_own_readable_line_without_hiding_stop(surface, sc
     assert all(font.getlength(line) <= status_box[2] for line in lines)
 
 
+@pytest.mark.parametrize(
+    "scale,work,chrome",
+    [
+        (2.0, (0, 0, 640, 360), (26, 71)),
+        (3.0, (0, 0, 800, 600), (36, 103)),
+        (3.0, (0, 0, 640, 360), (36, 103)),
+    ],
+)
+def test_clamped_work_area_keeps_readable_editor_status_and_stop(surface, scale, work, chrome):
+    surface._scale = scale
+    surface._work_area = lambda: work
+    surface._gui.GetWindowRect = lambda window: (80, 600, 760, 890)
+    surface._con.SWP_NOZORDER = 4
+    surface._dock("bottom")
+    _, _, _, _, _, outer_width, outer_height, _ = surface._gui.events[-1]
+    client = outer_width - chrome[0], outer_height - chrome[1]
+    surface._editor, surface._status = 3, 4
+    surface._buttons = {201 + index: 10 + index for index in range(5)}
+    surface._gui.GetClientRect = lambda window: (0, 0, *client)
+    positions = {}
+    surface._gui.MoveWindow = lambda window, x, y, width, height, repaint: positions.update(
+        {window: (x, y, width, height)}
+    )
+    surface._layout()
+    font_height = round(16 * scale)
+    assert positions[3][3] >= font_height
+    assert positions[14][3] >= font_height
+    assert surface._status_lines >= 1
+    for x, y, width, height in positions.values():
+        assert 0 <= x < x + width <= client[0]
+        assert 0 <= y < y + height <= client[1]
+
+    snapshot = TeachingSnapshot(1, (), (), WaitTarget((10, 10), 28, True, 1.0, 1.0), None)
+    surface.session.snapshot = lambda: snapshot
+    surface._hide_count = 1
+    texts = {}
+    surface._gui.GetWindowText = lambda window: texts.get(window, "")
+    surface._gui.SetWindowText = lambda window, text: texts.update({window: text})
+    surface.controller.set_mode_local("teach")
+    surface.controller.arm_local()
+    with surface.controller.operation("Fixture compact wait"):
+        surface._refresh()
+    lines = texts[4].splitlines()
+    assert len(lines) <= surface._status_lines
+    assert "Ctrl+Shift+H" in texts[4] and "100%" in texts[4]
+    try:
+        font = ImageFont.truetype("segoeui.ttf", font_height)
+    except OSError:
+        pytest.skip("Segoe UI font metrics unavailable on this test host")
+    assert all(font.getlength(line) <= positions[4][2] for line in lines)
+
+
 def test_rounded_buttons_clear_their_corners_to_the_panel_background(surface):
     events = surface._gui.events
     surface._background = 50

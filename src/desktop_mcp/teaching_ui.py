@@ -83,6 +83,8 @@ class TeachingSurface:
         self._font = 0
         self._background = 0
         self._scale = 1.0
+        self._status_lines = 2
+        self._compact_status = False
 
     def start(self) -> None:
         if self._thread is not None:
@@ -471,22 +473,42 @@ class TeachingSurface:
     def _layout(self):
         gui = self._gui
         _, _, width, height = gui.GetClientRect(self._panel)
-        pad = round(14 * self._scale)
+        preferred_pad = round(14 * self._scale)
         button_height = round(32 * self._scale)
-        status_height = round(48 * self._scale)
-        body_height = max(24, height - button_height - status_height - pad * 4)
+        line_height = round(24 * self._scale)
+        editor_minimum = line_height
+        status_lines = 2
+        if height < button_height + 2 * line_height + editor_minimum:
+            line_height = round(20 * self._scale)
+            editor_minimum = line_height
+            button_height = round(24 * self._scale)
+        if height < button_height + 2 * line_height + editor_minimum:
+            status_lines = 1
+            button_height = line_height
+        if height < button_height + line_height + editor_minimum:
+            status_lines = 0
+        button_height = min(button_height, max(1, height))
+        status_height = status_lines * line_height
+        pad = max(
+            0, min(preferred_pad, (height - button_height - status_height - editor_minimum) // 4)
+        )
+        button_y = max(0, height - pad - button_height)
+        status_y = max(pad, button_y - pad - status_height)
+        body_height = max(1, status_y - 2 * pad)
+        self._status_lines = status_lines
+        self._compact_status = width - 2 * pad < round(320 * self._scale) or status_lines < 2
         gui.MoveWindow(self._editor, pad, pad, max(40, width - 2 * pad), body_height, True)
         gui.MoveWindow(
             self._status,
             pad,
-            body_height + 2 * pad,
+            status_y,
             max(40, width - 2 * pad),
             status_height,
             True,
         )
-        gap = round(8 * self._scale)
+        gap = min(round(8 * self._scale), pad)
         button_width = max(30, (width - 2 * pad - 4 * gap) // 5)
-        y = body_height + status_height + 3 * pad
+        y = button_y
         for index, handle in enumerate(self._buttons.values()):
             gui.MoveWindow(
                 handle,
@@ -714,9 +736,24 @@ class TeachingSurface:
             gui.SendMessage(self._editor, con.EM_SETSEL, length, length)
             gui.SendMessage(self._editor, con.EM_SCROLLCARET, 0, 0)
             self._last_text = entries
-        status = f"{control.mode.title()} | {control.state.title()} | Ctrl+Shift+H stops"
-        if snapshot.waiting is not None:
-            status += f"\r\nWaiting for your cursor ({snapshot.waiting.dwell_progress:.0%})"
+        if self._compact_status:
+            if snapshot.waiting is not None:
+                progress = f"{snapshot.waiting.dwell_progress:.0%}"
+                status = (
+                    f"Ctrl+Shift+H | {progress}"
+                    if self._status_lines < 2
+                    else f"Ctrl+Shift+H stops\r\n{control.mode.title()}: cursor {progress}"
+                )
+            else:
+                status = (
+                    "Ctrl+Shift+H stops"
+                    if self._status_lines < 2
+                    else f"{control.mode.title()} | {control.state.title()}\r\nCtrl+Shift+H stops"
+                )
+        else:
+            status = f"{control.mode.title()} | {control.state.title()} | Ctrl+Shift+H stops"
+            if snapshot.waiting is not None:
+                status += f"\r\nWaiting for your cursor ({snapshot.waiting.dwell_progress:.0%})"
         if gui.GetWindowText(self._status) != status:
             gui.SetWindowText(self._status, status)
         if self._hide_count or not control.armed:
