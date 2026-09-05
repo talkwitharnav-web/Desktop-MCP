@@ -57,19 +57,44 @@ async def test_second_mcp_client_cannot_interleave_actions_or_stop_owner_by_disc
                 "DesktopControl", {"action": "claim", "task": "Manual slides"}
             )
             async with Client(transport(name)) as helper:
-                refused = await helper.call_tool(
-                    "Type",
-                    {"text": "out-of-scope helper edit", "observe": False},
-                    raise_on_error=False,
-                )
-                assert refused.is_error
-                assert "Another MCP session" in refused.content[0].text
+                for tool, arguments in (
+                    ("Type", {"text": "out-of-scope helper edit", "observe": False}),
+                    ("DesktopBatch", {"actions": [{"kind": "key", "keys": ["escape"]}]}),
+                    ("Click", {"loc": [10, 10]}),
+                    ("Move", {"loc": [20, 20]}),
+                    ("Keyboard", {"keys": ["escape"]}),
+                    ("Shortcut", {"shortcut": "escape"}),
+                    ("Scroll", {"delta_y": -120}),
+                    ("App", {"mode": "list"}),
+                    ("Wait", {"duration": 0}),
+                    ("Screenshot", {}),
+                    ("Snapshot", {}),
+                    ("DisplayInventory", {}),
+                    ("Laser", {"loc": [10, 10]}),
+                    ("Draw", {"kind": "path", "points": [[10, 10], [20, 20]]}),
+                    ("Erase", {}),
+                    ("Cursor", {}),
+                    ("WaitForCursor", {"loc": [10, 10], "timeout": 0}),
+                ):
+                    refused = await helper.call_tool(tool, arguments, raise_on_error=False)
+                    assert refused.is_error, tool
+                    assert "Another MCP session" in refused.content[0].text, tool
             assert app.controller.snapshot().armed
             assert app.backend.events == []
             await coordinator.call_tool("Type", {"text": "coordinator edit", "observe": False})
             assert app.backend.events == [("text", "coordinator edit")]
             await coordinator.call_tool("DesktopControl", {"action": "release"})
             assert not app.controller.snapshot().armed
+
+
+async def test_every_registered_desktop_tool_has_task_ownership_policy():
+    from desktop_mcp.policy import DESKTOP_TOOLS
+
+    app = FixtureApplication()
+    async with Client(create_server(app)) as client:
+        names = {tool.name for tool in await client.list_tools()}
+    passive = {"DesktopStatus", "DesktopStop", "DesktopControl", "Transcript", "TranscriptRead"}
+    assert DESKTOP_TOOLS == names - passive
 
 
 async def test_unanswered_correction_blocks_new_input_but_not_observation_or_chat():

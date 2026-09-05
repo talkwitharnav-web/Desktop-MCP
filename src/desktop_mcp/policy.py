@@ -17,6 +17,7 @@ DESKTOP_TOOLS = frozenset(
     {
         "Screenshot",
         "Snapshot",
+        "DesktopBatch",
         "Click",
         "Move",
         "Scroll",

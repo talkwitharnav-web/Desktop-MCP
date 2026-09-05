@@ -23,6 +23,16 @@ if TYPE_CHECKING:
     from desktop_mcp.app import DesktopApplication
 
 
+def response_context(app: DesktopApplication) -> dict[str, object]:
+    actor = current_actor()
+    return {
+        "host": app.host_info,
+        "request": None if actor is None else asdict(actor),
+        "observation_due": app.interaction.status()["observation_due"],
+        "pending_messages": app.teaching.conversation.status()["pending_messages"],
+    }
+
+
 def observation_result(
     observation: Observation | None,
     *,
@@ -157,10 +167,7 @@ def register_tools(
                     "actions": completed,
                     "input_revision": app.controller.input_revision,
                     "application_outcome": "unverified",
-                    "host": app.host_info,
-                    "request": None if actor is None else asdict(actor),
-                    "observation_due": app.interaction.status()["observation_due"],
-                    "pending_messages": app.teaching.conversation.status()["pending_messages"],
+                    **response_context(app),
                 },
                 detail=detail,
             )
@@ -257,10 +264,7 @@ def register_tools(
             return observation_result(
                 observation,
                 detail=detail,
-                extra={
-                    "host": app.host_info,
-                    "pending_messages": app.teaching.conversation.status()["pending_messages"],
-                },
+                extra=response_context(app),
             )
 
     @mcp.tool(
@@ -428,7 +432,9 @@ def register_tools(
             if mode == "list":
                 if window_id is not None or executable is not None or args is not None:
                     raise ValueError("Window listing does not accept focus or launch arguments.")
-                return observation_result(None, extra={"windows": app.windows()})
+                return observation_result(
+                    None, extra={"windows": app.windows(), **response_context(app)}
+                )
             if mode == "focus":
                 if window_id is None or executable is not None or args is not None:
                     raise ValueError("Focus requires only window_id.")
@@ -457,7 +463,10 @@ def register_tools(
                     f"The application {mode} completed, but observation failed: {error}. "
                     "Do not launch the application again just to obtain an image."
                 ) from error
-            return observation_result(observation, extra=result)
+            return observation_result(
+                observation,
+                extra={**result, "application_outcome": "unverified", **response_context(app)},
+            )
 
     @mcp.tool(
         name="DisplayInventory",
@@ -504,4 +513,6 @@ def register_tools(
                 observation = app.export_observation(observation)
             check_ticket(app.vision.context_for(observation.frame_id))
             app.interaction.record_observation(observation)
-            return observation_result(observation, extra={"accessibility_tree": tree})
+            return observation_result(
+                observation, extra={"accessibility_tree": tree, **response_context(app)}
+            )
