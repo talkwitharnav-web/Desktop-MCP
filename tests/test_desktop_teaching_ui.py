@@ -1,10 +1,11 @@
 from types import SimpleNamespace
+import ctypes
 
 from PIL import Image
 import pytest
 
 from desktop_mcp.layers import upload_rgba
-from desktop_mcp.teaching_ui import TeachingSurface, _Request
+from desktop_mcp.teaching_ui import TeachingSurface, _DrawItem, _Request
 from tests.test_desktop_tools import FixtureApplication
 
 
@@ -65,6 +66,75 @@ def test_every_guidance_child_is_protected_from_input_targeting(surface):
     surface._editor, surface._status = 3, 4
     surface._buttons = {201: 5, 202: 6}
     assert surface.window_handles() == (1, 2, 3, 4, 5, 6)
+
+
+def test_transcript_font_uses_logfont_and_updates_every_child(surface):
+    descriptions = []
+    events = surface._gui.events
+    surface._editor, surface._status, surface._font = 3, 4, 50
+    surface._buttons = {201: 5}
+    surface._user32 = SimpleNamespace(GetDpiForWindow=lambda window: 144)
+    surface._con.WM_SETFONT = 0x30
+    surface._con.CLEARTYPE_QUALITY = 5
+    surface._gui.LOGFONT = SimpleNamespace
+
+    def create(description):
+        assert isinstance(description, SimpleNamespace), "CreateFontIndirect requires LOGFONT"
+        descriptions.append(description)
+        return 60
+
+    surface._gui.CreateFontIndirect = create
+    surface._gui.SendMessage = lambda *args: events.append(("font", *args))
+    surface._gui.DeleteObject = lambda handle: events.append(("delete", handle))
+    surface._set_font()
+    assert descriptions[0].lfFaceName == "Segoe UI"
+    assert descriptions[0].lfHeight == -24
+    assert descriptions[0].lfWeight == 400
+    assert descriptions[0].lfQuality == 5
+    assert events == [
+        ("font", 3, 0x30, 60, True),
+        ("font", 4, 0x30, 60, True),
+        ("font", 5, 0x30, 60, True),
+        ("delete", 50),
+    ]
+    assert surface._font == 60
+
+
+@pytest.mark.parametrize("work", [(0, 0, 2560, 1528), (0, 0, 640, 360)])
+def test_docking_accounts_for_scaled_minimum_size_before_positioning(surface, work):
+    surface._scale = 1.5
+    surface._work_area = lambda: work
+    surface._gui.GetWindowRect = lambda handle: (80, 600, 760, 890)
+    surface._con.SWP_NOZORDER = 4
+    surface._dock("bottom")
+    _, _, _, x, y, width, height, _ = surface._gui.events[-1]
+    minimum = surface._minimum_size(work)
+    assert width >= minimum[0] and height >= minimum[1]
+    assert work[0] + 18 <= x and x + width <= work[2] - 18
+    assert work[1] + 18 <= y and y + height == work[3] - 18
+
+
+def test_rounded_buttons_clear_their_corners_to_the_panel_background(surface):
+    events = surface._gui.events
+    surface._background = 50
+    surface._api = SimpleNamespace(RGB=lambda *values: 0)
+    surface._con = SimpleNamespace(
+        PS_SOLID=0, TRANSPARENT=1, DT_CENTER=1, DT_VCENTER=4, DT_SINGLELINE=32
+    )
+    surface._gui.CreateSolidBrush = lambda color: 41
+    surface._gui.CreatePen = lambda *args: 42
+    surface._gui.SelectObject = lambda *args: 43
+    surface._gui.FillRect = lambda *args: events.append(("fill", *args))
+    surface._gui.RoundRect = lambda *args: events.append(("round", *args))
+    surface._gui.SetBkMode = surface._gui.SetTextColor = lambda *args: None
+    surface._gui.GetWindowText = lambda window: "Pin"
+    surface._gui.DrawText = surface._gui.DeleteObject = lambda *args: None
+    item = _DrawItem()
+    item.dc, item.window = 9, 5
+    item.rect.right, item.rect.bottom = 120, 36
+    surface._paint_button(ctypes.addressof(item))
+    assert events[0] == ("fill", 9, (0, 0, 120, 36), 50)
+    assert events[1][0] == "round"
 
 
 def test_nested_guards_preserve_a_minimized_transcript(surface):

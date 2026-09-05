@@ -9,7 +9,7 @@ AI model, a remote-desktop service, or a sandbox.
 
 ## What changes from stock Windows-MCP
 
-- A rounded black/grey arrow overlay follows real pointer movement. Pointer
+- In Control mode, a rounded black/grey arrow overlay follows real pointer movement. Pointer
   moves, including movement before clicks, accelerate and decelerate smoothly.
 - Left, right, middle and extra mouse buttons; modifier-aware drags; native
   horizontal/vertical wheel input; named keys, chords, repeats and batch-scoped
@@ -103,7 +103,9 @@ administrator elevation, or login startup task is required.
 The control window starts **stopped**. Select **Control** or **Teach** and press
 **Arm** (or **Resume**) locally when ready. Changing modes stops the session and requires
 another local allow action. The panel minimizes so it does not intercept input;
-it remains reachable through Alt-Tab.
+it remains reachable through Alt-Tab. If Windows activates the transcript instead
+of the target app during local minimization, the panel returns to the last
+non-Desktop-MCP window. It does not override a different app selected by the user.
 
 **Ctrl+Shift+H** and the panel's Stop control revoke input and captures. Pending
 commands from the old generation stay cancelled even after you resume. Keys and

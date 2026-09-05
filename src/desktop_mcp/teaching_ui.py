@@ -399,10 +399,9 @@ class TeachingSurface:
             if message == con.WM_SIZE and handle == self._panel and self._editor:
                 self._layout()
                 return 0
-            if message == con.WM_GETMINMAXINFO:
+            if message == con.WM_GETMINMAXINFO and handle == self._panel:
                 info = ctypes.cast(lparam, ctypes.POINTER(_MinMaxInfo)).contents
-                info.min_track.x = min(round(460 * self._scale), self._api.GetSystemMetrics(0))
-                info.min_track.y = min(round(240 * self._scale), self._api.GetSystemMetrics(1))
+                info.min_track.x, info.min_track.y = self._minimum_size(self._work_area())
                 return 0
             if message == con.WM_SETFOCUS and handle == self._panel and self._editor:
                 gui.SetFocus(self._editor)
@@ -453,13 +452,12 @@ class TeachingSurface:
             get_dpi.argtypes = [wintypes.HWND]
             get_dpi.restype = wintypes.UINT
             self._scale = (get_dpi(self._panel) or 96) / 96
-        font = gui.CreateFontIndirect(
-            {
-                "name": "Segoe UI",
-                "height": -round(16 * self._scale),
-                "weight": 400,
-            }
-        )
+        description = gui.LOGFONT()
+        description.lfFaceName = "Segoe UI"
+        description.lfHeight = -round(16 * self._scale)
+        description.lfWeight = 400
+        description.lfQuality = con.CLEARTYPE_QUALITY
+        font = gui.CreateFontIndirect(description)
         for handle in (self._editor, self._status, *self._buttons.values()):
             if handle:
                 gui.SendMessage(handle, con.WM_SETFONT, font, True)
@@ -506,6 +504,11 @@ class TeachingSurface:
         old_brush, old_pen = gui.SelectObject(item.dc, brush), gui.SelectObject(item.dc, pen)
         old_font = gui.SelectObject(item.dc, self._font) if self._font else None
         try:
+            gui.FillRect(
+                item.dc,
+                (rectangle.left, rectangle.top, rectangle.right, rectangle.bottom),
+                self._background,
+            )
             gui.RoundRect(
                 item.dc, rectangle.left, rectangle.top, rectangle.right, rectangle.bottom, 12, 12
             )
@@ -561,13 +564,21 @@ class TeachingSurface:
         monitor = self._api.MonitorFromWindow(self._panel, 2)
         return self._api.GetMonitorInfo(monitor)["Work"]
 
+    def _minimum_size(self, work):
+        margin = round(12 * self._scale)
+        return (
+            max(1, min(round(460 * self._scale), work[2] - work[0] - 2 * margin)),
+            max(1, min(round(240 * self._scale), work[3] - work[1] - 2 * margin)),
+        )
+
     def _dock(self, edge):
         gui, con = self._gui, self._con
         left, top, right, bottom = self._work_area()
         x, y, old_right, old_bottom = gui.GetWindowRect(self._panel)
         margin = round(12 * self._scale)
-        width = min(old_right - x, right - left - margin * 2)
-        height = min(old_bottom - y, bottom - top - margin * 2)
+        minimum_width, minimum_height = self._minimum_size((left, top, right, bottom))
+        width = min(max(old_right - x, minimum_width), right - left - margin * 2)
+        height = min(max(old_bottom - y, minimum_height), bottom - top - margin * 2)
         x = max(left + margin, min(x, right - width - margin))
         y = top + margin if edge == "top" else bottom - height - margin
         gui.SetWindowPos(self._panel, 0, x, y, width, height, con.SWP_NOZORDER | con.SWP_NOACTIVATE)

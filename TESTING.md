@@ -32,6 +32,7 @@ at shutdown.
 
 ```powershell
 $env:DESKTOP_MCP_LIVE = '1'
+$env:DESKTOP_MCP_LIVE_APPEARANCE = '0'
 # Use a NEW, uniquely named directory under your session artifact folder.
 $env:DESKTOP_MCP_LIVE_ARTIFACTS = 'C:\path\session\files\native-unique-run'
 .\.venv\Scripts\python.exe -m pytest tests\test_desktop_live.py -q -s
@@ -39,9 +40,19 @@ $env:DESKTOP_MCP_LIVE_ARTIFACTS = 'C:\path\session\files\native-unique-run'
 
 The harness checks real Unicode input, sampled pointer movement, extra buttons,
 both wheel axes, MCP image blocks, and an actual registered Ctrl+Shift+H during a
-held-button drag. Captures use only opaque owned-window insets and refuse known
-unowned windows overlapping the region. Appearance artifacts remain local and
-must be viewed; passing a synthetic image assertion does not verify native layout.
+held-button drag. A DPI-aware, opaque owned fixture covers its monitor's work area
+before either interface starts. Captures require owned insets inside that backing
+window and refuse unowned windows overlapping the region. This prevents a
+capture-excluded interface from revealing an underlying user application.
+
+For native interface/cursor/ink appearance evidence, run the command again in a
+**separate process** with a new artifact directory and
+`DESKTOP_MCP_LIVE_APPEARANCE=1`. This diagnostic-only run disables optional display
+affinity on owned windows at creation; acknowledged hide/flush guards remain real
+and are still checked. The production-default run retains display affinity and
+saves the actual returned MCP fixture image. Do not confuse the two evidence
+scopes. Appearance artifacts remain local and must be viewed; passing a synthetic
+image assertion does not verify native layout.
 
 The same fixture selects Teach through the real local controls, checks transcript
 stacking/pinning without focus theft, renders/erases ink and a laser, verifies their
@@ -51,6 +62,8 @@ The trusted fixture emulates only that harmless stop chord and learner motion;
 MCP still has no remote arm or teaching-mode input path.
 It also opens only Desktop-MCP's own system menu and verifies capture-guard
 acknowledgement and shutdown while Windows is running that modal menu loop.
+The artifact directory records the exact owned PID/window handles for recovery
+if the fixture fails. Never terminate a process by name or infer a cleanup root.
 
 After integration, validate distribution metadata with
 `.\.venv\Scripts\python.exe scripts\check_versions.py`, and use the existing

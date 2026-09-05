@@ -166,6 +166,9 @@ class FakeWin32:
             raise self.render_error
         self.models.append(model)
 
+    def remember_foreground(self, control_windows):
+        pass
+
     def cursor_position(self):
         self._owned()
         return self.point
@@ -363,6 +366,29 @@ def test_successful_local_arm_minimizes_once_and_refresh_does_not_raise_panel(su
     adapter.invoke(lambda: surface._local_command(ui._LocalCommand.ARM))
     assert adapter.events.count("minimize") == 1
     assert "show" not in adapter.events
+
+
+def test_local_arm_updates_controls_before_minimizing(surface_factory):
+    surface, _, adapter = surface_factory()
+    surface.start()
+    minimize = adapter.minimize_panel
+
+    def checked_minimize():
+        assert adapter.models[-1].state == "ready"
+        assert not adapter.models[-1].arm_enabled
+        minimize()
+
+    adapter.minimize_panel = checked_minimize
+    adapter.invoke(lambda: surface._local_command(ui._LocalCommand.ARM))
+    assert adapter.events.count("minimize") == 1
+
+
+def test_ready_stopped_panel_explains_local_arming_instead_of_unavailability(surface_factory):
+    surface, controller, adapter = surface_factory()
+    surface.start()
+    assert controller.snapshot().interface_ready
+    assert adapter.models[-1].arm_enabled
+    assert adapter.models[-1].detail == "Select Control or Teach, then Arm / Resume locally."
 
 
 @pytest.mark.parametrize("outcome", ["refused", "revoked", "error"])
@@ -1203,6 +1229,29 @@ def test_native_mode_selector_marks_current_mode_and_exposes_owned_handles():
     assert adapter._buttons[ui._LocalCommand.TEACH_MODE] in adapter.window_handles()
 
 
+def test_native_fonts_use_logfont_objects_and_scale_for_dpi():
+    adapter = object.__new__(ui._Win32Adapter)
+    adapter._dpi = 144
+    adapter._fonts = {"old": 50}
+    descriptions, deleted = [], []
+
+    def create(description):
+        assert isinstance(description, SimpleNamespace), "CreateFontIndirect requires LOGFONT"
+        descriptions.append(description)
+        return 100 + len(descriptions)
+
+    adapter.con = SimpleNamespace(CLEARTYPE_QUALITY=5)
+    adapter.gui = SimpleNamespace(
+        LOGFONT=SimpleNamespace, CreateFontIndirect=create, DeleteObject=deleted.append
+    )
+    adapter._make_fonts()
+    assert [font.lfHeight for font in descriptions] == [-34, -24, -21, -18, -21]
+    assert [font.lfWeight for font in descriptions] == [600, 600, 400, 400, 600]
+    assert all(font.lfFaceName == "Segoe UI" and font.lfQuality == 5 for font in descriptions)
+    assert deleted == [50]
+    assert len(adapter._fonts) == 5
+
+
 @pytest.mark.parametrize(
     "visible,minimized,restore_command",
     [
@@ -1243,10 +1292,46 @@ def test_native_minimize_uses_normal_windows_foreground_handoff():
     calls = []
     adapter._panel = 101
     adapter._capturing = False
+    adapter._return_window = 0
+    adapter._surface = SimpleNamespace(_control_windows=lambda: (101, 102))
     adapter.con = SimpleNamespace(SW_MINIMIZE=6)
-    adapter.gui = SimpleNamespace(ShowWindow=lambda *args: calls.append(args))
+    adapter.gui = SimpleNamespace(
+        ShowWindow=lambda *args: calls.append(args), GetForegroundWindow=lambda: 200
+    )
     adapter.minimize_panel()
     assert calls == [(101, 6)]
+
+
+@pytest.mark.parametrize("foreground", [0, 102, 200])
+def test_local_minimize_returns_from_an_own_transcript_but_not_another_app(foreground):
+    adapter = object.__new__(ui._Win32Adapter)
+    calls = []
+    adapter._panel = 101
+    adapter._capturing = False
+    adapter._return_window = 300
+    adapter._surface = SimpleNamespace(_control_windows=lambda: (101, 102))
+    adapter.con = SimpleNamespace(SW_MINIMIZE=6)
+    adapter.gui = SimpleNamespace(
+        ShowWindow=lambda *args: calls.append(("minimize", *args)),
+        IsWindow=lambda window: window == 300,
+        GetForegroundWindow=lambda: foreground,
+        SetForegroundWindow=lambda window: calls.append(("foreground", window)),
+    )
+    adapter.minimize_panel()
+    assert calls == [("minimize", 101, 6)] + (
+        [("foreground", 300)] if foreground in {0, 102} else []
+    )
+
+
+def test_foreground_tracking_ignores_all_composed_own_windows():
+    adapter = object.__new__(ui._Win32Adapter)
+    adapter._return_window = 300
+    adapter.gui = SimpleNamespace(GetForegroundWindow=lambda: 102)
+    adapter.remember_foreground((101, 102))
+    assert adapter._return_window == 300
+    adapter.gui.GetForegroundWindow = lambda: 400
+    adapter.remember_foreground((101, 102))
+    assert adapter._return_window == 400
 
 
 def test_native_overlay_moves_hotspot_without_focus_or_per_frame_bitmap_upload():

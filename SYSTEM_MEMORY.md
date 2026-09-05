@@ -49,6 +49,9 @@ implementation lives under `src/desktop_mcp`.
   Base-UI requests are also serviced by the native wake-message handler during
   Windows modal move/menu loops, with reentrancy protection. Shutdown sends
   `WM_CANCELMODE` to the owned panel so those loops cannot strand its UI thread.
+  Local minimization tracks the last non-owned foreground using the composed HWND
+  list. It restores that target only when Windows selects another owned window or
+  briefly has no foreground, never over a different user-selected application.
 - Teaching starts before the control surface makes local arming available.
   Shutdown stops/releases input before closing either UI, and attempts all cleanup
   even if one surface fails. UI-thread snapshots never acquire the operation lock.
@@ -61,6 +64,8 @@ implementation lives under `src/desktop_mcp`.
 - `Transcript` explicitly publishes bounded plain text; it is not a CLI token
   mirror. Front/back requests use no-activate window operations, and local pinning
   wins. The transcript is available through Alt-Tab before the first message.
+  Docking and minimum sizes share the current monitor's work-area/DPI constraints;
+  panel minimum tracking sizes never apply to the separately sized ink canvas.
 - Accessibility is optional and heavier than capture. Its subprocess receives
   one window handle, never an unrestricted background-window traversal. Stop or
   timeout terminates only that owned worker and does not strand the action lock.

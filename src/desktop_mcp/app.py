@@ -66,7 +66,9 @@ class DesktopApplication:
 
         self.backend: WindowsInput = WindowsInput()
         self.controller = Controller(self.backend)
-        self.surface: ControlSurface = ControlSurface(self.controller)
+        self.surface: ControlSurface = ControlSurface(
+            self.controller, control_windows=self.window_handles
+        )
         self.capture = WindowsCapture(
             capture_guard=self.capture_guard,
             control_windows=self.window_handles,

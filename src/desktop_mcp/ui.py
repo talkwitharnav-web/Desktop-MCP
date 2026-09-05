@@ -11,6 +11,7 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from enum import IntEnum
@@ -104,8 +105,14 @@ class ControlSurface:
     interface cannot be re-armed through ``start``, ``show``, or capture requests.
     """
 
-    def __init__(self, controller: LocalControl) -> None:
+    def __init__(
+        self,
+        controller: LocalControl,
+        *,
+        control_windows: Callable[[], tuple[int, ...]] | None = None,
+    ) -> None:
         self._controller = controller
+        self._control_windows = control_windows or self.window_handles
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._adapter: _Win32Adapter | None = None
@@ -351,6 +358,7 @@ class ControlSurface:
             return
         # Never take a controller snapshot while holding the lifecycle lock.
         snapshot = self._controller.snapshot()
+        adapter.remember_foreground(self._control_windows())
         model = _panel_model(snapshot)
         if self._local_rejection is not None:
             generation, message = self._local_rejection
@@ -399,12 +407,14 @@ class ControlSurface:
                     self._refresh()
                     return
                 self._local_rejection = None
+                self._refresh()
                 if (
                     self._controller.snapshot().armed
                     and not self._closing.is_set()
                     and self._adapter is not None
                 ):
                     self._adapter.minimize_panel()
+                return
         elif command == _LocalCommand.TAKEOVER:
             self._controller.set_human_takeover(not snapshot.human_takeover)
         elif command in (_LocalCommand.CONTROL_MODE, _LocalCommand.TEACH_MODE):
@@ -486,8 +496,8 @@ class ControlSurface:
     def _run(self) -> None:
         adapter: _Win32Adapter | None = None
         try:
-            self._controller.stop("Waiting for local arming")
             self._controller.set_interface_ready(False)
+            self._controller.stop("Select Control or Teach, then Arm / Resume locally.")
             self._controller.set_human_takeover(True)
             if self._closing.is_set():
                 return
@@ -585,6 +595,7 @@ class _Win32Adapter:
         self._destroying = False
         self._affinity: dict[int, bool] = {}
         self._wake_posted = False
+        self._return_window = 0
 
         hook_proc = ctypes.WINFUNCTYPE(
             ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
@@ -1009,14 +1020,12 @@ class _Win32Adapter:
                 ("small", 12, 400),
                 ("button", 14, 600),
             ):
-                self._fonts[role] = self.gui.CreateFontIndirect(
-                    {
-                        "name": "Segoe UI",
-                        "height": -self._scale(height),
-                        "weight": weight,
-                        "quality": self.con.CLEARTYPE_QUALITY,
-                    }
-                )
+                description = self.gui.LOGFONT()
+                description.lfFaceName = "Segoe UI"
+                description.lfHeight = -self._scale(height)
+                description.lfWeight = weight
+                description.lfQuality = self.con.CLEARTYPE_QUALITY
+                self._fonts[role] = self.gui.CreateFontIndirect(description)
         finally:
             for font in old_fonts.values():
                 self.gui.DeleteObject(font)
@@ -1400,11 +1409,26 @@ class _Win32Adapter:
     def show_panel(self) -> None:
         self.gui.ShowWindow(self._panel, self.con.SW_SHOWNOACTIVATE)
 
+    def remember_foreground(self, control_windows: tuple[int, ...]) -> None:
+        foreground = self.gui.GetForegroundWindow()
+        if foreground and foreground not in control_windows:
+            self._return_window = foreground
+
     def minimize_panel(self) -> None:
         if self._capturing:
             self._panel_restore = (True, True)
         else:
             self.gui.ShowWindow(self._panel, self.con.SW_MINIMIZE)
+            own = self._surface._control_windows()
+            target = self._return_window
+            foreground = self.gui.GetForegroundWindow()
+            if (
+                target
+                and target not in own
+                and self.gui.IsWindow(target)
+                and (not foreground or foreground in own)
+            ):
+                self.gui.SetForegroundWindow(target)
 
     def shutdown(self) -> None:
         self._destroying = True
