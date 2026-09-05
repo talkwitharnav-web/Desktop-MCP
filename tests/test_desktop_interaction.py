@@ -1,6 +1,9 @@
 import asyncio
 import base64
 from io import BytesIO
+import json
+import sys
+import threading
 from types import SimpleNamespace
 
 from fastmcp import Client
@@ -13,7 +16,7 @@ from desktop_mcp.interaction import DesktopInUse, Interaction, RequestActor, req
 from desktop_mcp.runtime import Controller, DesktopStopped
 from tests.test_desktop_runtime import FakeInput
 from tests.test_desktop_tools import FixtureApplication
-from tests.test_desktop_service import host, transport
+from tests.test_desktop_service import bridge_script, host, transport
 
 
 def armed_interaction():
@@ -95,6 +98,118 @@ async def test_every_registered_desktop_tool_has_task_ownership_policy():
         names = {tool.name for tool in await client.list_tools()}
     passive = {"DesktopStatus", "DesktopStop", "DesktopControl", "Transcript", "TranscriptRead"}
     assert DESKTOP_TOOLS == names - passive
+
+
+async def test_owner_disconnect_revokes_before_a_shielded_input_worker_finishes(tmp_path):
+    async with host(tmp_path) as (app, name, _):
+        app.controller.arm_local()  # Fake input only.
+        entered, release = threading.Event(), threading.Event()
+
+        def held_text(event):
+            if event[0] == "text":
+                entered.set()
+                if not release.wait(3):
+                    raise RuntimeError("The test worker was not released")
+
+        app.backend.on_event = held_text
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            bridge_script(name),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": {},
+                            "clientInfo": {"name": "owner-disconnect-test", "version": "1"},
+                        },
+                    }
+                ).encode()
+                + b"\n"
+            )
+            await process.stdin.drain()
+            assert "result" in json.loads(await asyncio.wait_for(process.stdout.readline(), 3))
+            process.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "Type",
+                            "arguments": {"text": "x" * 1000, "observe": False},
+                        },
+                    }
+                ).encode()
+                + b"\n"
+            )
+            await process.stdin.drain()
+            for _ in range(200):
+                if entered.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert entered.is_set()
+            process.stdin.close()
+            for _ in range(100):
+                if not app.controller.snapshot().armed:
+                    break
+                await asyncio.sleep(0.01)
+            assert not app.controller.snapshot().armed, "Disconnect waited for the input worker"
+            release.set()
+            await asyncio.wait_for(process.wait(), 3)
+            assert len([event for event in app.backend.events if event[0] == "text"]) == 1
+        finally:
+            release.set()
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+
+
+async def test_explicit_claim_queued_before_stop_cannot_claim_after_rearm():
+    from fastmcp.server.middleware import Middleware
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class DelayClaim(Middleware):
+        async def on_call_tool(self, context, call_next):
+            if (
+                context.message.name == "DesktopControl"
+                and context.message.arguments.get("action") == "claim"
+            ):
+                entered.set()
+                await release.wait()
+            return await call_next(context)
+
+    app = FixtureApplication(armed=True)
+    server = create_server(app)
+    server.add_middleware(DelayClaim())
+    async with Client(server) as client:
+        pending = asyncio.create_task(
+            client.call_tool(
+                "DesktopControl",
+                {"action": "claim", "task": "old request"},
+                raise_on_error=False,
+            )
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            await client.call_tool("DesktopStop")
+            app.controller.arm_local()  # Fake input only.
+        finally:
+            release.set()
+        result = await asyncio.wait_for(pending, 2)
+        assert result.is_error
+        assert app.interaction.status()["owner"] is None
 
 
 async def test_unanswered_correction_blocks_new_input_but_not_observation_or_chat():

@@ -141,3 +141,21 @@ Text chat and transcript show/hide work while desktop access is stopped. They
 never arm input, capture pixels, launch/focus applications, or permit writing
 into the protected composer through desktop-input tools. Ctrl+Shift+H stops
 desktop work, not conversation. X still quits the whole application.
+
+## D-012: Independent input needs a real workspace boundary
+
+The current implementation is shared-desktop control, not a second independent
+Windows input seat. A cosmetic pointer, Raw Input device identity or posted
+window messages must not be advertised as universal independent control.
+
+The credible general upgrade is an executor inside an approved separate
+interactive workspace, with a passive viewer and explicit file/clipboard
+transfer policy. Input/capture interfaces remain separate so that backend can
+be added without discarding the MCP API. This is not implemented or provisioned
+by the current release. GPU/app compatibility, session licensing and permissions
+must be established before installing or configuring such a workspace.
+
+Browser GUI-event adapters are a scope-specific option, not silent substitutes
+for manual host-desktop work. Microsoft's input/session documentation and the
+independent-cursor investigation establish this distinction; changing the UI
+language or drawing another arrow does not change Windows input semantics.

@@ -29,6 +29,7 @@ class RequestActor:
     session_id: str
     request_id: str
     tool: str
+    generation: int | None = None
 
 
 _actor: ContextVar[RequestActor | None] = ContextVar("desktop_mcp_actor", default=None)
@@ -61,6 +62,11 @@ def host_identity() -> dict[str, object]:
         "started_at": datetime.now(timezone.utc).isoformat(),
         "package_fingerprint": digest.hexdigest()[:24],
         "fingerprint_scope": "packaged Python and operating guide at host startup, not a Git revision",
+        "workspace": {
+            "kind": "shared-windows-desktop",
+            "independent_input_cursor": False,
+            "independent_visual_guidance": True,
+        },
     }
 
 

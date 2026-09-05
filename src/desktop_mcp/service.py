@@ -107,6 +107,10 @@ async def _rpc_stream(channel: PipeChannel, application: DesktopApplication) -> 
                                     raise ValueError("Invalid MCP JSON-RPC message.") from None
                                 await inbound.send(SessionMessage(message))
                     finally:
+                        # Revoke before waiting for shielded synchronous tool workers;
+                        # otherwise input can continue until those workers finish.
+                        for owner in tuple(desktop_sessions):
+                            application.interaction.release(owner, disconnected=True)
                         tasks.cancel_scope.cancel()
 
                 async def send() -> None:

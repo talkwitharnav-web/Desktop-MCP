@@ -37,7 +37,8 @@ implementation lives under `src/desktop_mcp`.
 - `serve` is a stdio bridge, not another GUI host. `service.run_host` owns the
   application once; each MCP connection uses `create_server(...,
   manage_application=False)` so a client cannot reinitialize/close the shared
-  native state. A client that used the desktop revokes control on disconnect.
+  native state. The interactive task owner's disconnect revokes control before
+  waiting for shielded synchronous tool workers to finish.
   Chat-only connections do not revoke another client's desktop work; their
   registered conversation session ids are released from listener ownership.
 - Desktop ownership is task-wide, not merely a per-call mutex. Policy claims

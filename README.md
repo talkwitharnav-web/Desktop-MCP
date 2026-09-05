@@ -227,6 +227,20 @@ module is the upstream implementation, **not** an alternative supervised
 connection. Both installed console aliases, `desktop-mcp` and `windows-mcp`,
 launch the supervised entry point.
 
+### About an independent agent cursor
+
+The current backend controls the shared Windows desktop. Its monochrome arrow
+identifies automated movement; ordinary clicks still use the system pointer.
+Laser/ink can point independently without moving that pointer.
+
+A genuine independent input workspace is possible with an executor inside a
+separate interactive session/VM or dedicated machine and a passive display viewer.
+That is a different boundary from painting a second cursor on this desktop.
+Browser-only GUI-event adapters can help a dedicated browser workspace but do
+not cover native dialogs or arbitrary Blender interaction. No virtualization,
+drivers, remote accounts or other machine settings are installed implicitly.
+`DesktopStatus.host.workspace` states the active backend's capabilities.
+
 ## Explain and act in the same session
 
 Arm once. The assistant can publish instructions, highlight a button, operate it,

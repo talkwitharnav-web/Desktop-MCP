@@ -204,8 +204,10 @@ def register_tools(
         app = get_app()
         owner = ctx.session_id
         if action == "claim":
-            with app.controller.request() as generation:
-                result = app.interaction.claim(owner, generation=generation, task=task)
+            actor = current_actor()
+            if actor is None or actor.generation is None or actor.session_id != owner:
+                raise RuntimeError("An initialized, generation-stamped MCP request is required.")
+            result = app.interaction.claim(owner, generation=actor.generation, task=task)
             if on_desktop_session is not None:
                 on_desktop_session(owner)
             return {"claimed": True, "owner": result}
