@@ -176,6 +176,52 @@ def test_agent_mutations_require_an_operation_but_ui_reads_and_clears_do_not(rig
         rig.call("wait_for_cursor", (0, 0))
 
 
+@pytest.mark.parametrize("method", ["draw", "wait_for_cursor"])
+def test_mapping_revision_cannot_be_rebased_after_physical_input(rig: Rig, method) -> None:
+    revision = rig.controller.input_revision
+    rig.controller.notify_human_input(kind="button")
+    arguments = ("path", [(0, 0), (40, 20)]) if method == "draw" else ((0, 0),)
+    with pytest.raises(RuntimeError, match="Input changed"):
+        rig.call(method, *arguments, expected_input_revision=revision)
+    assert not rig.session.snapshot().marks
+    assert rig.session.snapshot().waiting is None
+    assert rig.controller.snapshot().armed
+
+
+@pytest.mark.parametrize("combined", [False, True])
+def test_oversized_desktop_scenes_are_rejected_before_mark_commit(rig: Rig, combined) -> None:
+    desktop = (0, 0, 11520, 4320)
+    rig.current = CaptureContext(7, desktop, desktop, display_bounds=(desktop,), scope="desktop")
+    if combined:
+        rig.call("draw", "path", [(100, 100), (120, 100)])
+    before = rig.session.snapshot().marks
+    points = [(9000, 100), (9020, 100)] if combined else [(100, 100), (9000, 100)]
+    with pytest.raises(ValueError, match="renderer size"):
+        rig.call("draw", "path", points)
+    assert rig.session.snapshot().marks == before
+    assert rig.controller.snapshot().armed
+
+
+def test_combined_wait_ring_and_ink_obey_canvas_limits(rig: Rig) -> None:
+    desktop = (0, 0, 11520, 4320)
+    rig.current = CaptureContext(7, desktop, desktop, display_bounds=(desktop,), scope="desktop")
+    rig.call("draw", "path", [(100, 100), (120, 100)])
+    rig.cursor = (9000, 100)
+    with pytest.raises(ValueError, match="renderer size"):
+        rig.call("wait_for_cursor", rig.cursor, dwell=0)
+    assert rig.session.snapshot().waiting is None
+    assert len(rig.session.snapshot().marks) == 1
+    assert rig.controller.snapshot().armed
+
+
+def test_combined_scene_pixel_area_is_bounded_before_commit(rig: Rig) -> None:
+    desktop = (0, 0, 11520, 4320)
+    rig.current = CaptureContext(7, desktop, desktop, display_bounds=(desktop,), scope="desktop")
+    with pytest.raises(ValueError, match="renderer size"):
+        rig.call("draw", "rectangle", [(100, 100), (6500, 3500)])
+    assert not rig.session.snapshot().marks
+
+
 def test_stop_rearm_across_checkpoint_cannot_stamp_an_old_rpc_with_the_new_generation(
     rig: Rig, monkeypatch
 ) -> None:

@@ -184,6 +184,22 @@ def wait_until(predicate, timeout=3):
     assert predicate(), "The expected native state did not arrive before the deadline"
 
 
+def focus_owned_window(handle):
+    import pywintypes
+    import win32gui
+    import win32process
+
+    assert win32process.GetWindowThreadProcessId(handle)[1] == os.getpid()
+    if win32gui.GetForegroundWindow() != handle:
+        try:
+            win32gui.SetForegroundWindow(handle)
+        except pywintypes.error:
+            if win32gui.GetForegroundWindow() not in (0, handle):
+                raise
+            wait_until(lambda: win32gui.GetForegroundWindow() == handle, timeout=0.5)
+    wait_until(lambda: win32gui.GetForegroundWindow() == handle)
+
+
 def own_capture_bounds(handle):
     import win32gui
 
@@ -240,8 +256,7 @@ def arm_fixture_locally(panel):
     button = win32gui.GetDlgItem(panel, 1001)
     assert win32gui.GetClassName(button).casefold() == "button"
     wait_until(lambda: win32gui.IsWindowEnabled(button))
-    win32gui.SetForegroundWindow(panel)
-    wait_until(lambda: win32gui.GetForegroundWindow() == panel)
+    focus_owned_window(panel)
     win32gui.SendMessage(button, win32con.BM_CLICK, 0, 0)
 
 
@@ -278,8 +293,7 @@ def open_own_ui_system_menu(panel):
     if own_ui_modal_flags(panel) & 0x04:
         return
     win32gui.ShowWindow(panel, win32con.SW_SHOWNOACTIVATE)
-    win32gui.SetForegroundWindow(panel)
-    wait_until(lambda: win32gui.GetForegroundWindow() == panel)
+    focus_owned_window(panel)
     win32gui.PostMessage(panel, win32con.WM_SYSCOMMAND, win32con.SC_KEYMENU, ord(" "))
     wait_until(lambda: own_ui_modal_flags(panel) & 0x04)
 
@@ -336,8 +350,7 @@ def save_own_window(handle, path: Path, *, backdrop, overlay_handles=(), restore
             assert user32.GetWindowDisplayAffinity(own_handle, ctypes.byref(affinity))
             original_affinity[own_handle] = affinity.value
             assert user32.SetWindowDisplayAffinity(own_handle, 0)
-        win32gui.SetForegroundWindow(handle)
-        wait_until(lambda: win32gui.GetForegroundWindow() == handle)
+        focus_owned_window(handle)
         win32gui.SetWindowPos(
             handle,
             win32con.HWND_TOPMOST,
@@ -407,8 +420,7 @@ def save_own_window(handle, path: Path, *, backdrop, overlay_handles=(), restore
             and win32gui.GetForegroundWindow() == handle
         ):
             assert win32process.GetWindowThreadProcessId(restore_foreground)[1] == os.getpid()
-            win32gui.SetForegroundWindow(restore_foreground)
-            wait_until(lambda: win32gui.GetForegroundWindow() == restore_foreground)
+            focus_owned_window(restore_foreground)
 
 
 async def exercise_native_teaching(client, application, fixture, main_window, artifact_root):
@@ -445,8 +457,7 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
     pinned = await client.call_tool("Transcript", {"action": "back"}, raise_on_error=False)
     assert pinned.is_error
     click_local_button(transcript, "Unpin")
-    win32gui.SetForegroundWindow(fixture.hwnd)
-    wait_until(lambda: win32gui.GetForegroundWindow() == fixture.hwnd)
+    focus_owned_window(fixture.hwnd)
     await client.call_tool("Transcript", {"action": "front"})
     assert win32gui.GetForegroundWindow() == fixture.hwnd
     if artifact_root:
@@ -637,8 +648,7 @@ async def test_native_control_input_images_and_global_stop(monkeypatch):
     workers = []
     try:
         fixture.start()
-        win32gui.SetForegroundWindow(fixture.hwnd)
-        wait_until(lambda: win32gui.GetForegroundWindow() == fixture.hwnd)
+        focus_owned_window(fixture.hwnd)
         async with Client(create_server(application)) as client:
             status = await client.call_tool("DesktopStatus")
             assert status.data["state"] == "stopped"
@@ -671,8 +681,7 @@ async def test_native_control_input_images_and_global_stop(monkeypatch):
                 (artifact_root / "fixture-state.json").write_text(
                     json.dumps(fixture_state), encoding="utf-8"
                 )
-            win32gui.SetForegroundWindow(fixture.hwnd)
-            wait_until(lambda: win32gui.GetForegroundWindow() == fixture.hwnd)
+            focus_owned_window(fixture.hwnd)
             point = win32gui.ClientToScreen(fixture.editor, (30, 30))
             win32api.SetCursorPos(point)
             time.sleep(0.05)
@@ -806,11 +815,16 @@ async def test_native_control_input_images_and_global_stop(monkeypatch):
                 assert not win32gui.IsWindowVisible(main_window)
             assert application.controller.snapshot().interface_ready
             assert application.surface._error is None
+            application.controller.close()
+            open_own_ui_system_menu(application.teaching_surface._panel)
+            application.teaching_surface.close()
+            assert not application.teaching_surface._thread.is_alive()
+            assert not application.teaching_surface.window_handles()
             open_own_ui_system_menu(main_window)
             # Lifespan shutdown must leave the owned system-menu modal loop without user input.
         assert application.window_handles() == ()
         assert application.controller.snapshot().state == "closed"
-        print("Native owned-menu capture acknowledgement and modal shutdown passed")
+        print("Native owned-menu capture acknowledgement and both modal shutdowns passed")
     finally:
         application.controller.stop("Live fixture ended.")
         try:

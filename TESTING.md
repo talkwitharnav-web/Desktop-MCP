@@ -60,8 +60,9 @@ capture exclusion, and reaches a cursor-dwell target. It tests both the local
 instruction-window Stop button and the global hotkey during a teaching wait.
 The trusted fixture emulates only that harmless stop chord and learner motion;
 MCP still has no remote arm or teaching-mode input path.
-It also opens only Desktop-MCP's own system menu and verifies capture-guard
-acknowledgement and shutdown while Windows is running that modal menu loop.
+It also opens only Desktop-MCP's own system menus and verifies capture-guard
+acknowledgement plus both control/transcript shutdowns while Windows is running
+those modal menu loops.
 The artifact directory records the exact owned PID/window handles for recovery
 if the fixture fails. Never terminate a process by name or infer a cleanup root.
 

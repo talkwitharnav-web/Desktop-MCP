@@ -27,6 +27,17 @@ _XY = tuple[float, float]
 _RGBA = tuple[int, int, int, int]
 
 
+class SceneTooLarge(ValueError):
+    """The combined guidance scene cannot fit the bounded native canvas."""
+
+
+def _check_size(size: tuple[int, int]) -> None:
+    if max(size) > MAX_RENDER_DIMENSION or size[0] * size[1] > MAX_RENDER_PIXELS:
+        raise SceneTooLarge(
+            "The annotation canvas exceeds the bounded renderer size. Erase older marks first."
+        )
+
+
 def _scene(snapshot: TeachingSnapshot, now: float) -> tuple[tuple[Mark, ...], WaitTarget | None]:
     if (
         not isinstance(snapshot, TeachingSnapshot)
@@ -103,6 +114,14 @@ def visible_bounds(
             min(result[3], clip[3]),
         )
     return result if result[0] < result[2] and result[1] < result[3] else None
+
+
+def validate_scene(snapshot: TeachingSnapshot, *, now: float, clip: Rect) -> Rect | None:
+    """Validate combined physical canvas geometry without allocating an image."""
+    bounds = visible_bounds(snapshot, now=now, clip=clip)
+    if bounds is not None:
+        _check_size((bounds[2] - bounds[0], bounds[3] - bounds[1]))
+    return bounds
 
 
 def _segment(a: _XY, b: _XY, bounds: tuple[float, float, float, float]) -> tuple[_XY, _XY] | None:
@@ -238,8 +257,7 @@ def render_marks(
     scale = _number(scale, "scale", 0.1, 4.0)
     now = _number(time.monotonic() if now is None else now, "now", -math.inf, math.inf)
     size = math.ceil((bounds[2] - bounds[0]) * scale), math.ceil((bounds[3] - bounds[1]) * scale)
-    if max(size) > MAX_RENDER_DIMENSION or size[0] * size[1] > MAX_RENDER_PIXELS:
-        raise ValueError("The annotation canvas exceeds the bounded renderer size.")
+    _check_size(size)
     marks, waiting = _scene(snapshot, now)
     sampling = 2 if size[0] * size[1] <= MAX_RENDER_PIXELS // 4 else 1
     factor = scale * sampling

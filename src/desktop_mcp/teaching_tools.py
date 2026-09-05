@@ -23,11 +23,17 @@ def register_teaching_tools(mcp, get_app: Callable[[], DesktopApplication]) -> N
 
     def map_points(
         app: DesktopApplication, points: list[Point], frame_id: str | None
-    ) -> tuple[list[Point], CaptureContext | None]:
+    ) -> tuple[list[Point], CaptureContext | None, int]:
+        revision = app.controller.input_revision
         if frame_id is not None:
             context = app.vision.context_for(frame_id)
-            return app.vision.resolve_many(frame_id, points), context
-        return points, app.teaching_context(None)
+            points = app.vision.resolve_many(frame_id, points)
+        else:
+            context = app.teaching_context(None)
+        app.controller.checkpoint()
+        if app.controller.input_revision != revision:
+            raise RuntimeError("Input changed while mapping guidance. Obtain a fresh observation.")
+        return points, context, revision
 
     @mcp.tool(
         name="Transcript",
@@ -80,7 +86,7 @@ def register_teaching_tools(mcp, get_app: Callable[[], DesktopApplication]) -> N
         app = get_app()
         with app.controller.operation("Laser guidance"):
             if bounds is not None:
-                corners, context = map_points(
+                corners, context, revision = map_points(
                     app, [(bounds[0], bounds[1]), (bounds[2], bounds[3])], frame_id
                 )
                 left, right = sorted((corners[0][0], corners[1][0]))
@@ -97,9 +103,16 @@ def register_teaching_tools(mcp, get_app: Callable[[], DesktopApplication]) -> N
                     for index in range(49)
                 ]
             else:
-                points, context = map_points(app, [loc] if loc is not None else path, frame_id)
+                points, context, revision = map_points(
+                    app, [loc] if loc is not None else path, frame_id
+                )
             identifier = app.teaching.draw(
-                "laser", points, color=color, lifetime=duration, expected_context=context
+                "laser",
+                points,
+                color=color,
+                lifetime=duration,
+                expected_context=context,
+                expected_input_revision=revision,
             )
             return {"identifier": identifier, "duration": duration, "moves_real_cursor": False}
 
@@ -118,7 +131,7 @@ def register_teaching_tools(mcp, get_app: Callable[[], DesktopApplication]) -> N
     ) -> dict[str, object]:
         app = get_app()
         with app.controller.operation("Drawing guidance"):
-            physical, context = map_points(app, points, frame_id)
+            physical, context, revision = map_points(app, points, frame_id)
             identifier = app.teaching.draw(
                 kind,
                 physical,
@@ -126,6 +139,7 @@ def register_teaching_tools(mcp, get_app: Callable[[], DesktopApplication]) -> N
                 width=width,
                 lifetime=lifetime,
                 expected_context=context,
+                expected_input_revision=revision,
             )
             return {"identifier": identifier, "edits_underlying_app": False}
 
@@ -167,11 +181,12 @@ def register_teaching_tools(mcp, get_app: Callable[[], DesktopApplication]) -> N
     ) -> dict[str, object]:
         app = get_app()
         with app.controller.operation("Waiting for the learner"):
-            points, context = map_points(app, [loc], frame_id)
+            points, context, revision = map_points(app, [loc], frame_id)
             return app.teaching.wait_for_cursor(
                 points[0],
                 radius=radius,
                 dwell=dwell,
                 timeout=timeout,
                 expected_context=context,
+                expected_input_revision=revision,
             )

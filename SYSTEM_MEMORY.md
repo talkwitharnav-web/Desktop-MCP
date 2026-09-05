@@ -61,11 +61,18 @@ implementation lives under `src/desktop_mcp`.
 - Control/Teach is a local-only selector. Teach permits observation/presentation
   but blocks native emission and app launch/focus. Learner motion does not revoke
   the session; clicks/keys invalidate frames and context-sensitive guidance.
+  Teaching point mapping preserves an input-revision ticket through the model's
+  initial authorization, rather than taking a new baseline after frame resolution.
+- Teaching model commits validate the combined mark/wait canvas before publishing.
+  Native sizing uses the renderer's same stroke/glow-aware bounds and allocation
+  limits; an oversized transient scene is hidden with a diagnostic, not a UI crash.
 - `Transcript` explicitly publishes bounded plain text; it is not a CLI token
   mirror. Front/back requests use no-activate window operations, and local pinning
   wins. The transcript is available through Alt-Tab before the first message.
   Docking and minimum sizes share the current monitor's work-area/DPI constraints;
   panel minimum tracking sizes never apply to the separately sized ink canvas.
+  Transcript close/fatal-exit handling sends owned `WM_CANCELMODE`, so native
+  menu/move/resize loops cannot strand shutdown.
 - Accessibility is optional and heavier than capture. Its subprocess receives
   one window handle, never an unrestricted background-window traversal. Stop or
   timeout terminates only that owned worker and does not strand the action lock.

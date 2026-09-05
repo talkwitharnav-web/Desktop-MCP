@@ -6,7 +6,6 @@ from contextlib import ExitStack, contextmanager
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass, field
-import math
 import queue
 import threading
 import time
@@ -389,9 +388,12 @@ class TeachingSurface:
             if message == _COMMAND:
                 self._drain_requests()
                 return 0
+            if self._exit:
+                return gui.DefWindowProc(handle, message, wparam, lparam)
             if message == con.WM_TIMER and handle == self._panel:
                 self._drain_requests()
-                self._refresh()
+                if not self._exit:
+                    self._refresh()
                 return 0
             if message == con.WM_CLOSE and handle == self._panel:
                 gui.ShowWindow(handle, con.SW_MINIMIZE)
@@ -442,6 +444,7 @@ class TeachingSurface:
                 False, f"Guidance interface failed: {type(error).__name__}"
             )
             self._exit = True
+            self._cancel_modal()
             return 0
         return gui.DefWindowProc(handle, message, wparam, lparam)
 
@@ -605,6 +608,7 @@ class TeachingSurface:
                         raise RuntimeError("The presentation request was revoked.")
                 if request.command == "close":
                     self._exit = True
+                    self._cancel_modal()
                 elif request.command == "show":
                     if self._hide_count:
                         raise RuntimeError(
@@ -683,31 +687,21 @@ class TeachingSurface:
                 self._con.SW_SHOWMINNOACTIVE if iconic else self._con.SW_SHOWNOACTIVATE,
             )
 
+    def _cancel_modal(self):
+        if self._panel:
+            self._gui.SendMessage(self._panel, self._con.WM_CANCELMODE, 0, 0)
+
     @staticmethod
-    def _scene_bounds(snapshot: TeachingSnapshot, desktop: Rect) -> Rect | None:
-        points = [point for mark in snapshot.marks for point in mark.points]
-        if snapshot.waiting is not None:
-            target = snapshot.waiting
-            points.extend(
-                [
-                    (target.center[0] - target.radius, target.center[1] - target.radius),
-                    (target.center[0] + target.radius, target.center[1] + target.radius),
-                ]
-            )
-        if not points:
-            return None
-        margin = 32
-        bounds = (
-            max(desktop[0], math.floor(min(point[0] for point in points)) - margin),
-            max(desktop[1], math.floor(min(point[1] for point in points)) - margin),
-            min(desktop[2], math.ceil(max(point[0] for point in points)) + margin + 1),
-            min(desktop[3], math.ceil(max(point[1] for point in points)) + margin + 1),
-        )
-        return bounds if bounds[0] < bounds[2] and bounds[1] < bounds[3] else None
+    def _scene_bounds(
+        snapshot: TeachingSnapshot, desktop: Rect, *, now: float | None = None
+    ) -> Rect | None:
+        from desktop_mcp.teaching_render import validate_scene
+
+        return validate_scene(snapshot, now=time.monotonic() if now is None else now, clip=desktop)
 
     def _refresh(self):
         from desktop_mcp.layers import upload_rgba
-        from desktop_mcp.teaching_render import render_marks
+        from desktop_mcp.teaching_render import SceneTooLarge, render_marks
 
         gui, con = self._gui, self._con
         control = self.controller.snapshot()
@@ -736,7 +730,14 @@ class TeachingSurface:
             left + self._api.GetSystemMetrics(78),
             top + self._api.GetSystemMetrics(79),
         )
-        bounds = self._scene_bounds(snapshot, desktop)
+        now = time.monotonic()
+        try:
+            bounds = self._scene_bounds(snapshot, desktop, now=now)
+        except SceneTooLarge:
+            gui.ShowWindow(self._canvas, con.SW_HIDE)
+            gui.SetWindowText(self._status, "Guidance scene too large. Erase older marks.")
+            self._last_scene = None
+            return
         if bounds is None:
             gui.ShowWindow(self._canvas, con.SW_HIDE)
             self._last_scene = None
@@ -744,10 +745,10 @@ class TeachingSurface:
         animated = (
             any(mark.kind == "laser" for mark in snapshot.marks) or snapshot.waiting is not None
         )
-        signature = (snapshot.revision, bounds, round(time.monotonic() * 30) if animated else 0)
+        signature = (snapshot.revision, bounds, round(now * 30) if animated else 0)
         if signature != self._last_scene:
-            image = render_marks(snapshot, bounds, now=time.monotonic())
-            upload_rgba(self._canvas, (bounds[0], bounds[1]), image)
+            with render_marks(snapshot, bounds, now=now) as image:
+                upload_rgba(self._canvas, (bounds[0], bounds[1]), image)
             gui.SetWindowPos(
                 self._canvas,
                 con.HWND_TOPMOST,

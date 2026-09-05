@@ -6,6 +6,7 @@ import pytest
 
 from desktop_mcp.layers import upload_rgba
 from desktop_mcp.teaching_ui import TeachingSurface, _DrawItem, _Request
+from desktop_mcp.teaching import Mark, TeachingSnapshot, WaitTarget
 from tests.test_desktop_tools import FixtureApplication
 
 
@@ -29,6 +30,9 @@ class Gui:
     def SetWindowPos(self, *arguments):
         self.events.append(("position", *arguments))
 
+    def SendMessage(self, *arguments):
+        self.events.append(("message", *arguments))
+
 
 @pytest.fixture
 def surface():
@@ -47,6 +51,7 @@ def surface():
         SWP_NOMOVE=2,
         SWP_NOSIZE=1,
         SWP_NOACTIVATE=16,
+        WM_CANCELMODE=0x1F,
     )
     surface._native_error = OSError
     surface._dwm = SimpleNamespace(DwmFlush=lambda: 0)
@@ -238,14 +243,57 @@ def test_close_still_joins_the_thread_when_the_command_cannot_be_posted(surface)
     assert events == [("join", 3)]
 
 
-def test_ink_window_bounds_are_cropped_to_the_actual_scene():
-    snapshot = SimpleNamespace(
-        marks=(SimpleNamespace(points=((100, 100), (200, 200))),),
-        waiting=None,
+def test_close_command_cancels_the_owned_transcript_modal_loop(surface):
+    request = dispatch(surface, "close")
+    assert request.error is None
+    assert surface._exit
+    assert ("message", 1, 0x1F, 0, 0) in surface._gui.events
+
+
+def test_fatal_dispatch_cancels_modal_processing_without_reentering_ui_logic(surface):
+    from desktop_mcp.teaching_ui import _COMMAND
+
+    def failed_dispatch():
+        raise OSError("Fixture native failure")
+
+    surface._drain_requests = failed_dispatch
+    surface._gui.DefWindowProc = lambda *args: 99
+    surface._gui.SendMessage = lambda *args: surface._gui.events.append(
+        ("cancel", surface._procedure(1, 0x0232, 0, 0))
     )
-    assert TeachingSurface._scene_bounds(snapshot, (0, 0, 1920, 1080)) == (68, 68, 233, 233)
-    snapshot.waiting = SimpleNamespace(center=(300, 400), radius=28)
-    assert TeachingSurface._scene_bounds(snapshot, (0, 0, 1920, 1080)) == (68, 68, 361, 461)
+    assert surface._procedure(1, _COMMAND, 0, 0) == 0
+    assert surface._exit
+    assert not surface.controller.snapshot().interface_ready
+    assert surface._gui.events == [("cancel", 99)]
+
+
+def test_ink_window_bounds_are_cropped_to_the_actual_scene():
+    mark = Mark("ink", "path", ((100, 100), (200, 200)), "#ffb454", 3, 0, None, None)
+    snapshot = TeachingSnapshot(1, (), (mark,), None, None)
+    assert TeachingSurface._scene_bounds(snapshot, (0, 0, 1920, 1080)) == (96, 96, 205, 205)
+    snapshot = TeachingSnapshot(2, (), (mark,), WaitTarget((300, 400), 28, False, 0, 0), None)
+    assert TeachingSurface._scene_bounds(snapshot, (0, 0, 1920, 1080)) == (96, 96, 333, 433)
+
+
+def test_scene_bounds_include_wide_laser_glow():
+    mark = Mark("laser", "laser", ((200, 200), (230, 220)), "#ffb454", 32, 0, 2, None)
+    snapshot = TeachingSnapshot(1, (), (mark,), None, None)
+    assert TeachingSurface._scene_bounds(snapshot, (0, 0, 1920, 1080), now=1) == (72, 72, 359, 349)
+
+
+def test_oversized_transient_scene_is_hidden_without_killing_the_interface(surface):
+    mark = Mark("ink", "path", ((100, 100), (9000, 100)), "#ffb454", 3, 0, None, None)
+    surface.session.snapshot = lambda: TeachingSnapshot(1, (), (mark,), None, None)
+    surface._api = SimpleNamespace(
+        GetSystemMetrics=lambda code: {76: 0, 77: 0, 78: 11520, 79: 2160}[code]
+    )
+    surface._gui.GetWindowText = lambda handle: ""
+    surface._gui.SetWindowText = lambda *args: surface._gui.events.append(("text", *args))
+    surface._refresh()
+    assert not surface._gui.visible[2]
+    assert not surface._exit
+    assert surface.controller.snapshot().interface_ready
+    assert any("scene too large" in str(event) for event in surface._gui.events)
 
 
 def test_layer_upload_uses_premultiplied_pixels_without_a_native_window(monkeypatch):

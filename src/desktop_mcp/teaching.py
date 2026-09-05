@@ -181,6 +181,16 @@ def _in_bounds(points: Sequence[Point], context: CaptureContext) -> None:
         raise ValueError("A target or annotation point is outside the current virtual desktop.")
 
 
+def _expected_revision(state: ControlSnapshot, revision: int | None) -> None:
+    if revision is not None:
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise ValueError("expected_input_revision must be a nonnegative integer.")
+        if state.input_revision != revision:
+            raise RuntimeError(
+                "Input changed after coordinate mapping. Obtain a fresh observation."
+            )
+
+
 def _text(value: object, name: str, maximum: int, *, multiline: bool = False) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > maximum:
         raise ValueError(f"{name} must contain 1..{maximum} characters.")
@@ -226,6 +236,16 @@ class TeachingSession:
         self._generation = self._input_revision = -1
         self._last_time = -math.inf
 
+    @staticmethod
+    def _check_scene(
+        marks: tuple[Mark, ...], waiting: WaitTarget | None, context: CaptureContext, now: float
+    ) -> None:
+        from desktop_mcp.teaching_render import validate_scene
+
+        validate_scene(
+            TeachingSnapshot(0, (), marks, waiting, None), now=now, clip=context.desktop_bounds
+        )
+
     def publish(self, text: str, *, title: str = "Instructions") -> TranscriptEntry:
         """Publish plain text explicitly, retaining only the latest sixteen entries."""
         text = _text(text, "text", MAX_TEXT, multiline=True)
@@ -269,6 +289,7 @@ class TeachingSession:
         width: float = 3.0,
         lifetime: float | None = None,
         expected_context: CaptureContext | None = None,
+        expected_input_revision: int | None = None,
     ) -> str:
         """Add an outlined annotation anchored to a currently available context."""
         points = _points(kind, points)
@@ -280,6 +301,7 @@ class TeachingSession:
             lifetime = _number(lifetime, "lifetime", 0.01, 10.0 if kind == "laser" else 3600.0)
         expected = _context(expected_context) if expected_context is not None else None
         before = self._authorize()
+        _expected_revision(before, expected_input_revision)
         now = self._now()
         prepared = self._authorize(generation=before.generation)
         with self._lock:
@@ -315,6 +337,12 @@ class TeachingSession:
                 self._last_time,
                 self._last_time + lifetime if lifetime is not None else None,
                 current,
+            )
+            self._check_scene(
+                (*tuple(item.mark for item in self._marks.values()), mark),
+                self._waiting.target if self._waiting is not None else None,
+                current,
+                self._last_time,
             )
             self._marks[identifier] = _MarkState(
                 mark, after.generation, after.input_revision, self._last_time
@@ -375,6 +403,7 @@ class TeachingSession:
         dwell: float = 0.25,
         timeout: float = 15.0,
         expected_context: CaptureContext | None = None,
+        expected_input_revision: int | None = None,
     ) -> dict[str, object]:
         """Wait for sampled continuous cursor vicinity, never claim a click.
 
@@ -387,6 +416,7 @@ class TeachingSession:
         timeout = _number(timeout, "timeout", 0.0, 30.0)
         expected = _context(expected_context) if expected_context is not None else None
         initial = self._authorize(teach=True)
+        _expected_revision(initial, expected_input_revision)
         started = previous_time = self._now()
         prepared = self._authorize(teach=True, generation=initial.generation)
         token = object()
@@ -449,11 +479,18 @@ class TeachingSession:
                     status = active.invalid or status
                     self._set_cursor(cursor)
                     if status is None:
+                        waiting_target = WaitTarget(target, radius, inside, progress, elapsed)
+                        self._check_scene(
+                            tuple(item.mark for item in self._marks.values()),
+                            waiting_target,
+                            anchor,
+                            now,
+                        )
                         self._waiting = replace(
                             active,
                             context=anchor,
                             checked_at=max(checked_at, active.checked_at),
-                            target=WaitTarget(target, radius, inside, progress, elapsed),
+                            target=waiting_target,
                         )
                         self._revision += 1
                 if status is None:

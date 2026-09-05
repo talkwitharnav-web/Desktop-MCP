@@ -172,6 +172,10 @@ pixels. These marks are separate click-through visual layers; they never move
 your real pointer or modify Blender. `Erase` and the local **Clear ink** button
 remove only Desktop-MCP marks.
 
+The combined ink/laser/wait canvas is limited to 8,192 pixels per side and
+16,777,216 pixels total. Oversized combinations are rejected before publication;
+erase older marks before guiding across widely separated monitors.
+
 `WaitForCursor` is available in Teach mode. Its `radius` is physical pixels;
 `dwell` requires continuously staying nearby. It returns `reached`, `timeout`,
 `context_changed` or `input_changed`; being nearby is **not proof of a click or
@@ -207,6 +211,8 @@ Without `frame_id`, coordinates are explicitly physical virtual-desktop pixels.
 Frame references expire, are bounded in memory, and are rejected after input
 changes or relevant window/display geometry changes. A reference is not an
 eternal guarantee that an application has not redrawn its own contents.
+Teaching tools carry the input-revision ticket through coordinate mapping and
+annotation/wait authorization; a learner click cannot silently refresh an old frame.
 
 Coordinate-bound batches guard the observed foreground window. If an action
 opens a new dialog or switches applications, use the returned fresh observation

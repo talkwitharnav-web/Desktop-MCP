@@ -5,6 +5,7 @@ import pytest
 from desktop_mcp.contracts import CaptureContext
 from desktop_mcp.runtime import DesktopStopped
 from desktop_mcp.teaching_tools import register_teaching_tools
+from desktop_mcp.teaching import TeachingSession
 from tests.test_desktop_tools import FixtureApplication
 from tests.test_desktop_vision import Rig
 
@@ -111,6 +112,60 @@ def test_presentation_and_cursor_waits_obey_stop(teaching_tools, name, arguments
     with pytest.raises(DesktopStopped):
         tools[name](**arguments)
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    "name,arguments,method",
+    [
+        ("Laser", {"loc": (10, 10), "frame_id": "frame"}, "draw"),
+        ("Draw", {"kind": "path", "points": [(10, 10), (20, 20)], "frame_id": "frame"}, "draw"),
+        ("WaitForCursor", {"loc": (10, 10), "frame_id": "frame", "dwell": 0.0}, "wait_for_cursor"),
+    ],
+)
+@pytest.mark.parametrize("kind", ["move", "button", "key"])
+def test_input_ticket_survives_the_gap_between_mapping_and_session_authorization(
+    teaching_tools, name, arguments, method, kind
+):
+    app, tools, _ = teaching_tools
+    app.controller.set_mode_local("teach")
+    app.controller.arm_local()
+    app.backend.point = (120, 70)
+    app.teaching = TeachingSession(
+        app.controller, position=app.backend.position, context=app.teaching_context
+    )
+    original = getattr(app.teaching, method)
+
+    def after_mapping(*args, **kwargs):
+        app.controller.notify_human_input(kind=kind)
+        return original(*args, **kwargs)
+
+    setattr(app.teaching, method, after_mapping)
+    if kind == "move":
+        result = tools[name](**arguments)
+        assert result
+    else:
+        with pytest.raises(RuntimeError, match="Input changed"):
+            tools[name](**arguments)
+        assert not app.teaching.snapshot().marks
+        assert app.teaching.snapshot().waiting is None
+    assert app.controller.snapshot().armed
+
+
+def test_input_during_bulk_mapping_never_publishes_guidance(teaching_tools):
+    app, tools, calls = teaching_tools
+    app.controller.set_mode_local("teach")
+    app.controller.arm_local()
+    resolve = app.vision.resolve_many
+
+    def changed(frame, points):
+        result = resolve(frame, points)
+        app.controller.notify_human_input(kind="button")
+        return result
+
+    app.vision.resolve_many = changed
+    with pytest.raises(RuntimeError, match="Input changed"):
+        tools["Laser"](loc=(10, 10), frame_id="frame")
+    assert not any(call[0] == "draw" for call in calls)
 
 
 def test_bulk_mapping_checks_the_context_once_for_an_entire_path():
