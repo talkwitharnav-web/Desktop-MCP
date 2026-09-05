@@ -177,7 +177,7 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
 
     @mcp.tool(
         name="Move",
-        description="Move with smooth acceleration/deceleration, or drag with any mouse button and modifiers (e.g. middle drag / Shift+middle drag in Blender). from_loc gives an explicit drag start. duration is optional seconds; default is distance-adaptive, not teleporting. frame_id maps image coordinates for both endpoints.",
+        description="Move with smooth acceleration/deceleration, or drag with any mouse button and modifiers (e.g. middle drag / Shift+middle drag in Blender). from_loc gives an explicit drag start. duration is optional seconds with an 80 ms motion minimum; default is distance-adaptive, not teleporting. frame_id maps image coordinates for both endpoints.",
         annotations=mutate,
     )
     def move(

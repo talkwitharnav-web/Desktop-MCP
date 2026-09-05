@@ -427,7 +427,7 @@ class Controller:
         start = self.backend.position()
         if target == start:
             return
-        elapsed_duration = duration if duration is not None else motion_duration(start, target)
+        elapsed_duration = motion_duration(start, target, duration)
         started = self._clock()
         last = start
         while True:

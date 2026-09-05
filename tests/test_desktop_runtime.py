@@ -328,6 +328,88 @@ def test_text_is_batched_without_typing_delays_and_preserves_unicode(armed, monk
     assert max(len(event[1]) for event in backend.events) <= 64
 
 
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "move",
+        "click",
+        "drag",
+        "scroll",
+        "key",
+        "text",
+        "key_down",
+        "key_up",
+        "button_down",
+        "button_up",
+    ],
+)
+def test_zero_duration_is_rejected_for_every_action_that_moves_to_loc(kind):
+    arguments = {"kind": kind, "loc": (900, 10), "duration": 0.0}
+    if kind in {"key", "key_down", "key_up"}:
+        arguments["keys"] = ["a"]
+    if kind == "text":
+        arguments["text"] = "literal text"
+    with pytest.raises(ValidationError, match="duration"):
+        Action(**arguments)
+
+
+@pytest.mark.parametrize("duration", [0.0, 0.001, None])
+def test_motion_floor_does_not_add_literal_text_delays(armed, monkeypatch, duration):
+    controller, backend = armed
+    monkeypatch.setattr(controller, "wait", lambda _: pytest.fail("Text received a motion delay"))
+    with controller.operation("Fixture fast text"):
+        controller.execute([Action(kind="text", text="x" * 200, duration=duration)])
+    assert "".join(event[1] for event in backend.events) == "x" * 200
+    assert Action(kind="wait", duration=0.0).duration == 0.0
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "move",
+        "click",
+        "drag",
+        "scroll",
+        "key",
+        "text",
+        "key_down",
+        "key_up",
+        "button_down",
+        "button_up",
+    ],
+)
+def test_subframe_motion_requests_still_have_visible_acceleration_steps(armed, monkeypatch, kind):
+    controller, backend = armed
+    clock = [0.0]
+    controller._clock = lambda: clock[0]
+
+    def advance(duration):
+        clock[0] += duration
+        controller.checkpoint()
+
+    monkeypatch.setattr(controller, "wait", advance)
+    arguments = {"kind": kind, "loc": (900, 10), "duration": 0.001}
+    if kind in {"key", "key_down", "key_up"}:
+        arguments["keys"] = ["a"]
+    if kind == "text":
+        arguments["text"] = "No typing throttle"
+    actions = []
+    if kind == "key_up":
+        actions.append(Action(kind="key_down", keys=["a"]))
+    elif kind == "button_up":
+        actions.append(Action(kind="button_down"))
+    actions.append(Action(**arguments))
+    with controller.operation("Fixture subframe motion"):
+        controller.execute(actions)
+    xs = [event[1][0] for event in backend.events if event[0] == "move"]
+    assert len(xs) >= 6
+    assert xs[-1] == 900
+    assert xs == sorted(xs)
+    deltas = [right - left for left, right in zip([10, *xs[:-1]], xs)]
+    assert max(deltas) > deltas[0] and max(deltas) > deltas[-1]
+    assert clock[0] >= 0.08
+
+
 def test_keys_and_buttons_are_released_before_batch_returns(armed):
     controller, backend = armed
     with controller.operation("batch"):

@@ -43,6 +43,9 @@ implementation lives under `src/desktop_mcp`.
   revision. Image coordinates include both scale and crop origin when mapped.
 - A request's shape is validated before emitting input. Failure after partial
   execution reports completed actions and does not replay them.
+  Zero duration is rejected for every action that moves to a coordinate, not
+  only Move/Click/Drag. The shared motion helper applies an 80 ms minimum to
+  explicit pointer durations; zero waits and unpaced literal text are unchanged.
 - Captures exclude our overlays. Images, window titles and typed text are not
   telemetry or committed artifacts.
   DXCAM uses only the verified 0.3.0 one-shot recovery boundary: access loss fails

@@ -271,6 +271,9 @@ Movement uses a minimum-jerk curve: zero initial/final velocity and acceleration
 without overshooting a click target. Its default duration adapts to distance;
 an explicit positive `duration` can slow a demonstration. Text has no corresponding
 speed cap.
+Requests below 80 ms use an 80 ms pointer-motion minimum so approaches and drags
+still contain visible acceleration/deceleration steps. Any action that moves to
+`loc` requires a positive explicit duration; zero-length waits remain valid.
 
 Do not automatically replay a failed input request. The error identifies how
 many complete steps ran; the current step can be partially applied. An error

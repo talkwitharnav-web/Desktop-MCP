@@ -113,6 +113,24 @@ async def test_supervised_surface_has_no_arm_or_raw_system_tools():
         assert result.data["state"] == "stopped"
 
 
+async def test_zero_duration_coordinate_batch_fails_before_its_first_key():
+    application = FixtureApplication(armed=True)
+    async with Client(create_server(application)) as client:
+        result = await client.call_tool(
+            "DesktopBatch",
+            {
+                "actions": [
+                    {"kind": "key", "keys": ["a"]},
+                    {"kind": "scroll", "loc": [900, 10], "duration": 0.0, "delta_y": -120},
+                ],
+                "observe": False,
+            },
+            raise_on_error=False,
+        )
+        assert result.is_error
+        assert application.backend.events == []
+
+
 @pytest.mark.parametrize(
     "name,arguments",
     [

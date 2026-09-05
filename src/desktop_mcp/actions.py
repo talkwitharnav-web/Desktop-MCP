@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from desktop_mcp.contracts import Point
 
 Button = Literal["left", "right", "middle", "x1", "x2"]
+MIN_MOTION_DURATION = 0.08
 ActionKind = Literal[
     "move",
     "click",
@@ -126,10 +127,12 @@ def ease_motion(progress: float) -> float:
     return progress**3 * (10.0 + progress * (-15.0 + 6.0 * progress))
 
 
-def motion_duration(start: Point, end: Point) -> float:
+def motion_duration(start: Point, end: Point, requested: float | None = None) -> float:
     """Keep small moves responsive and long moves visibly accelerated."""
+    if requested is not None:
+        return max(MIN_MOTION_DURATION, requested)
     distance = math.hypot(end[0] - start[0], end[1] - start[1])
-    return min(0.65, max(0.08, 0.06 + math.sqrt(distance) / 85.0))
+    return min(0.65, max(MIN_MOTION_DURATION, 0.06 + math.sqrt(distance) / 85.0))
 
 
 class Action(BaseModel):
@@ -143,7 +146,13 @@ class Action(BaseModel):
     button: Button = "left"
     keys: list[str] = Field(default_factory=list, max_length=16)
     text: str | None = None
-    duration: float | None = Field(default=None, ge=0, le=10, strict=True)
+    duration: float | None = Field(
+        default=None,
+        ge=0,
+        le=10,
+        strict=True,
+        description="Seconds. Pointer movement has an 80 ms minimum; literal text is not paced.",
+    )
     clicks: int = Field(default=1, ge=1, le=3, strict=True)
     repeat: int = Field(default=1, ge=1, le=1000, strict=True)
     delta_x: int = Field(default=0, ge=-120000, le=120000, strict=True)
@@ -174,7 +183,15 @@ class Action(BaseModel):
             raise ValueError("text, clear and submit are only valid for text input.")
         if self.kind == "wait" and self.duration is None:
             raise ValueError("A wait requires duration in seconds.")
-        if self.duration == 0 and self.kind in {"move", "click", "drag"}:
+        if (
+            self.duration == 0
+            and self.kind != "wait"
+            and (
+                self.loc is not None
+                or self.start is not None
+                or self.kind in {"move", "click", "drag"}
+            )
+        ):
             raise ValueError("Motion duration must be positive; pointer moves are smooth.")
         if self.frame_id is not None and self.loc is None and self.start is None:
             raise ValueError("frame_id needs an image coordinate in loc or start.")
