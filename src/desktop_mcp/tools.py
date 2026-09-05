@@ -16,6 +16,7 @@ from pydantic import Field, StrictInt
 
 from desktop_mcp.actions import Action, Button, parse_shortcut
 from desktop_mcp.contracts import CaptureScope, Observation
+from desktop_mcp.diagnostics import input_delivery, validated_frame
 from desktop_mcp.interaction import current_actor
 from desktop_mcp.runtime import BatchInterrupted
 
@@ -37,12 +38,16 @@ def observation_result(
     observation: Observation | None,
     *,
     extra: dict[str, object] | None = None,
+    protected_windows: list[dict[str, object]] | None = None,
     detail: Literal["compact", "full"] = "compact",
 ) -> ToolResult:
     """Keep actual image blocks separate from their structured/text metadata."""
     metadata = dict(extra or {})
     if observation is not None:
-        metadata["observation"] = observation.metadata
+        metadata["observation"] = {
+            **observation.metadata,
+            "protected_windows": protected_windows or [],
+        }
         metadata["frame_id"] = observation.frame_id
     if detail == "full":
         summary = json.dumps(metadata, ensure_ascii=False, allow_nan=False)
@@ -109,18 +114,22 @@ def register_tools(
     ) -> ToolResult:
         app = get_app()
         with app.controller.operation("Desktop input"):
+            if any(action.kind != "wait" for action in actions):
+                input_delivery()
             frames = {action.frame_id for action in actions if action.frame_id is not None}
             for frame_id in frames:
                 context = app.vision.context_for(frame_id)
                 if window_id is not None and context.window_id != window_id:
                     raise ValueError("The frame belongs to a different foreground window.")
                 window_id = context.window_id
+                validated_frame(frame_id)
             actor = current_actor()
             try:
                 completed = app.controller.execute(
                     actions, resolve=app.vision.resolve, window_id=window_id
                 )
             except BatchInterrupted as error:
+                input_delivery(error.completed, delivery="partial")
                 app.interaction.record_input(
                     tool=actor.tool if actor else "Desktop input",
                     completed=error.completed,
@@ -128,6 +137,7 @@ def register_tools(
                 )
                 raise
             if any(action.kind != "wait" for action in actions):
+                input_delivery(len(completed), delivery="complete")
                 app.interaction.record_input(
                     tool=actor.tool if actor else "Desktop input", completed=len(completed)
                 )
@@ -154,6 +164,7 @@ def register_tools(
                 )
                 if observation is not None and observation.image is not None and app.export_frames:
                     observation = app.export_observation(observation)
+                protected = app.backend.protected_windows() if observation is not None else None
                 if observation is not None:
                     app.interaction.record_observation(observation)
             except (OSError, RuntimeError, ValueError) as error:
@@ -163,6 +174,7 @@ def register_tools(
                 ) from error
             return observation_result(
                 observation,
+                protected_windows=protected,
                 extra={
                     "actions": completed,
                     "input_revision": app.controller.input_revision,
@@ -184,9 +196,11 @@ def register_tools(
             **asdict(app.controller.snapshot()),
             "host": app.host_info,
             "interaction": app.interaction.status(actor.session_id if actor else None),
+            "protected_windows": app.backend.protected_windows(),
             "transcript": {
                 "visible": app.teaching_surface.visible,
                 "enabled": app.teaching_surface.enabled,
+                "layout": app.teaching_surface.layout_status(),
                 **app.teaching.conversation.status(),
             },
         }
@@ -262,9 +276,11 @@ def register_tools(
             )
             if observation.image is not None and (export_image or app.export_frames):
                 observation = app.export_observation(observation)
+            protected = app.backend.protected_windows()
             app.interaction.record_observation(observation)
             return observation_result(
                 observation,
+                protected_windows=protected,
                 detail=detail,
                 extra=response_context(app),
             )
@@ -440,13 +456,16 @@ def register_tools(
             if mode == "focus":
                 if window_id is None or executable is not None or args is not None:
                     raise ValueError("Focus requires only window_id.")
+                input_delivery()
                 app.controller.emit(lambda: app.backend.focus(window_id))
                 result = {"window_id": window_id}
             else:
                 if executable is None or window_id is not None:
                     raise ValueError("Launch requires executable and optional args, not window_id.")
+                input_delivery()
                 pid = app.controller.emit(lambda: app.backend.launch(executable, args or []))
                 result = {"pid": pid, "launched": True}
+            input_delivery(1, delivery="complete")
             app.interaction.record_input(tool=f"App.{mode}", completed=1)
             try:
                 observation = (
@@ -458,6 +477,7 @@ def register_tools(
                 )
                 if observation is not None and observation.image is not None and app.export_frames:
                     observation = app.export_observation(observation)
+                protected = app.backend.protected_windows() if observation is not None else None
                 if observation is not None:
                     app.interaction.record_observation(observation)
             except (OSError, RuntimeError, ValueError) as error:
@@ -467,6 +487,7 @@ def register_tools(
                 ) from error
             return observation_result(
                 observation,
+                protected_windows=protected,
                 extra={**result, "application_outcome": "unverified", **response_context(app)},
             )
 
@@ -513,8 +534,11 @@ def register_tools(
             observation = app.vision.observe()
             if observation.image is not None and app.export_frames:
                 observation = app.export_observation(observation)
+            protected = app.backend.protected_windows()
             check_ticket(app.vision.context_for(observation.frame_id))
             app.interaction.record_observation(observation)
             return observation_result(
-                observation, extra={"accessibility_tree": tree, **response_context(app)}
+                observation,
+                protected_windows=protected,
+                extra={"accessibility_tree": tree, **response_context(app)},
             )

@@ -62,6 +62,7 @@ class DesktopApplication:
         self.capture = WindowsCapture(
             capture_guard=self.capture_guard,
             control_windows=self.window_handles,
+            ensure_observable_foreground=self.backend.ensure_observable_foreground,
             checkpoint=self.controller.checkpoint,
         )
         self.vision: VisionService = VisionService(
@@ -77,6 +78,7 @@ class DesktopApplication:
             self.controller, self.teaching, on_exit=self.request_exit
         )
         self.backend.set_control_windows(self.window_handles)
+        self.backend.set_window_roles(self.window_roles)
         setting = os.getenv("DESKTOP_MCP_IMAGE_FILES", "false").casefold()
         if setting not in {"true", "1", "yes", "on", "false", "0", "no", "off", ""}:
             raise ValueError("DESKTOP_MCP_IMAGE_FILES must be a boolean setting.")
@@ -115,6 +117,13 @@ class DesktopApplication:
         handles = self.surface.window_handles()
         teaching = getattr(self, "teaching_surface", None)
         return handles + (() if teaching is None else teaching.window_handles())
+
+    def window_roles(self) -> dict[int, str]:
+        roles = self.surface.window_roles()
+        teaching = getattr(self, "teaching_surface", None)
+        if teaching is not None:
+            roles.update(teaching.window_roles())
+        return roles
 
     @contextmanager
     def capture_guard(self) -> Iterator[None]:

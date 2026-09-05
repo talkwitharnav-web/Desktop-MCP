@@ -17,8 +17,14 @@ def app():
     application.controller = Controller(FakeInput())
     application.controller.set_interface_ready(True)
     application.controller.arm_local()
-    application.surface = SimpleNamespace(window_handles=lambda: (10, 11))
-    application.teaching_surface = SimpleNamespace(window_handles=lambda: (20, 21))
+    application.surface = SimpleNamespace(
+        window_handles=lambda: (10, 11),
+        window_roles=lambda: {10: "main-control", 11: "cursor-overlay"},
+    )
+    application.teaching_surface = SimpleNamespace(
+        window_handles=lambda: (20, 21),
+        window_roles=lambda: {20: "transcript", 21: "transcript-composer"},
+    )
     application.teaching = SimpleNamespace(
         conversation=Conversation(
             is_closed=lambda: application.controller.snapshot().state == "closed"
@@ -30,6 +36,17 @@ def app():
 
 def test_all_native_windows_are_protected(app):
     assert app.window_handles() == (10, 11, 20, 21)
+
+
+def test_composed_native_roles_identify_surfaces_without_reading_text(app):
+    assert app.window_roles() == {
+        10: "main-control",
+        11: "cursor-overlay",
+        20: "transcript",
+        21: "transcript-composer",
+    }
+    del app.teaching_surface
+    assert app.window_roles() == {10: "main-control", 11: "cursor-overlay"}
 
 
 def test_local_quit_revokes_and_signals_the_host_without_joining_ui_threads(app):

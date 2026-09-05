@@ -57,6 +57,14 @@ the conversation window, never desktop authorization. Do not Alt+Tab and try to
 click protected application controls to do this. Local pinning overrides
 `Transcript(action="back")`; programmatic front/show does not take keyboard focus.
 
+The default transcript is a short, wide ribbon with history beside the composer,
+not a tall chat panel. The human can use **Expand/Compact** for longer history
+and **Latest** to return to new replies without losing a draft or reading position.
+Top/Bottom dock inside the work area; the explicit **Taskbar edge** choice can
+need **Pin first** to remain above the taskbar. These are local layout choices,
+not input grants. `DesktopStatus.transcript.layout` reports content-free layout
+state and the last completed physical bounds.
+
 Use this loop while a transcript conversation is active:
 
 1. Publish a short useful step with `Transcript(text=..., title=...)`.
@@ -167,12 +175,25 @@ part of the failing action, have already happened. A failed follow-up screenshot
 does not undo successful input. Obtain fresh state and continue deliberately.
 
 Screenshots hide our own interfaces, so a clear-looking screenshot does not
-prove no transcript/control window is in the way. On a protected-target denial,
-inspect the returned role, root/window id, bounds, physical point and visibility,
-or `DesktopStatus` diagnostics. Say which surface actually blocked the input.
+prove no transcript/control window is in the way. On a target denial, inspect
+`denial.target_point` and `denial.matched` (role, `root_id`, `window_id`, bounds
+and visibility), or `DesktopStatus` diagnostics. A foreground mismatch or an
+indeterminate target can have no matched window; do not invent one.
+These errors set MCP `isError` and structured
+`is_error=true`; `denial.request` identifies the current caller and request,
+`denial.frame_ids` contains only frame references validated for that call, and
+`denial.input` distinguishes no delivery, partial delivery and completed input
+whose follow-up observation failed. Say which surface actually blocked the input.
 Do not repeatedly blame an unspecified "control window" or assume a false-positive.
 You may hide the transcript through its dedicated tool when it obstructs a target;
 never disable protection or use native/shell input to click through permission UI.
+
+`DesktopStatus.protected_windows` and each returned image's
+`observation.protected_windows` describe capture-excluded surfaces without
+their text. They are current diagnostic snapshots, not permission to replay an
+old click. `DesktopStatus.interaction.last_denial` retains the last attributed
+denial; check its caller/generation rather than treating it as a new failure.
+An armed controller can correctly deny a protected target.
 
 At task handoff, release the interactive task with
 `DesktopControl(action="release")`; release the transcript listener separately.

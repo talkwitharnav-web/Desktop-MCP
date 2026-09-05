@@ -1,12 +1,32 @@
 from types import SimpleNamespace
+from bisect import bisect_right
 import ctypes
 
 from PIL import Image, ImageFont
 import pytest
+import win32con
 
 from desktop_mcp.layers import upload_rgba
-from desktop_mcp.teaching_ui import TeachingSurface, _DrawItem, _Request
+from desktop_mcp.teaching_ui import TeachingSurface, _DrawItem, _MinMaxInfo, _Request
 from desktop_mcp.teaching import Mark, TeachingSnapshot, WaitTarget
+from desktop_mcp.transcript_layout import (
+    BOTTOM,
+    CLEAR,
+    COMPOSER,
+    COMPOSER_LABEL,
+    EXPAND,
+    HISTORY,
+    HISTORY_LABEL,
+    LATEST,
+    PIN,
+    SEND,
+    STATUS,
+    STOP,
+    TASKBAR,
+    TOP,
+    layout_client,
+    usable_area,
+)
 from tests.test_desktop_tools import FixtureApplication
 
 
@@ -14,24 +34,144 @@ class Gui:
     def __init__(self):
         self.visible = {1: True, 2: True}
         self.iconic = {1: False, 2: False}
+        self.zoomed = False
         self.events = []
+        self.rect = (80, 80, 1200, 244)
+        self.chrome = (16, 39)
+        self.positions = {}
+        self.texts = {}
+        self.selections = {}
+        self.first_lines = {}
+        self.created = {}
+        self.font_height = 14
+        self.foreground = 999
+        self.LOGFONT = SimpleNamespace
 
     def IsWindowVisible(self, handle):
-        return self.visible[handle]
+        return self.visible.get(handle, True)
 
     def IsIconic(self, handle):
-        return self.iconic[handle]
+        return self.iconic.get(handle, False)
 
     def ShowWindow(self, handle, command):
         self.events.append(("show", handle, command))
         self.visible[handle] = command != 0
         self.iconic[handle] = command == 7
+        if command == win32con.SW_RESTORE:
+            self.zoomed = False
 
-    def SetWindowPos(self, *arguments):
-        self.events.append(("position", *arguments))
+    def SetWindowPos(self, handle, target, x, y, width, height, flags):
+        self.events.append(("position", handle, target, x, y, width, height, flags))
+        if handle == 1:
+            if flags & win32con.SWP_NOMOVE:
+                x, y = self.rect[:2]
+            if flags & win32con.SWP_NOSIZE:
+                width, height = self.rect[2] - self.rect[0], self.rect[3] - self.rect[1]
+            self.rect = (x, y, x + width, y + height)
 
-    def SendMessage(self, *arguments):
-        self.events.append(("message", *arguments))
+    def GetWindowRect(self, handle):
+        return self.rect
+
+    def GetClientRect(self, handle):
+        if handle == 1:
+            return (
+                0,
+                0,
+                self.rect[2] - self.rect[0] - self.chrome[0],
+                self.rect[3] - self.rect[1] - self.chrome[1],
+            )
+        return (0, 0, *self.positions.get(handle, (0, 0, 600, 100))[2:])
+
+    def MoveWindow(self, handle, x, y, width, height, repaint):
+        self.events.append(("move", handle, x, y, width, height))
+        self.positions[handle] = (x, y, width, height)
+        self._clamp_scroll(handle)
+
+    def GetWindowText(self, handle):
+        return self.texts.get(handle, "")
+
+    def SetWindowText(self, handle, text):
+        self.events.append(("text", handle, text))
+        self.texts[handle] = text
+        self.selections[handle] = (0, 0)
+        self.first_lines[handle] = 0
+
+    def _lines(self, handle):
+        columns = max(1, (self.GetClientRect(handle)[2] - 24) // max(1, self.font_height // 2))
+        lines, offset = [], 0
+        for paragraph in self.texts.get(handle, "").split("\r\n"):
+            length = len(paragraph.encode("utf-16-le")) // 2
+            lines.extend(offset + index for index in range(0, max(1, length), columns))
+            offset += length + 2
+        return lines
+
+    def _page(self, handle):
+        return max(1, self.GetClientRect(handle)[3] // (self.font_height + 2))
+
+    def _clamp_scroll(self, handle):
+        maximum = max(0, len(self._lines(handle)) - self._page(handle))
+        self.first_lines[handle] = min(maximum, max(0, self.first_lines.get(handle, 0)))
+
+    def GetScrollInfo(self, handle, bar, mask):
+        self._clamp_scroll(handle)
+        return 0, 0, len(self._lines(handle)) - 1, self._page(handle), self.first_lines[handle], 0
+
+    def SendMessage(self, handle, message, wparam, lparam):
+        self.events.append(("message", handle, message, wparam, lparam))
+        if message == win32con.EM_GETSEL:
+            start, end = self.selections.get(handle, (0, 0))
+            ctypes.cast(wparam, ctypes.POINTER(ctypes.wintypes.DWORD)).contents.value = start
+            ctypes.cast(lparam, ctypes.POINTER(ctypes.wintypes.DWORD)).contents.value = end
+            return (start & 0xFFFF) | ((end & 0xFFFF) << 16)
+        if message == win32con.EM_SETSEL:
+            self.selections[handle] = wparam, lparam
+        elif message == win32con.EM_GETFIRSTVISIBLELINE:
+            return self.first_lines.get(handle, 0)
+        elif message == win32con.EM_LINEINDEX:
+            lines = self._lines(handle)
+            return lines[min(max(0, wparam), len(lines) - 1)]
+        elif message == win32con.EM_LINEFROMCHAR:
+            return max(0, bisect_right(self._lines(handle), wparam) - 1)
+        elif message == win32con.EM_LINESCROLL:
+            self.first_lines[handle] = self.first_lines.get(handle, 0) + lparam
+            self._clamp_scroll(handle)
+        elif message == win32con.EM_SCROLLCARET:
+            caret = self.selections.get(handle, (0, 0))[1]
+            line = max(0, bisect_right(self._lines(handle), caret) - 1)
+            first = self.first_lines.get(handle, 0)
+            if line < first:
+                self.first_lines[handle] = line
+            elif line >= first + self._page(handle):
+                self.first_lines[handle] = line - self._page(handle) + 1
+            self._clamp_scroll(handle)
+        return 0
+
+    def CreateWindowEx(self, *arguments):
+        identifier = arguments[9]
+        handle = 1000 + identifier
+        self.created[handle] = arguments
+        self.texts[handle] = arguments[2]
+        self.positions[handle] = tuple(arguments[4:8])
+        return handle
+
+    def CreateFontIndirect(self, description):
+        self.font_height = -description.lfHeight
+        return 60
+
+    def DeleteObject(self, handle):
+        self.events.append(("delete", handle))
+
+    def InvalidateRect(self, *arguments):
+        self.events.append(("invalidate", *arguments))
+
+    def GetForegroundWindow(self):
+        return self.foreground
+
+    def SetFocus(self, handle):
+        self.events.append(("focus", handle))
+
+    def DefWindowProc(self, *arguments):
+        return 47
 
 
 @pytest.fixture
@@ -45,22 +185,31 @@ def surface():
     surface._panel, surface._canvas = 1, 2
     surface._composer, surface._send = 7, 8
     surface._gui = Gui()
-    surface._con = SimpleNamespace(
-        SW_HIDE=0,
-        SW_SHOWNOACTIVATE=4,
-        SW_SHOWMINNOACTIVE=7,
-        HWND_BOTTOM=1,
-        HWND_TOPMOST=-1,
-        HWND_TOP=0,
-        SWP_NOMOVE=2,
-        SWP_NOSIZE=1,
-        SWP_NOACTIVATE=16,
-        WM_CANCELMODE=0x1F,
+    surface._con = win32con
+    surface._user32 = SimpleNamespace(
+        GetDpiForWindow=lambda window: 96, IsZoomed=lambda window: surface._gui.zoomed
     )
     surface._native_error = OSError
     surface._dwm = SimpleNamespace(DwmFlush=lambda: 0)
+    surface._composition_active = lambda: False
+    surface._text_width = lambda text: len(text) * surface._font_height / 2
     yield surface
     application.close()
+
+
+def prepare_layout(surface, *, scale=1.0, work=(0, 0, 1920, 1040), monitor=None, chrome=None):
+    surface._editor, surface._status = 3, 4
+    surface._history_label, surface._composer_label = 9, 10
+    surface._buttons = {
+        identifier: identifier + 100
+        for identifier in (PIN, TOP, BOTTOM, TASKBAR, CLEAR, EXPAND, STOP, LATEST)
+    }
+    surface._scale = surface._dpi_scale = scale
+    surface._user32.GetDpiForWindow = lambda window: round(scale * 96)
+    surface._work_area = lambda: work
+    surface._monitor_area = lambda: monitor or work
+    surface._gui.chrome = chrome or (round(16 * scale), round(39 * scale))
+    surface._gui.rect = (80, 80, 80 + round(1120 * scale), 80 + round(164 * scale))
 
 
 def dispatch(surface, command, *, argument="", generation=None):
@@ -108,7 +257,7 @@ def test_transcript_font_uses_logfont_and_updates_every_child(surface):
     surface._gui.DeleteObject = lambda handle: events.append(("delete", handle))
     surface._set_font()
     assert descriptions[0].lfFaceName == "Segoe UI"
-    assert descriptions[0].lfHeight == -24
+    assert descriptions[0].lfHeight == -21
     assert descriptions[0].lfWeight == 400
     assert descriptions[0].lfQuality == 5
     assert events == [
@@ -124,55 +273,36 @@ def test_transcript_font_uses_logfont_and_updates_every_child(surface):
 
 @pytest.mark.parametrize("work", [(0, 0, 2560, 1528), (0, 0, 640, 360)])
 def test_docking_accounts_for_scaled_minimum_size_before_positioning(surface, work):
-    surface._scale = surface._dpi_scale = 1.5
-    surface._work_area = lambda: work
-    surface._gui.GetWindowRect = lambda handle: (80, 600, 760, 890)
-    surface._con.SWP_NOZORDER = 4
+    prepare_layout(surface, scale=1.5, work=work)
+    surface._gui.rect = (80, 600, 760, 890)
     surface._dock("bottom")
-    _, _, _, x, y, width, height, _ = surface._gui.events[-1]
+    event = next(event for event in surface._gui.events if event[0] == "position")
+    _, _, _, x, y, width, height, _ = event
     minimum = surface._minimum_size(work)
     assert width >= minimum[0] and height >= minimum[1]
-    assert work[0] + 18 <= x and x + width <= work[2] - 18
-    assert work[1] + 18 <= y and y + height == work[3] - 18
+    assert work[0] + 12 <= x and x + width <= work[2] - 12
+    assert work[1] + 12 <= y and y + height == work[3] - 12
 
 
-@pytest.mark.parametrize("scale,client", [(1.0, (444, 201)), (1.5, (666, 302)), (2.0, (888, 402))])
-def test_wait_progress_has_its_own_readable_line_without_hiding_stop(surface, scale, client):
-    surface._scale = surface._dpi_scale = scale
-    surface._editor, surface._status = 3, 4
-    surface._buttons = {201 + index: 10 + index for index in range(5)}
-    surface._gui.GetClientRect = lambda window: (0, 0, *client)
-    positions = {}
-    surface._gui.MoveWindow = lambda window, x, y, w, h, repaint: positions.update(
-        {window: (x, y, w, h)}
-    )
-    surface._layout()
-    status_box = positions[4]
-    assert status_box[3] >= round(48 * surface._scale)
-    stop_box = positions[14]
-    assert stop_box[1] + stop_box[3] <= client[1]
-    assert positions[3][3] >= round(16 * surface._scale)
-    assert positions[7][3] >= round(16 * surface._scale)
-    assert positions[8][3] >= round(16 * surface._scale)
-
+@pytest.mark.parametrize("scale", [1.0, 1.5, 2.0, 3.0])
+def test_compact_status_keeps_progress_chat_state_and_hotkey_on_one_readable_line(surface, scale):
+    prepare_layout(surface, scale=scale, work=(0, 0, round(1920 * scale), round(1040 * scale)))
+    surface._resize_mode(initial=True)
+    status_box = surface._gui.positions[4]
     snapshot = TeachingSnapshot(1, (), (), WaitTarget((10, 10), 28, True, 1.0, 1.0), None)
     surface.session.snapshot = lambda: snapshot
     surface._hide_count = 1
-    texts = {}
-    surface._gui.GetWindowText = lambda window: texts.get(window, "")
-    surface._gui.SetWindowText = lambda window, text: texts.update({window: text})
-    surface.controller.arm_local()
-    with surface.controller.operation("Fixture cursor wait"):
-        surface._refresh()
-    lines = texts[4].splitlines()
-    assert len(lines) == 2
-    assert "Ctrl+Shift+H" in lines[0]
-    assert "Your cursor: 100%" in lines[1]
     try:
-        font = ImageFont.truetype("segoeui.ttf", round(16 * surface._scale))
+        font = ImageFont.truetype("segoeui.ttf", surface._font_height)
     except OSError:
         pytest.skip("Segoe UI font metrics unavailable on this test host")
-    assert all(font.getlength(line) <= status_box[2] for line in lines)
+    surface._text_width = font.getlength
+    surface._refresh()
+    text = surface._gui.texts[4]
+    assert len(text.splitlines()) == 1
+    assert "Ctrl+Shift+H" in text and "100%" in text and "no listener" in text.lower()
+    assert font.getlength(text) <= status_box[2]
+    assert status_box[3] >= surface._font_height
 
 
 @pytest.mark.parametrize(
@@ -184,26 +314,15 @@ def test_wait_progress_has_its_own_readable_line_without_hiding_stop(surface, sc
     ],
 )
 def test_clamped_work_area_keeps_readable_editor_status_and_stop(surface, scale, work, chrome):
-    surface._scale = surface._dpi_scale = scale
-    surface._work_area = lambda: work
-    surface._gui.GetWindowRect = lambda window: (80, 600, 760, 890)
-    surface._con.SWP_NOZORDER = 4
-    surface._dock("bottom")
-    _, _, _, _, _, outer_width, outer_height, _ = surface._gui.events[-1]
-    client = outer_width - chrome[0], outer_height - chrome[1]
-    surface._editor, surface._status = 3, 4
-    surface._buttons = {201 + index: 10 + index for index in range(5)}
-    surface._gui.GetClientRect = lambda window: (0, 0, *client)
-    positions = {}
-    surface._gui.MoveWindow = lambda window, x, y, width, height, repaint: positions.update(
-        {window: (x, y, width, height)}
-    )
-    surface._layout()
-    font_height = round(16 * surface._scale)
+    prepare_layout(surface, scale=scale, work=work, chrome=chrome)
+    surface._resize_mode(initial=True)
+    client = surface._gui.GetClientRect(1)[2:]
+    positions = surface._gui.positions
+    font_height = surface._font_height
     assert positions[3][3] >= font_height
-    assert positions[14][3] >= font_height
+    assert positions[surface._buttons[STOP]][3] >= font_height
     assert positions[7][3] >= font_height and positions[8][3] >= font_height
-    assert surface._status_lines >= 1
+    assert font_height >= 14
     for x, y, width, height in positions.values():
         assert 0 <= x < x + width <= client[0]
         assert 0 <= y < y + height <= client[1]
@@ -211,20 +330,608 @@ def test_clamped_work_area_keeps_readable_editor_status_and_stop(surface, scale,
     snapshot = TeachingSnapshot(1, (), (), WaitTarget((10, 10), 28, True, 1.0, 1.0), None)
     surface.session.snapshot = lambda: snapshot
     surface._hide_count = 1
-    texts = {}
-    surface._gui.GetWindowText = lambda window: texts.get(window, "")
-    surface._gui.SetWindowText = lambda window, text: texts.update({window: text})
-    surface.controller.arm_local()
-    with surface.controller.operation("Fixture compact wait"):
-        surface._refresh()
-    lines = texts[4].splitlines()
-    assert len(lines) <= surface._status_lines
-    assert "Ctrl+Shift+H" in texts[4] and "100%" in texts[4]
     try:
         font = ImageFont.truetype("segoeui.ttf", font_height)
     except OSError:
         pytest.skip("Segoe UI font metrics unavailable on this test host")
+    surface._text_width = font.getlength
+    surface._refresh()
+    lines = surface._gui.texts[4].splitlines()
+    assert len(lines) == 1
+    assert "Ctrl+Shift+H" in lines[0] and "100%" in lines[0]
     assert all(font.getlength(line) <= positions[4][2] for line in lines)
+
+
+def test_native_child_creation_preserves_ids_wrapping_and_content_free_roles(surface):
+    surface._create_controls(42)
+    children = surface._children()
+    assert set(children) == {
+        PIN,
+        TOP,
+        BOTTOM,
+        CLEAR,
+        STOP,
+        SEND,
+        EXPAND,
+        TASKBAR,
+        LATEST,
+        HISTORY,
+        STATUS,
+        COMPOSER,
+        HISTORY_LABEL,
+        COMPOSER_LABEL,
+    }
+    for identifier, handle in children.items():
+        arguments = surface._gui.created[handle]
+        assert arguments[8:11] == (1, identifier, 42)
+        assert arguments[3] & win32con.WS_CHILD
+    for identifier in (HISTORY, COMPOSER):
+        style = surface._gui.created[children[identifier]][3]
+        assert style & win32con.ES_MULTILINE
+        assert style & win32con.WS_VSCROLL
+        assert not style & (win32con.WS_HSCROLL | win32con.ES_AUTOHSCROLL)
+    assert surface._gui.created[children[COMPOSER]][3] & win32con.ES_WANTRETURN
+    assert surface._gui.created[children[HISTORY]][3] & win32con.ES_READONLY
+    assert (
+        "message",
+        children[COMPOSER],
+        win32con.EM_SETLIMITTEXT,
+        16000,
+        0,
+    ) in surface._gui.events
+    surface._gui.GetWindowText = lambda handle: pytest.fail("Roles must not inspect window text")
+    roles = surface.window_roles()
+    assert roles[1] == "transcript"
+    assert roles[2] == "annotation-overlay"
+    assert roles[children[HISTORY]] == "transcript-history"
+    assert roles[children[COMPOSER]] == "transcript-composer"
+    assert roles[children[SEND]] == "transcript-send"
+    assert set(surface.window_handles()) == {1, 2, *children.values()}
+    assert all(
+        roles[handle] == "transcript-controls"
+        for identifier, handle in children.items()
+        if identifier not in {HISTORY, COMPOSER, SEND}
+    )
+    surface._set_font()
+    font_targets = {
+        event[1]
+        for event in surface._gui.events
+        if event[0] == "message" and event[2] == win32con.WM_SETFONT
+    }
+    assert font_targets == set(children.values())
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.5, 2.0, 3.0])
+def test_default_native_placement_uses_outer_logical_size_without_activation(surface, scale):
+    prepare_layout(surface, scale=scale, work=(0, 0, round(1920 * scale), round(1040 * scale)))
+    surface._set_font()
+    surface._resize_mode(initial=True)
+    left, top, right, bottom = surface._gui.rect
+    assert (right - left, bottom - top) == (round(1120 * scale), round(164 * scale))
+    assert bottom == round(1040 * scale) - round(8 * scale)
+    assert left == round(400 * scale)
+    client = surface._gui.GetClientRect(1)[2:]
+    planned = layout_client(*client, scale, compact=True)
+    for identifier, handle in surface._children().items():
+        if identifier in planned.controls:
+            x, y, width, height = surface._gui.positions[handle]
+            assert planned.controls[identifier] == (x, y, x + width, y + height)
+    status = surface.layout_status()
+    assert status == {
+        "compact": True,
+        "dock": "bottom",
+        "bounds": (left, top, right, bottom),
+        "dpi": round(96 * scale),
+        "font_height": round(14 * scale),
+        "split": True,
+    }
+    status["bounds"] = ("do not retain caller mutations",)
+    assert surface.layout_status()["bounds"] == surface._gui.rect
+    assert not any(event[0] in {"focus", "show"} for event in surface._gui.events)
+    assert all(
+        event[-1] & win32con.SWP_NOACTIVATE and event[-1] & win32con.SWP_NOZORDER
+        for event in surface._gui.events
+        if event[0] == "position"
+    )
+
+
+@pytest.mark.parametrize("scale", [1.5, 2.0, 3.0])
+def test_native_minimum_query_during_placement_uses_the_proposed_width(surface, scale):
+    work = (0, 0, round(1920 * scale), round(1040 * scale))
+    prepare_layout(
+        surface, scale=scale, work=work, chrome=(round(16 * scale), round(39 * scale))
+    )
+    original = surface._gui.SetWindowPos
+
+    def constrain_before_resize(handle, target, x, y, width, height, flags):
+        minimum = _MinMaxInfo()
+        surface._procedure(handle, win32con.WM_GETMINMAXINFO, 0, ctypes.addressof(minimum))
+        original(
+            handle,
+            target,
+            x,
+            y,
+            max(width, minimum.min_track.x),
+            max(height, minimum.min_track.y),
+            flags,
+        )
+
+    surface._gui.SetWindowPos = constrain_before_resize
+    surface._set_font()
+    surface._resize_mode(initial=True)
+    left, top, right, bottom = surface._gui.rect
+    assert (right - left, bottom - top) == (round(1120 * scale), round(164 * scale))
+    assert bottom == work[3] - round(8 * scale)
+    assert surface._placement_width is None
+    assert surface._error is None
+
+
+def test_rejected_placement_cannot_leave_a_minimum_width_override(surface):
+    prepare_layout(surface)
+
+    def fail(*args):
+        raise OSError("Fixture placement rejected")
+
+    surface._gui.SetWindowPos = fail
+    with pytest.raises(OSError, match="placement rejected"):
+        surface._place_panel((0, 0, 1200, 200))
+    assert surface._placement_width is None
+
+
+def test_frame_metrics_use_actual_dpi_adjustment_not_fixed_chrome(surface):
+    prepare_layout(surface, scale=3, work=(-800, -600, 0, 0))
+    calls = []
+
+    def adjust(pointer, style, menu, extended, dpi):
+        calls.append((style, menu, extended, dpi))
+        rectangle = ctypes.cast(pointer, ctypes.POINTER(ctypes.wintypes.RECT)).contents
+        rectangle.left, rectangle.top, rectangle.right, rectangle.bottom = -18, -85, 18, 18
+        return True
+
+    surface._user32.AdjustWindowRectExForDpi = adjust
+    assert surface._chrome_size() == (36, 103)
+    minimum = surface._minimum_size(surface._work_area())
+    assert minimum[0] <= 800 - 48 and minimum[1] <= 600 - 48
+    assert calls[-1] == (
+        win32con.WS_OVERLAPPEDWINDOW,
+        False,
+        win32con.WS_EX_APPWINDOW | win32con.WS_EX_CONTROLPARENT,
+        288,
+    )
+
+
+def test_transcript_minimum_tracking_never_applies_to_the_annotation_canvas(surface):
+    prepare_layout(surface, scale=3, work=(0, 0, 640, 360))
+    panel, canvas = _MinMaxInfo(), _MinMaxInfo()
+    surface._procedure(1, win32con.WM_GETMINMAXINFO, 0, ctypes.addressof(panel))
+    assert (panel.min_track.x, panel.min_track.y) == surface._minimum_size(surface._work_area())
+    assert panel.min_track.x <= 592 and panel.min_track.y <= 312
+    assert surface._procedure(2, win32con.WM_GETMINMAXINFO, 0, ctypes.addressof(canvas)) == 47
+    assert (canvas.min_track.x, canvas.min_track.y) == (0, 0)
+
+
+@pytest.mark.parametrize("edge", ["top", "bottom", "taskbar-edge"])
+def test_local_dock_choices_keep_size_pin_state_and_all_child_bounds(surface, edge):
+    work, monitor = (-1920, -100, 0, 940), (-1920, -100, 0, 980)
+    prepare_layout(surface, work=work, monitor=monitor)
+    surface._resize_mode(initial=True)
+    original_size = (
+        surface._gui.rect[2] - surface._gui.rect[0],
+        surface._gui.rect[3] - surface._gui.rect[1],
+    )
+    surface._gui.events.clear()
+    surface._button({"top": TOP, "bottom": BOTTOM, "taskbar-edge": TASKBAR}[edge])
+    area = monitor if edge == "taskbar-edge" else work
+    left, top, right, bottom = usable_area(area, 1, edge)
+    rectangle = surface._gui.rect
+    assert left <= rectangle[0] < rectangle[2] <= right
+    assert (rectangle[2] - rectangle[0], rectangle[3] - rectangle[1]) == original_size
+    assert rectangle[1] == top if edge == "top" else rectangle[3] == bottom
+    assert surface.layout_status()["dock"] == edge
+    assert not surface._pinned
+    assert all(
+        event[2] != win32con.HWND_TOPMOST and event[-1] & win32con.SWP_NOACTIVATE
+        for event in surface._gui.events
+        if event[0] == "position"
+    )
+    client = surface._gui.GetClientRect(1)[2:]
+    for x, y, width, height in surface._gui.positions.values():
+        assert 0 <= x < x + width <= client[0]
+        assert 0 <= y < y + height <= client[1]
+
+
+def test_dragging_can_float_and_never_implicitly_selects_taskbar_edge(surface):
+    prepare_layout(surface, monitor=(0, 0, 1920, 1080))
+    surface._gui.rect = (200, 300, 1320, 464)
+    surface._procedure(1, 0x0232, 0, 0)
+    assert surface.layout_status()["dock"] == "floating"
+    assert surface._gui.rect == (200, 300, 1320, 464)
+    surface._gui.rect = (200, 916, 1320, 1080)
+    surface._procedure(1, 0x0232, 0, 0)
+    assert surface.layout_status()["dock"] != "taskbar-edge"
+    assert surface._gui.rect[3] <= 1032
+    surface._button(TASKBAR)
+    surface._procedure(1, 0x0232, 0, 0)
+    assert surface.layout_status()["dock"] == "taskbar-edge"
+    assert surface._gui.rect[3] == 1080
+
+
+def test_same_dpi_monitor_transition_reflows_only_after_move_and_preserves_draft(surface):
+    prepare_layout(surface, scale=1.5, work=(0, 0, 2880, 1560))
+    surface._set_font()
+    surface._resize_mode(initial=True)
+    surface._gui.SetWindowText(7, "Unsent draft 😀\r\nAnother line")
+    surface._gui.selections[7] = (7, 14)
+    surface._gui.events.clear()
+    surface._gui.rect = (-520, 80, 1160, 326)
+    surface._work_area = lambda: (-640, 0, 0, 360)
+    surface._procedure(1, win32con.WM_MOVE, 0, 0)
+    assert not surface._gui.events
+    surface._procedure(1, 0x0232, 0, 0)
+    assert not surface._exit
+    assert surface._dpi_scale == 1.5
+    assert surface._font_height < 21
+    assert surface._gui.rect == (-628, 12, -12, 348)
+    assert surface._gui.texts[7] == "Unsent draft 😀\r\nAnother line"
+    assert surface._gui.selections[7] == (7, 14)
+    assert not any(event[0] == "focus" for event in surface._gui.events)
+    client = surface._gui.GetClientRect(1)[2:]
+    for x, y, width, height in surface._gui.positions.values():
+        assert 0 <= x < x + width <= client[0]
+        assert 0 <= y < y + height <= client[1]
+
+
+@pytest.mark.parametrize("dpi", [96, 144, 192, 288])
+def test_dpi_changed_suggestion_is_clamped_to_the_new_monitor_without_activation(surface, dpi):
+    prepare_layout(surface, work=(0, 0, 1920, 1040))
+    surface._set_font()
+    surface._resize_mode(initial=True)
+    surface._gui.texts[7] = "Draft remains during DPI changes"
+    surface._gui.selections[7] = (4, 8)
+    surface._work_area = lambda: (-800, -600, 0, 0)
+    surface._gui.chrome = (round(16 * dpi / 96), round(39 * dpi / 96))
+    proposed = ctypes.wintypes.RECT(-900, -800, 900, 0)
+    surface._gui.events.clear()
+    surface._procedure(1, 0x02E0, dpi | (dpi << 16), ctypes.addressof(proposed))
+    assert not surface._exit
+    assert surface._dpi_scale == dpi / 96
+    left, top, right, bottom = usable_area(surface._work_area(), dpi / 96, "bottom")
+    assert left <= surface._gui.rect[0] < surface._gui.rect[2] <= right
+    assert top <= surface._gui.rect[1] < surface._gui.rect[3] <= bottom
+    assert surface._gui.selections[7] == (4, 8)
+    assert surface._gui.texts[7] == "Draft remains during DPI changes"
+    assert all(
+        event[-1] & win32con.SWP_NOACTIVATE
+        for event in surface._gui.events
+        if event[0] == "position"
+    )
+    assert not any(event[0] == "focus" for event in surface._gui.events)
+
+
+def test_expand_compact_retains_each_mode_size_draft_and_pending_conversation(surface):
+    prepare_layout(surface)
+    surface._resize_mode(initial=True)
+    compact_bounds = surface._gui.rect
+    surface.session.conversation.send_user("A pending correction")
+    conversation = surface.session.conversation.entries()
+    surface._gui.SetWindowText(7, "Still typing 😀\r\nSecond line")
+    surface._gui.selections[7] = (6, 12)
+    surface._button(EXPAND)
+    assert not surface._compact and not surface.layout_status()["split"]
+    assert surface._gui.rect[3] - surface._gui.rect[1] == 440
+    assert surface._gui.texts[surface._buttons[EXPAND]] == "Compact"
+    left, _, right, bottom = surface._gui.rect
+    surface._gui.rect = (left, bottom - 500, right, bottom)
+    surface._layout()
+    surface._button(EXPAND)
+    assert surface._compact and surface._gui.rect == compact_bounds
+    surface._button(EXPAND)
+    assert surface._gui.rect[3] - surface._gui.rect[1] == 500
+    assert surface._gui.texts[7] == "Still typing 😀\r\nSecond line"
+    assert surface._gui.selections[7] == (6, 12)
+    assert surface.session.conversation.entries() == conversation
+    assert surface.session.conversation.status()["pending_messages"] == 1
+
+
+def test_layout_changes_during_capture_never_resurrect_a_hidden_transcript(surface):
+    prepare_layout(surface)
+    surface._resize_mode(initial=True)
+    surface._shown = True
+    dispatch(surface, "hide")
+    dispatch(surface, "visibility", argument="off")
+    surface._button(EXPAND)
+    surface._button(TASKBAR)
+    assert not surface.enabled and not surface.visible
+    assert surface._hide_count == 1 and not surface._gui.IsWindowVisible(1)
+    dispatch(surface, "restore")
+    assert not surface._gui.IsWindowVisible(1)
+    assert surface.layout_status()["dock"] == "taskbar-edge"
+
+
+def history_entries(count=12, *, start=1, text=None):
+    return tuple(
+        (index, "Fixture", text or f"Message {index} " + "wrapped words " * 12, "assistant")
+        for index in range(start, start + count)
+    )
+
+
+@pytest.mark.parametrize("position,following", [(16, False), (17, True)])
+def test_native_scroll_info_has_six_fields_with_position_at_index_four(surface, position, following):
+    prepare_layout(surface)
+    surface._resize_mode(initial=True)
+    surface._last_text = history_entries(1)
+    surface._gui.GetScrollInfo = lambda handle, bar, mask: (0, 0, 20, 4, position, position)
+    assert surface._sample_view(surface._editor, history=True).following is following
+
+
+@pytest.mark.parametrize("action", ["expand", "dock", "fit"])
+def test_maximized_layout_queries_user32_not_a_nonexistent_pywin32_export(surface, action):
+    prepare_layout(surface)
+    surface._resize_mode(initial=True)
+    surface._gui.zoomed = True
+    calls = []
+
+    def zoomed(handle):
+        calls.append(handle)
+        return surface._gui.zoomed
+
+    surface._user32.IsZoomed = zoomed
+    if action == "expand":
+        surface._button(EXPAND)
+        assert not surface._gui.zoomed and not surface._compact
+    elif action == "dock":
+        surface._dock("top")
+        assert not surface._gui.zoomed
+    else:
+        surface._fit_current()
+        assert surface._gui.zoomed
+    assert calls and set(calls) == {surface._panel}
+    assert not hasattr(surface._gui, "IsZoomed")
+
+
+def test_new_replies_follow_only_when_the_history_was_already_at_the_end(surface):
+    prepare_layout(surface)
+    surface._resize_mode(initial=True)
+    entries = history_entries()
+    surface._update_history(entries)
+    assert surface._gui.selections[3] == (surface._history_length, surface._history_length)
+    assert surface._sample_view(3, history=True).following
+    surface._gui.first_lines[3] = 2
+    surface._gui.selections[3] = (40, 40)
+    before = surface._sample_view(3, history=True)
+    surface._gui.events.clear()
+    surface._update_history((*entries, *history_entries(1, start=13)))
+    after = surface._sample_view(3, history=True)
+    assert after.anchor == before.anchor and after.selection == before.selection
+    assert surface._history_unread
+    assert surface._gui.texts[surface._buttons[LATEST]] == "Latest *"
+    assert not any(
+        event[0] == "message" and event[2] == win32con.EM_SCROLLCARET
+        for event in surface._gui.events
+    )
+    assert not any(event[0] in {"focus", "show", "position"} for event in surface._gui.events)
+    surface._button(LATEST)
+    assert not surface._history_unread
+    assert surface._sample_view(3, history=True).following
+    surface._update_history((*entries, *history_entries(2, start=13)))
+    assert surface._sample_view(3, history=True).following
+
+
+def test_selection_at_the_bottom_is_not_destroyed_by_an_incoming_reply(surface):
+    prepare_layout(surface)
+    surface._resize_mode(initial=True)
+    entries = history_entries()
+    surface._update_history(entries)
+    surface._gui.selections[3] = (surface._history_length - 12, surface._history_length - 2)
+    selection = surface._gui.selections[3]
+    surface._update_history((*entries, *history_entries(1, start=13)))
+    assert surface._gui.selections[3] == selection
+    assert surface._history_unread
+
+
+def test_expand_clamping_the_scroll_range_does_not_erase_the_reading_anchor(surface):
+    prepare_layout(surface)
+    surface._resize_mode(initial=True)
+    entries = history_entries(6, text="A short message.")
+    surface._update_history(entries)
+    surface._gui.first_lines[3] = 3
+    surface._gui.selections[3] = (15, 15)
+    before = surface._sample_view(3, history=True)
+    assert not before.following
+    surface._button(EXPAND)
+    assert surface._gui.GetScrollInfo(3, 1, 0)[4] == 0
+    surface._button(EXPAND)
+    after = surface._sample_view(3, history=True)
+    assert after.anchor == before.anchor
+    assert after.selection == before.selection
+    assert not after.following
+    assert surface._last_text == entries
+
+
+def test_resizing_rewraps_history_without_replacing_text_selection_or_draft(surface):
+    prepare_layout(surface)
+    surface._resize_mode(initial=True)
+    surface._update_history(history_entries())
+    surface._gui.first_lines[3] = 3
+    surface._gui.selections[3] = (90, 110)
+    original = surface._sample_view(3, history=True)
+    surface._gui.SetWindowText(7, "Draft\r\nin progress")
+    surface._gui.selections[7] = (7, 10)
+    surface._gui.events.clear()
+    surface._gui.rect = (100, 100, 760, 360)
+    surface._layout()
+    after = surface._sample_view(3, history=True)
+    assert after.selection == original.selection
+    expected_line = surface._gui.SendMessage(3, win32con.EM_LINEFROMCHAR, original.anchor, 0)
+    assert surface._gui.first_lines[3] == expected_line
+    assert surface._gui.selections[7] == (7, 10)
+    assert surface._gui.texts[7] == "Draft\r\nin progress"
+    assert not any(event[0] == "text" and event[1] in {3, 7} for event in surface._gui.events)
+
+
+def test_history_pruning_and_utf16_offsets_preserve_surviving_text_above_64k(surface):
+    prepare_layout(surface)
+    surface._resize_mode(initial=True)
+    entries = history_entries(8, text="😀" * 3000 + "\n" + "Long fixture text " * 300)
+    surface._update_history(entries)
+    start = surface._history_offsets[7][0] + 400
+    assert start > 65535
+    surface._gui.selections[3] = (start, start + 20)
+    surface._gui.first_lines[3] = surface._gui.SendMessage(3, win32con.EM_LINEFROMCHAR, start, 0)
+    original = surface._sample_view(3, history=True)
+    removed = surface._history_offsets[4][0]
+    surface._update_history((*entries[3:], *history_entries(1, start=9)))
+    assert surface._gui.selections[3] == (start - removed, start + 20 - removed)
+    assert surface._read_view(3, history=True).anchor == original.anchor - removed
+    assert "\r\n" in surface._gui.texts[3]
+    assert surface._history_length == len(surface._gui.texts[3].encode("utf-16-le")) // 2
+
+
+def test_pruning_the_selected_entry_clamps_safely_without_resending_any_message(surface):
+    prepare_layout(surface)
+    surface._resize_mode(initial=True)
+    entries = history_entries()
+    surface._update_history(entries)
+    surface._gui.first_lines[3] = 0
+    surface._gui.selections[3] = (1, 8)
+    surface._update_history(entries[2:])
+    assert surface._gui.selections[3] == (0, 0)
+    assert surface._read_view(3, history=True).anchor == 0
+    assert surface.session.conversation.entries() == ()
+    surface._update_history(())
+    assert not surface._history_unread
+    assert surface._history_length == 0
+
+
+@pytest.mark.parametrize("armed", [True, False])
+@pytest.mark.parametrize(
+    "chat,expected",
+    [
+        ({}, "no listener"),
+        ({"listener_connected": True}, "not"),
+        ({"listener_connected": True, "listener_waiting": True}, "listening"),
+        ({"listener_connected": True, "awaiting_reply": True, "pending_messages": 2}, "reply"),
+        ({"pending_messages": 16}, "16 queued"),
+    ],
+)
+@pytest.mark.parametrize("client", [(1104, 125), (344, 190), (304, 160)])
+def test_compact_status_is_honest_readable_and_does_not_hide_stop(
+    surface, armed, chat, expected, client
+):
+    prepare_layout(surface)
+    surface._gui.rect = (0, 0, client[0] + 16, client[1] + 39)
+    surface._layout()
+    status = dict(
+        pending_messages=0,
+        listener_connected=False,
+        listener_waiting=False,
+        awaiting_reply=False,
+        listener_name=None,
+    )
+    status.update(chat)
+    surface.session.conversation = SimpleNamespace(status=lambda: status)
+    snapshot = TeachingSnapshot(1, (), (), WaitTarget((10, 10), 28, True, 1.0, 1.0), None)
+    try:
+        font = ImageFont.truetype("segoeui.ttf", surface._font_height)
+    except OSError:
+        pytest.skip("Segoe UI font metrics unavailable on this test host")
+    surface._text_width = font.getlength
+    surface._refresh_status(SimpleNamespace(armed=armed), snapshot)
+    text = surface._gui.texts[4]
+    assert ("ready" if armed else "paused") in text.lower()
+    assert expected in text.lower()
+    assert "Ctrl+Shift+H" in text and "100%" in text
+    assert "…" not in text
+    assert font.getlength(text) <= surface._status_width
+    assert surface._gui.positions[surface._buttons[STOP]][3] >= surface._font_height
+
+
+def test_send_failure_has_concise_status_and_preserves_the_entire_draft(surface):
+    prepare_layout(surface, work=(0, 0, 380, 800))
+    surface._resize_mode(initial=True)
+    surface._gui.SetWindowText(7, " ")
+    surface.session.snapshot = lambda: TeachingSnapshot(1, (), (), None, None)
+    surface.controller.stop()
+    surface._send_user()
+    assert surface._gui.texts[7] == " "
+    assert "not sent" in surface._gui.texts[4].lower()
+    assert "draft kept" in surface._gui.texts[4]
+    assert "Ctrl+Shift+H" in surface._gui.texts[4]
+    assert not surface.controller.snapshot().armed
+
+
+@pytest.mark.parametrize("foreground,expected", [(1, [("focus", 7)]), (999, [])])
+def test_send_button_returns_focus_only_when_the_user_is_in_the_transcript(
+    surface, foreground, expected
+):
+    surface._gui.foreground = foreground
+    surface._send_user = lambda: None
+    surface._button(SEND)
+    assert surface._gui.events == expected
+
+
+@pytest.mark.parametrize("fail_measurement", [False, True])
+def test_status_measurement_uses_the_control_font_and_always_releases_its_dc(
+    surface, fail_measurement
+):
+    events = []
+    surface._font = 60
+    surface._gui.GetDC = lambda window: 500
+    surface._gui.SelectObject = lambda dc, font: events.append(("select", dc, font)) or 40
+    surface._gui.ReleaseDC = lambda window, dc: events.append(("release", window, dc))
+
+    def measure(dc, text):
+        assert dc == 500 and text == "Status"
+        if fail_measurement:
+            raise OSError("Fixture text measurement failure")
+        return 48, 17
+
+    surface._gui.GetTextExtentPoint32 = measure
+    if fail_measurement:
+        with pytest.raises(OSError, match="measurement"):
+            TeachingSurface._text_width(surface, "Status")
+    else:
+        assert TeachingSurface._text_width(surface, "Status") == 48
+    assert events == [("select", 500, 60), ("select", 500, 40), ("release", 1, 500)]
+
+
+def test_layout_does_not_reset_composer_selection_or_scroll_during_ime_composition(surface):
+    prepare_layout(surface)
+    surface._resize_mode(initial=True)
+    surface._composition_active = lambda: True
+    surface._gui.SetWindowText(7, "Uncommitted composition remains native")
+    surface._gui.selections[7] = (12, 12)
+    surface._gui.events.clear()
+    surface._gui.rect = (100, 100, 760, 360)
+    surface._layout()
+    assert surface._gui.texts[7] == "Uncommitted composition remains native"
+    assert surface._gui.selections[7] == (12, 12)
+    assert not any(
+        event[0] == "message"
+        and event[1] == 7
+        and event[2] in {win32con.EM_SETSEL, win32con.EM_LINESCROLL, win32con.EM_SCROLLCARET}
+        for event in surface._gui.events
+    )
+    assert surface.session.conversation.entries() == ()
+
+
+def test_stop_clear_and_pin_remain_local_independent_actions(surface):
+    prepare_layout(surface)
+    cleared = []
+    surface.session.clear_local = lambda: cleared.append(True)
+    surface.session.conversation.send_user("Keep this pending message")
+    surface._button(PIN)
+    assert surface._pinned
+    assert surface._gui.events[-1][2] == win32con.HWND_TOPMOST
+    surface._button(PIN)
+    assert not surface._pinned
+    assert surface._gui.events[-1][2] == win32con.HWND_NOTOPMOST
+    surface._button(CLEAR)
+    assert cleared == [True]
+    assert surface.session.conversation.status()["pending_messages"] == 1
+    surface._button(STOP)
+    assert not surface.controller.snapshot().armed
+    assert surface.session.conversation.status()["pending_messages"] == 1
 
 
 def test_rounded_buttons_clear_their_corners_to_the_panel_background(surface):
@@ -232,7 +939,7 @@ def test_rounded_buttons_clear_their_corners_to_the_panel_background(surface):
     surface._background = 50
     surface._api = SimpleNamespace(RGB=lambda *values: 0)
     surface._con = SimpleNamespace(
-        PS_SOLID=0, TRANSPARENT=1, DT_CENTER=1, DT_VCENTER=4, DT_SINGLELINE=32
+        PS_SOLID=0, TRANSPARENT=1, DT_CENTER=1, DT_VCENTER=4, DT_SINGLELINE=32, DT_NOPREFIX=0x800
     )
     surface._gui.CreateSolidBrush = lambda color: 41
     surface._gui.CreatePen = lambda *args: 42

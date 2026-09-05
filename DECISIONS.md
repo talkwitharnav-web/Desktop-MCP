@@ -100,8 +100,10 @@ Physical clicks/keys invalidate observations regardless of interruption preferen
 
 Laser/ink are separate visual layers, not movements of the user's pointer and
 not edits to the underlying application. Erase removes only our annotations.
-The transcript is an independently draggable, Alt-Tab-accessible window with
-local pin/dock controls. Per the user's follow-up, it opens with the main app
+The transcript is an independently draggable, Alt-Tab-accessible compact ribbon
+with optional expanded history and local pin/dock controls. An explicit
+taskbar-edge choice does not change taskbar settings or reserve screen space.
+Per the user's follow-up, it opens with the main app
 and has a main-panel visibility toggle. The model publishes content explicitly through tools;
 this is not automatic mirroring of every Copilot terminal token.
 

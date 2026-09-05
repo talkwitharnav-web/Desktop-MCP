@@ -47,7 +47,8 @@ so there is no separate hardcoded copy to keep synchronized.
   whose MCP image-result forwarding does not.
 - Teaching and control in **one armed session**: explain, circle a control,
   click the next tab, and keep explaining without changing modes.
-- A draggable, Alt-Tab-accessible transcript with local pin and top/bottom docking.
+- A short, wide, Alt-Tab-accessible transcript ribbon with optional expanded
+  history, local pinning, top/bottom docking and an explicit taskbar-edge choice.
   Type questions into its message box and receive agent replies in the same
   window. The main panel has a **Transcript: On/Off** toggle.
 
@@ -259,16 +260,31 @@ agent reads and acknowledges them. Observations and chat remain available, so
 it can inspect the current state and answer before continuing. This does not
 disarm the session or turn a check-in into a request to abandon the task.
 
-The transcript opens with the application. Its message box is separate from the
-read-only conversation history: **Enter sends**, **Shift+Enter adds a line**, and
-the **Send** button also works with input methods such as IME.
-Drag its title bar, use **Top**/**Bottom** to dock, or **Pin** to keep it above other
-windows. A model `Transcript(action="back")` request cannot override a local pin.
+The transcript opens as a **1120 × 164 logical-pixel outer ribbon**, including
+window chrome, where the monitor permits. Its compact view places recent history
+beside the composer and Send button, using DPI-scaled **14-DIP Segoe UI** text.
+Narrow displays stack/wrap the controls and increase height to remain readable,
+with geometry always bounded by the selected monitor.
+**Expand** provides a preferred 440-DIP-tall history view; **Compact** returns to
+the ribbon. Both retain your draft, selection, reading position and per-mode
+window size during the session. **Latest** returns to the newest message and
+marks unread replies when you are deliberately reading older history.
+
+The message box stays separate from the read-only history: **Enter sends**,
+**Shift+Enter adds a line**, and **Send** also works with input methods such as IME.
+Drag the title bar or use **Top**/**Bottom** to dock inside the work area with an
+8-DIP inset. **Taskbar edge** explicitly places it flush with the full monitor
+bottom; use **Pin first** if the taskbar would otherwise cover it. This does not
+reserve taskbar space, change taskbar settings or automatically enable pinning.
+A model `Transcript(action="back")` request cannot override a local pin.
 Use **Transcript: On/Off** in the main panel to show or hide it without deleting
 messages or changing desktop permissions. The model can use
 `Transcript(action="show")` or `"hide"` directly; it does not need to Alt+Tab and
 click protected application controls. `DesktopStatus.transcript` reports
 `enabled`, actual `visible`, pending-message count and listener status.
+Its `layout` record reports `compact`, `dock`, physical outer `bounds`, actual
+`dpi`, physical `font_height` and `split` once laid out. Bounds describe the last
+completed layout, not a live drag sample.
 
 Closing either main window quits the application. Minimize the instruction window
 instead when you just want it out of the way.
@@ -438,6 +454,30 @@ many complete steps ran; the current step can be partially applied. An error
 from the observation after a successful batch explicitly says the input already
 completed.
 
+### When a target is refused
+
+Screenshots hide Desktop-MCP's interfaces, so an unobstructed image does not prove
+that a transcript or permission control is absent. Target errors set MCP `isError`
+and structured `is_error=true`. Their `denial` record contains:
+
+- `code`: `protected_target`, `foreground_mismatch`, or `target_indeterminate`.
+- `target_point`: the resolved physical point, plus `expected_window` and
+  `actual_foreground`; `matched` identifies the role, `window_id`, `root_id`,
+  bounds and visibility of the matched surface when known.
+- `routing`: whether foreground/focus, pointer hit, mouse capture or a modal menu
+  caused the rejection; `request` and validated `frame_ids` identify the caller.
+- `input`: whether nothing was delivered, input was partial, or input completed
+  before its observation failed. Never replay a completed sequence blindly.
+
+`DesktopStatus.interaction.last_denial` retains the attributed record.
+`DesktopStatus.protected_windows` and `observation.protected_windows` expose
+content-free window geometry without drafts or control text. `effective_visible`
+accounts for root visibility/minimization, not occlusion. `capture_excluded`
+reports native display affinity, or `null` when unavailable; acknowledged capture
+guards additionally hide our surfaces. Neither field grants permission to click.
+The guard uses actual input routing rather than rejecting every overlapping
+owned rectangle. Unresolved or changing routing fails explicitly, not optimistically.
+
 ## If your client cannot see MCP images
 
 Successful MCP negotiation does not prove a client forwards image pixels to its
@@ -465,6 +505,16 @@ The preserved Windows engine is in `src/windows_mcp`. Supervision, the native
 interface, observation service and explicit MCP surface live in `src/desktop_mcp`.
 The repository preserves upstream history; `upstream` points to Windows-MCP and
 `origin` points to this fork.
+
+The [September 5 manual-desktop trial report](DESKTOP-MCP-TEST-FINDINGS-2026-09-05.md)
+is preserved unchanged. It records an unfinished application task, not a
+controlled benchmark or a verified identification of the old running host.
+The remediation strengthens the current implementation and operating guide;
+it does not establish which protected window caused that historical denial,
+prove an old document was saved, or complete the abandoned presentation.
+Use the running `DesktopStatus.host` version, instance and package fingerprint
+when reporting a new incident. The fingerprint describes package files at host
+startup, not a Git commit or a promise that an older host reloaded new code.
 
 MIT terms are in [LICENSE.md](LICENSE.md). Bundled UIAutomation attribution and
 Apache 2.0 terms are preserved in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)

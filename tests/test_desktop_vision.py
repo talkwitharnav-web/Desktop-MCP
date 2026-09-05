@@ -235,8 +235,8 @@ def test_fullscreen_active_and_desktop_contexts_remain_distinct(rig: Rig) -> Non
     assert desktop.image is not None
 
 
-@pytest.mark.parametrize("scope", ["active", "desktop"])
-def test_windows_capture_context_propagates_scope_without_capturing(scope) -> None:
+@pytest.fixture
+def windows_context_provider():
     from desktop_mcp.capture import WindowsCapture
 
     provider = WindowsCapture.__new__(WindowsCapture)
@@ -259,9 +259,64 @@ def test_windows_capture_context_propagates_scope_without_capturing(scope) -> No
     )
     provider._repair_text = lambda value: value
     provider._control_windows = lambda: ()
+    provider._ensure_observable_foreground = lambda: 17
+    return provider
+
+
+@pytest.mark.parametrize("scope", ["active", "desktop"])
+def test_windows_capture_context_propagates_scope_without_capturing(
+    scope, windows_context_provider
+) -> None:
+    provider = windows_context_provider
+    checked = []
+
+    def check_foreground():
+        checked.append(17)
+        return 17
+
+    provider._ensure_observable_foreground = check_foreground
     context = provider.context(scope)
     assert context.scope == scope
     assert context.bounds == context.desktop_bounds == (0, 0, 100, 100)
+    assert checked == ([17] if scope == "active" else [])
+
+
+@pytest.mark.parametrize("scope", ["active", "desktop"])
+def test_capture_never_reads_the_protected_foreground_window_title(
+    scope, windows_context_provider
+) -> None:
+    provider = windows_context_provider
+    provider._control_windows = lambda: (17,)
+    provider._user32.GetWindowTextLengthW = lambda handle: pytest.fail("Read a protected title")
+
+    def reject():
+        raise RuntimeError("Owned foreground rejected by the shared guard")
+
+    provider._ensure_observable_foreground = reject
+    if scope == "active":
+        with pytest.raises(RuntimeError, match="shared guard"):
+            provider.context(scope)
+    else:
+        assert provider.context(scope).title == ""
+
+
+def test_capture_uses_the_guard_checked_window_not_another_foreground_sample(
+    windows_context_provider,
+) -> None:
+    provider = windows_context_provider
+    provider._user32.GetForegroundWindow = lambda: pytest.fail("Unchecked foreground sample")
+    assert provider.context("active").window_id == 17
+
+
+def test_capture_preserves_no_foreground_as_an_observation_only_transition(
+    windows_context_provider,
+) -> None:
+    from desktop_mcp.capture import ForegroundUnavailable
+
+    provider = windows_context_provider
+    provider._ensure_observable_foreground = lambda: 0
+    with pytest.raises(ForegroundUnavailable):
+        provider.context("active")
 
 
 @pytest.mark.parametrize("scope", ["desktop", "invalid", None])

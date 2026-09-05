@@ -33,6 +33,7 @@ class WindowsCapture:
         *,
         capture_guard: Callable[[], AbstractContextManager] = nullcontext,
         control_windows: Callable[[], tuple[int, ...]] = lambda: (),
+        ensure_observable_foreground: Callable[[], int],
         checkpoint: Callable[[], None] = lambda: None,
     ) -> None:
         import windows_mcp.uia as uia
@@ -43,6 +44,7 @@ class WindowsCapture:
         self._capture_backend = screenshot
         self._capture_guard = capture_guard
         self._control_windows = control_windows
+        self._ensure_observable_foreground = ensure_observable_foreground
         self._checkpoint = checkpoint
         self._repair_text = repair_surrogates
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -62,23 +64,26 @@ class WindowsCapture:
         desktop = (left, top, left + width, top + height)
         if width <= 0 or height <= 0:
             raise RuntimeError("No interactive Windows desktop is available.")
-        handle = int(self._user32.GetForegroundWindow() or 0)
+        handle = int(
+            (
+                self._ensure_observable_foreground()
+                if scope == "active"
+                else self._user32.GetForegroundWindow()
+            )
+            or 0
+        )
+        if scope == "active" and not handle:
+            raise ForegroundUnavailable(
+                "No foreground window is available; request scope='desktop'."
+            )
         title = ""
-        if handle:
+        if handle and handle not in self._control_windows():
             length = self._user32.GetWindowTextLengthW(handle)
             buffer = ctypes.create_unicode_buffer(length + 1)
             self._user32.GetWindowTextW(handle, buffer, len(buffer))
             title = self._repair_text(buffer.value)
         bounds = desktop
         if scope == "active":
-            if not handle:
-                raise ForegroundUnavailable(
-                    "No foreground window is available; request scope='desktop'."
-                )
-            if handle in self._control_windows():
-                raise RuntimeError(
-                    "Minimize the Desktop-MCP control window before observing an app."
-                )
             rect = wintypes.RECT()
             if not self._user32.GetWindowRect(handle, ctypes.byref(rect)):
                 raise ctypes.WinError(ctypes.get_last_error())

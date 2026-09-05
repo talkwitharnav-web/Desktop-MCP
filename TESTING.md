@@ -23,6 +23,12 @@ versions must fail over until their one-shot recovery boundary is verified.
 
 Core input/revocation checks are in `test_desktop_runtime.py` and
 `test_desktop_native.py`; observation checks are in `test_desktop_vision.py`.
+`test_desktop_window_targets.py` uses a strict fake Win32 query port for receiver
+ordering, minimized roots/children, click-through overlays, modal routing and
+content-free metadata. `test_desktop_diagnostics.py` carries those native fakes
+through real MCP calls: scaled frame coordinates, caller/generation attribution,
+partial/completed input warnings, error flags, and exclusion of arbitrary
+exception fields or unvalidated frame arguments.
 `test_desktop_control_ui.py` and `test_desktop_cursor.py` use native fakes and
 synthetic renderings. `test_desktop_teaching.py` exercises the pure teaching model
 and renderer. These are not evidence of real Windows hook behavior or appearance.
@@ -56,14 +62,23 @@ checks visibility, and posts X only to its own window handles. It requires the
 application to exit. This verifies native control plumbing, not physical
 click/foreground behavior. It does not arm, inject desktop input, capture, or
 close other apps. Stop any previous Desktop-MCP instance normally before running it.
+It also checks compact geometry, protected HWND roles, draft/selection retention
+through Expand/Compact, and the actual hit receiver above the taskbar after a
+local Pin + Taskbar edge choice, without clicking the taskbar.
 
 ## Opt-in native exercise
 
 `tests\test_desktop_live.py` is skipped unless `DESKTOP_MCP_LIVE=1`. Run it only on
 an unlocked interactive desktop, with no other Desktop-MCP process owning the stop
-hotkey. It creates its own harmless EDIT window; never replace that fixture with a
-user's app. It locally arms only for the fixture and leaves the controller stopped
-at shutdown.
+hotkey. Its input exercise creates a harmless EDIT window in a separately owned
+GUI subprocess; never replace it with a user's app. The strict same-process
+permission/composer guard is not weakened to accommodate a test window.
+`tests\desktop_live_fixture.py` exchanges only fixture HWND/PID metadata and
+mouse-event records over a small local JSON protocol. It locally arms only for
+the fixture and leaves the controller stopped at shutdown.
+If Windows refuses the initial foreground request, the input exercise skips
+before Arm or input. This is unavailable coverage, not a successful input test;
+do not force foreground to make the test green.
 
 ```powershell
 $env:DESKTOP_MCP_LIVE = '1'
@@ -75,7 +90,9 @@ $env:DESKTOP_MCP_LIVE_ARTIFACTS = 'C:\path\session\files\native-unique-run'
 
 The harness checks real Unicode input, sampled pointer movement, extra buttons,
 both wheel axes, MCP image blocks, and an actual registered Ctrl+Shift+H during a
-held-button drag. A DPI-aware, opaque owned fixture covers its monitor's work area
+held-button drag. It double-clicks its own EDIT and checks native edit focus
+before replacing text, then verifies the actual resulting control buffer.
+A DPI-aware, opaque owned fixture covers its monitor's work area
 before either interface starts. Captures require owned insets inside that backing
 window and refuse unowned windows overlapping the region. This prevents a
 capture-excluded interface from revealing an underlying user application.
@@ -88,6 +105,12 @@ and are still checked. The production-default run retains display affinity and
 saves the actual returned MCP fixture image. Do not confuse the two evidence
 scopes. Appearance artifacts remain local and must be viewed; passing a synthetic
 image assertion does not verify native layout.
+The `native_compact_transcript_appearance_without_foreground` selector provides
+separate compact/expanded UI evidence without arming, moving the pointer or
+requesting foreground. It pins only its owned transcript above an opaque owned
+backdrop, retains the overlap/privacy checks, and also requires the explicit
+appearance flag and artifact directory. It does not replace real input,
+hotkey, IME or multi-monitor transition coverage.
 
 The same fixture uses the same Arm authorization for guidance and input, checks transcript
 stacking/pinning without focus theft, renders/erases ink and a laser, verifies their
@@ -105,7 +128,7 @@ those modal menu loops.
 Set `DESKTOP_MCP_LIVE_BACKEND=auto` for a separate owned-fixture run of the actual
 DXCAM/MSS/Pillow selection path; its chosen backend is reported. The default
 native harness backend remains `mss` for deterministic fixture checks.
-The artifact directory records the exact owned PID/window handles for recovery
+The artifact directory records the exact host/fixture PIDs and window handles for recovery
 if the fixture fails. Never terminate a process by name or infer a cleanup root.
 
 The opt-in `native_control_accessibility_and_compact_layout` selector reads

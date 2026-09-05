@@ -14,6 +14,7 @@ import time
 import uuid
 
 import pytest
+from tests.desktop_live_fixture import IsolatedFixtureWindow, owned_window_pid
 
 pytestmark = pytest.mark.skipif(
     os.getenv("DESKTOP_MCP_LIVE") != "1",
@@ -133,6 +134,7 @@ class FixtureWindow:
                 win32con.WS_CHILD
                 | win32con.WS_VISIBLE
                 | win32con.WS_TABSTOP
+                | win32con.WS_VSCROLL
                 | win32con.ES_MULTILINE
                 | win32con.ES_AUTOVSCROLL,
                 24,
@@ -187,9 +189,8 @@ def wait_until(predicate, timeout=3):
 def focus_owned_window(handle):
     import pywintypes
     import win32gui
-    import win32process
 
-    assert win32process.GetWindowThreadProcessId(handle)[1] == os.getpid()
+    owned_window_pid(handle)
     if win32gui.GetForegroundWindow() != handle:
         try:
             win32gui.SetForegroundWindow(handle)
@@ -317,13 +318,20 @@ def press_fixture_stop_hotkey(application, foreground):
             application.backend.key(code, False)
 
 
-def save_own_window(handle, path: Path, *, backdrop, overlay_handles=(), restore_foreground=None):
+def save_own_window(
+    handle,
+    path: Path,
+    *,
+    backdrop,
+    overlay_handles=(),
+    restore_foreground=None,
+    activate=True,
+):
     """Capture an owned surface only above a full, opaque, owned backing window."""
     import mss
     from PIL import Image
     import win32con
     import win32gui
-    import win32process
     from ctypes import wintypes
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -337,20 +345,23 @@ def save_own_window(handle, path: Path, *, backdrop, overlay_handles=(), restore
     )
     original_affinity = {}
     try:
-        assert win32process.GetWindowThreadProcessId(backdrop)[1] == os.getpid()
+        owned_window_pid(backdrop)
         assert win32gui.IsWindowVisible(backdrop) and not win32gui.IsIconic(backdrop)
         backdrop_affinity = wintypes.DWORD()
         assert user32.GetWindowDisplayAffinity(backdrop, ctypes.byref(backdrop_affinity))
         assert backdrop_affinity.value == 0
-        win32gui.ShowWindow(handle, win32con.SW_RESTORE)
+        win32gui.ShowWindow(
+            handle, win32con.SW_RESTORE if activate else win32con.SW_SHOWNOACTIVATE
+        )
         wait_until(lambda: win32gui.IsWindowVisible(handle) and not win32gui.IsIconic(handle))
         for own_handle in handles:
-            assert win32process.GetWindowThreadProcessId(own_handle)[1] == os.getpid()
+            owned_window_pid(own_handle)
             affinity = wintypes.DWORD()
             assert user32.GetWindowDisplayAffinity(own_handle, ctypes.byref(affinity))
             original_affinity[own_handle] = affinity.value
             assert user32.SetWindowDisplayAffinity(own_handle, 0)
-        focus_owned_window(handle)
+        if activate:
+            focus_owned_window(handle)
         win32gui.SetWindowPos(
             handle,
             win32con.HWND_TOPMOST,
@@ -419,7 +430,7 @@ def save_own_window(handle, path: Path, *, backdrop, overlay_handles=(), restore
             and win32gui.IsWindow(restore_foreground)
             and win32gui.GetForegroundWindow() == handle
         ):
-            assert win32process.GetWindowThreadProcessId(restore_foreground)[1] == os.getpid()
+            owned_window_pid(restore_foreground)
             focus_owned_window(restore_foreground)
 
 
@@ -477,8 +488,9 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
         },
     )
     assert not combined.is_error
-    wait_until(lambda: combined_text in win32gui.GetWindowText(fixture.editor))
-    before_text = win32gui.GetWindowText(fixture.editor)
+    wait_until(lambda: combined_text in fixture.text())
+    before_text = fixture.text()
+    pointer = win32api.GetCursorPos()
     assert application.controller.snapshot().armed
 
     top_left = win32gui.ClientToScreen(fixture.hwnd, (30, 322))
@@ -528,7 +540,7 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
     assert erased.data["removed"] == 1
     await client.call_tool("Erase")
     assert not application.teaching.snapshot().marks
-    assert win32gui.GetWindowText(fixture.editor) == before_text
+    assert fixture.text() == before_text
 
     target = win32gui.ClientToScreen(fixture.hwnd, (180, 365))
     generation = application.controller.snapshot().generation
@@ -557,7 +569,7 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
     wait_until(lambda: not application.controller.snapshot().armed)
     wait_until(lambda: not application.teaching.snapshot().marks)
     wait_until(lambda: not win32gui.IsWindowVisible(canvas))
-    assert win32gui.GetWindowText(fixture.editor) == before_text
+    assert fixture.text() == before_text
 
     win32gui.ShowWindow(main_window, win32con.SW_SHOWNOACTIVATE)
     arm_fixture_locally(main_window)
@@ -580,7 +592,7 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
         assert "Ctrl+Shift+H" in application.controller.snapshot().reason
         assert (await waiting).is_error
         assert application.teaching.snapshot().waiting is None
-        assert win32gui.GetWindowText(fixture.editor) == before_text
+        assert fixture.text() == before_text
         print(f"Native teaching hotkey stop latency: {time.monotonic() - started:.3f}s")
     finally:
         if not waiting.done():
@@ -591,50 +603,55 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
     )
 
 
+def enable_owned_appearance_capture(monkeypatch):
+    from ctypes import wintypes
+
+    load_library = ctypes.WinDLL
+
+    class VisibleCaptureLibrary:
+        def __init__(self, library):
+            self._library = library
+            native_affinity = library.SetWindowDisplayAffinity
+            native_affinity.argtypes = [wintypes.HWND, wintypes.DWORD]
+            native_affinity.restype = wintypes.BOOL
+            self.SetWindowDisplayAffinity = lambda window, affinity: native_affinity(window, 0)
+
+        def __getattr__(self, name):
+            return getattr(self._library, name)
+
+    def load_visible_library(name, *args, **kwargs):
+        library = load_library(name, *args, **kwargs)
+        if str(name).casefold() in {"user32", "user32.dll"}:
+            return VisibleCaptureLibrary(library)
+        return library
+
+    monkeypatch.setattr(ctypes, "WinDLL", load_visible_library)
+
+
 async def test_native_control_input_images_and_global_stop(monkeypatch):
     from fastmcp import Client
     from PIL import Image
+    import pywintypes
     import win32api
     import win32con
     import win32gui
+    import win32process
 
     from desktop_mcp.actions import Action
     from desktop_mcp.app import DesktopApplication, create_server
     from desktop_mcp.runtime import BatchInterrupted
+    from desktop_mcp.window_targets import GUIThreadInfo
 
     capture_affinity = os.getenv("DESKTOP_MCP_LIVE_APPEARANCE") != "1"
     if not capture_affinity:
-        from ctypes import wintypes
-
-        load_library = ctypes.WinDLL
-
-        class VisibleCaptureLibrary:
-            def __init__(self, library):
-                self._library = library
-                native_affinity = library.SetWindowDisplayAffinity
-                native_affinity.argtypes = [wintypes.HWND, wintypes.DWORD]
-                native_affinity.restype = wintypes.BOOL
-                self.SetWindowDisplayAffinity = lambda window, affinity: native_affinity(window, 0)
-
-            def __getattr__(self, name):
-                return getattr(self._library, name)
-
-        def load_visible_library(name, *args, **kwargs):
-            library = load_library(name, *args, **kwargs)
-            if str(name).casefold() in {"user32", "user32.dll"}:
-                return VisibleCaptureLibrary(library)
-            return library
-
-        # Default-affinity behavior is tested separately. Only this second run makes
-        # our windows capturable for native appearance evidence; hide/flush guards stay real.
-        monkeypatch.setattr(ctypes, "WinDLL", load_visible_library)
+        enable_owned_appearance_capture(monkeypatch)
 
     monkeypatch.setenv(
         "WINDOWS_MCP_SCREENSHOT_BACKEND", os.getenv("DESKTOP_MCP_LIVE_BACKEND", "mss")
     )
     monkeypatch.setenv("DESKTOP_MCP_IMAGE_FILES", "false")
     application = DesktopApplication()
-    fixture = FixtureWindow()
+    fixture = IsolatedFixtureWindow()
     artifacts = os.getenv("DESKTOP_MCP_LIVE_ARTIFACTS")
     variant = "default-affinity" if capture_affinity else "visible-appearance"
     artifact_root = Path(artifacts) / variant if artifacts else None
@@ -647,6 +664,7 @@ async def test_native_control_input_images_and_global_stop(monkeypatch):
     previous_dpi = user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
     assert previous_dpi
     previous_pointer = win32api.GetCursorPos()
+    pointer_changed = False
     fixture_state = {"pid": os.getpid(), "previous_pointer": list(previous_pointer)}
     if artifact_root:
         (artifact_root / "fixture-state.json").write_text(
@@ -655,7 +673,25 @@ async def test_native_control_input_images_and_global_stop(monkeypatch):
     workers = []
     try:
         fixture.start()
-        focus_owned_window(fixture.hwnd)
+        fixture_state.update(
+            fixture_pid=fixture.pid,
+            fixture_launcher_pid=fixture.process.pid,
+            fixture_window=fixture.hwnd,
+            fixture_editor=fixture.editor,
+        )
+        if artifact_root:
+            (artifact_root / "fixture-state.json").write_text(
+                json.dumps(fixture_state), encoding="utf-8"
+            )
+        try:
+            focus_owned_window(fixture.hwnd)
+        except pywintypes.error as error:
+            if error.args[:2] == (0, "SetForegroundWindow"):
+                pytest.skip(
+                    "Windows refused foreground for the owned fixture before any Arm or input; "
+                    "physical input coverage is unavailable, not a pass."
+                )
+            raise
         async with Client(create_server(application)) as client:
             status = await client.call_tool("DesktopStatus")
             assert status.data["state"] == "stopped"
@@ -690,6 +726,7 @@ async def test_native_control_input_images_and_global_stop(monkeypatch):
                 )
             focus_owned_window(fixture.hwnd)
             point = win32gui.ClientToScreen(fixture.editor, (30, 30))
+            pointer_changed = True
             win32api.SetCursorPos(point)
             time.sleep(0.05)
             native_target = application.backend.ensure_target
@@ -719,8 +756,18 @@ async def test_native_control_input_images_and_global_stop(monkeypatch):
             )
             assert not result.is_error
             wait_until(
-                lambda: win32gui.GetWindowText(fixture.editor).replace("\r\n", "\n") == content
+                lambda: fixture.text().replace("\r\n", "\n") == content
             )
+            await client.call_tool(
+                "Click", {"loc": list(point), "clicks": 2, "observe": False}
+            )
+            thread = win32process.GetWindowThreadProcessId(fixture.hwnd)[0]
+            focused = GUIThreadInfo(cbSize=ctypes.sizeof(GUIThreadInfo))
+            assert application.backend._user32.GetGUIThreadInfo(thread, ctypes.byref(focused))
+            assert focused.hwndFocus == fixture.editor
+            content = "Edited fixture: \u03bb \U0001f369\nEdit focus checked before replacement."
+            await client.call_tool("Type", {"text": content, "clear": True, "observe": False})
+            wait_until(lambda: fixture.text().replace("\r\n", "\n") == content)
             bounds = own_capture_bounds(fixture.hwnd)
             assert_owned_region(fixture.hwnd, bounds, allowed_above=application.window_handles())
             frame = await client.call_tool(
@@ -841,12 +888,13 @@ async def test_native_control_input_images_and_global_stop(monkeypatch):
                 assert not worker.is_alive(), "An owned fixture input worker did not stop"
         finally:
             try:
-                if fixture.thread.ident is not None:
+                if fixture.process is not None:
                     fixture.close()
             finally:
                 # Restore only the pointer position changed by this owned exercise.
                 try:
-                    win32api.SetCursorPos(previous_pointer)
+                    if pointer_changed:
+                        win32api.SetCursorPos(previous_pointer)
                 finally:
                     assert user32.SetThreadDpiAwarenessContext(previous_dpi)
 
@@ -956,12 +1004,102 @@ def test_native_control_accessibility_and_compact_layout(monkeypatch):
         work = application.surface._adapter.fixture_work
         left, top, right, bottom = win32gui.GetWindowRect(panel)
         assert work[0] <= left < right <= work[2] and work[1] <= top < bottom <= work[3]
-        for identifier in (1001, 1002, 1003, 1004, 1005, 1101, 1102):
+        for identifier in (1001, 1002, 1003, 1004, 1101, 1102):
             child = win32gui.GetDlgItem(panel, identifier)
             x1, y1, x2, y2 = win32gui.GetWindowRect(child)
             assert left <= x1 < x2 <= right and top <= y1 < y2 <= bottom
         assert detail in application.window_handles() and activity in application.window_handles()
         print("Native accessible state/text and compact owned-panel bounds passed; no input armed")
+    finally:
+        try:
+            application.close()
+        finally:
+            try:
+                if fixture.thread.ident is not None:
+                    fixture.close()
+            finally:
+                assert user32.SetThreadDpiAwarenessContext(previous_dpi)
+
+
+async def test_native_compact_transcript_appearance_without_foreground(monkeypatch):
+    """Capture only owned surfaces; do not arm, move the pointer or request foreground."""
+    from fastmcp import Client
+    import win32api
+    import win32con
+    import win32gui
+
+    from desktop_mcp.app import DesktopApplication, create_server
+
+    if os.getenv("DESKTOP_MCP_LIVE_APPEARANCE") != "1":
+        pytest.skip("Native appearance needs its separate, explicit diagnostic capture run.")
+    artifacts = os.getenv("DESKTOP_MCP_LIVE_ARTIFACTS")
+    if not artifacts:
+        pytest.skip("Native appearance requires an explicitly owned artifact directory.")
+    artifact_root = Path(artifacts) / "compact-transcript"
+    artifact_root.mkdir(parents=True, exist_ok=False)
+    enable_owned_appearance_capture(monkeypatch)
+    application = DesktopApplication()
+    fixture = FixtureWindow()
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    previous_dpi = user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+    assert previous_dpi
+    try:
+        fixture.start()
+        application.start()
+        transcript = application.teaching_surface._panel
+        main_panel = application.surface.window_handles()[0]
+        win32gui.ShowWindow(main_panel, win32con.SW_SHOWMINNOACTIVE)
+        foreground, pointer = win32gui.GetForegroundWindow(), win32api.GetCursorPos()
+        click_local_button(transcript, "Pin")
+        win32gui.SetWindowPos(
+            fixture.hwnd,
+            transcript,
+            0,
+            0,
+            0,
+            0,
+            win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE,
+        )
+        async with Client(create_server(application, manage_application=False)) as client:
+            await client.call_tool(
+                "Transcript",
+                {
+                    "title": "Owned native UI fixture",
+                    "text": "Short guidance stays beside your message. Expand opens more history.",
+                },
+            )
+            await client.call_tool(
+                "Transcript",
+                {
+                    "title": "Ready for your question",
+                    "text": "This fixture is paused. Send still works; desktop input is not armed.",
+                },
+            )
+            draft = "A short question can still be sent here."
+            win32gui.SendMessage(
+                application.teaching_surface._composer, win32con.WM_SETTEXT, 0, draft
+            )
+            metadata = {}
+            for name, compact in (("compact", True), ("expanded", False)):
+                if not compact:
+                    click_local_button(transcript, "Expand")
+                wait_until(lambda: application.teaching_surface.layout_status()["compact"] is compact)
+                status = (await client.call_tool("DesktopStatus")).data
+                assert status["state"] == "stopped" and status["completed_actions"] == 0
+                assert win32gui.GetWindowText(application.teaching_surface._composer) == draft
+                metadata[name] = status["transcript"]["layout"]
+                save_own_window(
+                    transcript,
+                    artifact_root / f"{name}.png",
+                    backdrop=fixture.hwnd,
+                    activate=False,
+                )
+                assert win32gui.GetForegroundWindow() == foreground
+                assert win32api.GetCursorPos() == pointer
+            (artifact_root / "layout.json").write_text(json.dumps(metadata), encoding="utf-8")
+            print("Native compact/expanded appearance captured on an opaque owned backdrop; no input armed")
     finally:
         try:
             application.close()

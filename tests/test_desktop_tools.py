@@ -70,7 +70,11 @@ class FixtureApplication:
         self.teaching = TeachingSession(
             self.controller, position=self.backend.position, context=self.teaching_context
         )
-        self.teaching_surface = SimpleNamespace(visible=True, enabled=True)
+        self.teaching_surface = SimpleNamespace(
+            visible=True,
+            enabled=True,
+            layout_status=lambda: {"compact": True, "dock": "bottom", "bounds": None},
+        )
 
         def visible(value):
             self.teaching_surface.visible = self.teaching_surface.enabled = value

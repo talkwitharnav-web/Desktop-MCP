@@ -55,6 +55,15 @@ implementation lives under `src/desktop_mcp`.
   to, while screenshots and chat remain usable. The rule does not disarm access.
 - Status identifies the running version, PID, instance and a fingerprint of the
   installed package files at startup, not an inferred Git revision.
+- `diagnostics.py` carries only validated frame identifiers and input-delivery
+  receipts in a request-local context. The MCP policy recognizes the actual
+  protected-target exception through batch/tool wrappers, never an arbitrary
+  exception's `details` attribute. The response uses MCP `isError` and structured
+  `is_error`, with caller/generation, native geometry and completion warnings;
+  `Interaction.last_denial` retains the same attributed record. Native/control
+  text and unsent drafts are not diagnostic fields. Status and observations also
+  expose content-free `protected_windows` snapshots after capture guards restore
+  the local surfaces; these snapshots are not historical replay authorizations.
 - After successful focus, only a temporary no-foreground condition is retried
   for at most 0.5 seconds. A different selected window aborts recovery; focus,
   launch and input are never replayed to obtain an image.
@@ -103,6 +112,14 @@ implementation lives under `src/desktop_mcp`.
   separately from native/COM failures; no timed-out capture thread is abandoned.
 - `DesktopApplication` owns both native surfaces. `window_handles` combines every
   control/transcript/canvas/cursor handle for input targeting and capture exclusion.
+  `window_roles` combines their stable, content-free role mappings for
+  `WindowsInput` / `WindowTargets`. Target protection follows the actual hit
+  receiver, process/root ownership, active/focused controls and owned modal/capture
+  routing rather than any intersecting rectangle. Layered click-through overlays
+  use a bounded Z-order/hit-test query; ambiguity is a diagnostic denial.
+  Active capture uses the HWND returned by `ensure_observable_foreground` before
+  reading title/geometry, not a second unchecked foreground sample. Desktop-scope
+  captures omit titles of registered owned foreground windows.
   Its capture guard enters both acknowledged hide/flush guards with `ExitStack`;
   a failed guard never falls back to an unguarded capture.
   Base-UI requests are also serviced by the native wake-message handler during
@@ -158,6 +175,21 @@ implementation lives under `src/desktop_mcp`.
   receives Enter instead of accidentally sending an incomplete message.
   Layout fits history/status/composer/Send/Stop using a compact font scale when
   necessary, separately from physical monitor/cursor DPI.
+  `transcript_layout.py` shares responsive physical geometry across native sizing,
+  minimum tracking and tests. The default compact ribbon places history beside
+  the composer; narrow clients wrap/stack rather than overflowing fixed minima.
+  Expand/Compact retains per-mode sizes and UTF-16 selection/reading anchors.
+  Incoming replies follow only an already-following history view; Latest exposes
+  unread replies without forcibly scrolling a reader. Layout changes do not
+  restore composer selection/scroll while IME composition is active.
+  Taskbar-edge placement is an explicit full-monitor choice, not an appbar,
+  implicit Pin, work-area reservation or taskbar-setting change. The cheap
+  `layout_status` snapshot describes the last completed layout without any text.
+  Native sizing supplies the prospective width during synchronous
+  `WM_GETMINMAXINFO` callbacks; the old narrow-window minimum must not push a
+  newly widened ribbon outside its work area. Native fakes model pywin32's
+  six-field scroll-info result, and maximized-state queries use the actual
+  `user32.IsZoomed` export rather than an invented pywin32 method.
   Docking and minimum sizes share the current monitor's work-area/DPI constraints;
   panel minimum tracking sizes never apply to the separately sized ink canvas.
   Transcript close/fatal-exit handling sends owned `WM_CANCELMODE`, so native

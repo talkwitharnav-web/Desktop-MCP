@@ -11,6 +11,7 @@ from fastmcp.server.middleware.middleware import CallNext
 from fastmcp.tools.tool import ToolResult
 from mcp.types import CallToolRequestParams
 
+from desktop_mcp.diagnostics import call_diagnostics, protected_target_error
 from desktop_mcp.runtime import DesktopStopped
 from desktop_mcp.interaction import DesktopInUse, RequestActor, request_actor
 
@@ -56,34 +57,52 @@ class ControlPolicy(Middleware):
         if mcp_context is None:
             raise ToolError("An initialized MCP client context is required.")
         actor = RequestActor(mcp_context.session_id, mcp_context.request_id, context.message.name)
-        try:
-            with request_actor(actor):
-                arguments = context.message.arguments or {}
-                explicit_claim = (
-                    actor.tool == "DesktopControl" and arguments.get("action", "status") == "claim"
-                )
-                if context.message.name not in DESKTOP_TOOLS and not explicit_claim:
-                    return await call_next(context)
-                app = self._get_application()
-                with app.controller.request() as generation:
-                    with request_actor(replace(actor, generation=generation)):
-                        if explicit_claim:
-                            return await call_next(context)
-                        app.interaction.claim(actor.session_id, generation=generation)
-                        if self._on_desktop_session is not None:
-                            self._on_desktop_session(actor.session_id)
-                        changes_desktop = actor.tool in INPUT_TOOLS and not (
-                            actor.tool == "App" and arguments.get("mode", "list") == "list"
-                        )
-                        pending = app.teaching.conversation.status()["pending_messages"]
-                        if changes_desktop and pending:
-                            raise ToolError(
-                                f"{pending} unanswered transcript message(s) are waiting. "
-                                "Use TranscriptRead and reply with reply_to before changing the desktop. "
-                                "Desktop access is still armed."
-                            )
+        app = None
+        generation = None
+        with call_diagnostics() as evidence:
+            try:
+                with request_actor(actor):
+                    arguments = context.message.arguments or {}
+                    explicit_claim = (
+                        actor.tool == "DesktopControl"
+                        and arguments.get("action", "status") == "claim"
+                    )
+                    if context.message.name not in DESKTOP_TOOLS and not explicit_claim:
                         return await call_next(context)
-        except DesktopInUse as error:
-            raise ToolError(str(error)) from error
-        except DesktopStopped as error:
-            raise ToolError(str(error)) from error
+                    app = self._get_application()
+                    with app.controller.request() as generation:
+                        with request_actor(replace(actor, generation=generation)):
+                            if explicit_claim:
+                                return await call_next(context)
+                            app.interaction.claim(actor.session_id, generation=generation)
+                            if self._on_desktop_session is not None:
+                                self._on_desktop_session(actor.session_id)
+                            changes_desktop = actor.tool in INPUT_TOOLS and not (
+                                actor.tool == "App" and arguments.get("mode", "list") == "list"
+                            )
+                            pending = app.teaching.conversation.status()["pending_messages"]
+                            if changes_desktop and pending:
+                                raise ToolError(
+                                    f"{pending} unanswered transcript message(s) are waiting. "
+                                    "Use TranscriptRead and reply with reply_to before changing the desktop. "
+                                    "Desktop access is still armed."
+                                )
+                            return await call_next(context)
+            except DesktopInUse as error:
+                raise ToolError(str(error)) from error
+            except DesktopStopped as error:
+                raise ToolError(str(error)) from error
+            except Exception as error:
+                result = (
+                    protected_target_error(
+                        error,
+                        app=app,
+                        actor=replace(actor, generation=generation),
+                        evidence=evidence,
+                    )
+                    if app is not None
+                    else None
+                )
+                if result is None:
+                    raise
+                return result
