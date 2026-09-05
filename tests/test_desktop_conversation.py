@@ -162,3 +162,17 @@ async def test_listening_for_chat_does_not_block_desktop_tools():
             if not waiting.done():
                 waiting.cancel()
                 await asyncio.gather(waiting, return_exceptions=True)
+
+
+async def test_releasing_then_relistening_does_not_revive_the_previous_wait():
+    conversation = chat()
+    old = asyncio.create_task(conversation.listen("same-session", timeout=1))
+    await asyncio.sleep(0)
+    conversation.release_listener("same-session")
+    new = asyncio.create_task(conversation.listen("same-session", timeout=1))
+    await asyncio.sleep(0)
+    conversation.send_user("Only the current read may deliver this.")
+    assert (await new)["message"]["text"] == "Only the current read may deliver this."
+    with pytest.raises(RuntimeError, match="disconnected"):
+        await old
+    assert not conversation.status()["listener_waiting"]

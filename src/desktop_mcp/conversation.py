@@ -54,7 +54,7 @@ class Conversation:
         self._owner: str | None = None
         self._owner_label = ""
         self._lease_until = 0.0
-        self._waiting = False
+        self._waiting_token: object | None = None
         self._delivered: int | None = None
         self._closed = False
 
@@ -80,7 +80,7 @@ class Conversation:
         if self._owner is not None and now >= self._lease_until:
             self._owner = None
             self._owner_label = ""
-            self._waiting = False
+            self._waiting_token = None
             self._delivered = None
 
     def status(self) -> dict[str, object]:
@@ -90,7 +90,7 @@ class Conversation:
             return {
                 "pending_messages": len(self._pending),
                 "listener_connected": self._owner is not None,
-                "listener_waiting": self._waiting,
+                "listener_waiting": self._waiting_token is not None,
                 "listener_name": self._owner_label or None,
                 "awaiting_reply": self._delivered is not None,
             }
@@ -172,17 +172,17 @@ class Conversation:
             self._expire(started)
             if self._owner is not None and self._owner != owner:
                 raise RuntimeError("Another Copilot session is handling this transcript.")
-            if self._waiting:
+            if self._waiting_token is not None:
                 raise RuntimeError("A transcript read is already waiting.")
             self._owner, self._owner_label = owner, label
             self._lease_until = started + _LEASE_SECONDS
-            self._waiting = True
+            token = self._waiting_token = object()
         try:
             while True:
                 self.ensure_open()
                 now = self._now()
                 with self._lock:
-                    if self._owner != owner:
+                    if self._owner != owner or self._waiting_token is not token:
                         raise RuntimeError("The transcript listener disconnected.")
                     if self._pending:
                         entry = next(iter(self._pending.values()))
@@ -199,15 +199,15 @@ class Conversation:
                 await asyncio.sleep(min(0.1, max(0.0, started + timeout - now)))
         finally:
             with self._lock:
-                if self._owner == owner:
-                    self._waiting = False
+                if self._waiting_token is token:
+                    self._waiting_token = None
 
     def release_listener(self, owner: str) -> bool:
         with self._lock:
             if self._owner == owner:
                 self._owner = None
                 self._owner_label = ""
-                self._waiting = False
+                self._waiting_token = None
                 self._delivered = None
                 return True
             return False
@@ -223,5 +223,5 @@ class Conversation:
             self._closed = True
             self._owner = None
             self._owner_label = ""
-            self._waiting = False
+            self._waiting_token = None
             self._delivered = None
