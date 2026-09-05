@@ -64,6 +64,10 @@ implementation lives under `src/desktop_mcp`.
   Local minimization tracks the last non-owned foreground using the composed HWND
   list. It restores that target only when Windows selects another owned window or
   briefly has no foreground, never over a different user-selected application.
+  Base-panel layout scale is capped by available work-area client dimensions,
+  separately from actual monitor/cursor DPI. Native STATIC children expose
+  rejection/activity text; the takeover button's native name carries its On/Off
+  state. These extra HWNDs remain in the combined input-target exclusion list.
 - Teaching starts before the control surface makes local arming available.
   Shutdown stops/releases input before closing either UI, and attempts all cleanup
   even if one surface fails. UI-thread snapshots never acquire the operation lock.

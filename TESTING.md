@@ -74,6 +74,11 @@ native harness backend remains `mss` for deterministic fixture checks.
 The artifact directory records the exact owned PID/window handles for recovery
 if the fixture fails. Never terminate a process by name or infer a cleanup root.
 
+The opt-in `native_control_accessibility_and_compact_layout` selector reads
+native owned-control text and verifies a compact panel's bounds without arming
+input or requiring foreground permission. Fake geometry cases cover high DPI
+and small/negative-origin work areas; they do not change Windows display settings.
+
 After integration, validate distribution metadata with
 `.\.venv\Scripts\python.exe scripts\check_versions.py`, and use the existing
 `python -m uv build` packaging path. A local build is not package publication.

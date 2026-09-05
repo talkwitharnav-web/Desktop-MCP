@@ -17,7 +17,7 @@ from dataclasses import dataclass, field, replace
 from enum import IntEnum
 from typing import Iterator, Literal
 
-from desktop_mcp.contracts import INJECTED_INPUT_TAG, ControlSnapshot, LocalControl, Point
+from desktop_mcp.contracts import INJECTED_INPUT_TAG, ControlSnapshot, LocalControl, Point, Rect
 from desktop_mcp.cursor import CursorSprite, premultiplied_bgra, render_cursor
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ _REFRESH_MS = 8
 _WAKE_MESSAGE = 0x8000 + 41
 _HOTKEY_ID = 0x444D
 _STOP_MODIFIERS = 0x0002 | 0x0004 | 0x4000  # Control, Shift, no repeat.
-_PANEL_STYLE = 0x00CA0000  # Caption, system menu, minimize; no resizing/maximizing.
+_PANEL_STYLE = 0x02CA0000  # Caption, system menu, minimize, clip native children.
 _PANEL_EX_STYLE = 0x00040000 | 0x00010000  # App window, control parent.
 _OVERLAY_EX_STYLE = 0x00080000 | 0x00000020 | 0x00000008 | 0x00000080 | 0x08000000
 _SHORTCUT_HINT = "Ctrl + Shift + H   ·   Global latched stop"
@@ -56,6 +56,14 @@ class _PanelModel:
     stop_enabled: bool
     human_takeover: bool
     mode_enabled: bool
+
+
+def _fit_layout_scale(work: Rect, dpi: int, chrome: Point) -> float:
+    width = work[2] - work[0] - chrome[0]
+    height = work[3] - work[1] - chrome[1]
+    if width <= 0 or height <= 0:
+        raise OSError("The monitor work area cannot contain the local control interface.")
+    return min(dpi / 96, width / _PANEL_WIDTH, height / _PANEL_HEIGHT)
 
 
 def _panel_model(snapshot: ControlSnapshot) -> _PanelModel:
@@ -575,6 +583,7 @@ class _Win32Adapter:
         self._panel = 0
         self._overlay = 0
         self._buttons: dict[_LocalCommand, int] = {}
+        self._labels: dict[str, int] = {}
         self._hooks: list[int] = []
         self._hook_callbacks: list[object] = []
         self._hotkey_registered = False
@@ -583,8 +592,12 @@ class _Win32Adapter:
         self._instance = int(self.api.GetModuleHandle(None))
         self._old_dpi_context = None
         self._background = 0
+        self._detail_background = 0
         self._fonts: dict[str, int] = {}
         self._dpi = 96
+        self._layout_scale = 1.0
+        self._layout_ready = False
+        self._laying_out = False
         self._sprite: CursorSprite | None = None
         self._sprite_dpi = 0
         self._cursor_visible = False
@@ -824,7 +837,7 @@ class _Win32Adapter:
         return result
 
     def _scale(self, value: int) -> int:
-        return round(value * self._dpi / 96)
+        return round(value * getattr(self, "_layout_scale", self._dpi / 96))
 
     def _rect(self, left: int, top: int, right: int, bottom: int) -> tuple[int, ...]:
         return tuple(self._scale(value) for value in (left, top, right, bottom))
@@ -845,6 +858,7 @@ class _Win32Adapter:
         monitor = self.api.MonitorFromPoint(pointer, self.con.MONITOR_DEFAULTTONEAREST)
         work = self.api.GetMonitorInfo(monitor)["Work"]
         self._register_window_class()
+        self._fit_to_work_area(work)
         width, height = self._outer_size()
         x = work[0] + max(0, (work[2] - work[0] - width) // 2)
         y = work[1] + max(0, (work[3] - work[1] - height) // 2)
@@ -878,6 +892,7 @@ class _Win32Adapter:
         )
         self._dpi = self._get_window_dpi(self._panel)
         self._check(self._dpi, "GetDpiForWindow")
+        self._fit_to_work_area(work)
         self._make_fonts()
         labels = {
             # Click/Space arms on release; an Alt mnemonic would re-stop on key-up.
@@ -905,6 +920,26 @@ class _Win32Adapter:
                 self._instance,
                 None,
             )
+        for name, identifier in (("detail", 1101), ("action", 1102)):
+            self._labels[name] = self.gui.CreateWindowEx(
+                0,
+                "STATIC",
+                "",
+                self.con.WS_CHILD
+                | self.con.WS_VISIBLE
+                | self.con.SS_LEFTNOWORDWRAP
+                | self.con.SS_NOPREFIX
+                | self.con.SS_ENDELLIPSIS,
+                0,
+                0,
+                1,
+                1,
+                self._panel,
+                identifier,
+                self._instance,
+                None,
+            )
+        self._set_label_fonts()
         self._layout_buttons()
         width, height = self._outer_size()
         self.gui.SetWindowPos(
@@ -916,6 +951,7 @@ class _Win32Adapter:
             height,
             self.con.SWP_NOACTIVATE | self.con.SWP_NOZORDER,
         )
+        self._layout_ready = True
         self.gui.EnableWindow(self._buttons[_LocalCommand.ARM], False)
         for window in (self._panel, self._overlay):
             self._affinity[window] = bool(
@@ -940,6 +976,7 @@ class _Win32Adapter:
 
     def _register_window_class(self) -> None:
         self._background = self.gui.CreateSolidBrush(self.api.RGB(21, 21, 21))
+        self._detail_background = self.gui.CreateSolidBrush(self.api.RGB(33, 33, 33))
         window_class = self.gui.WNDCLASS()
         window_class.hInstance = self._instance
         window_class.lpszClassName = self._class_name
@@ -1009,6 +1046,61 @@ class _Win32Adapter:
         )
         return rectangle.right - rectangle.left, rectangle.bottom - rectangle.top
 
+    def _fit_to_work_area(self, work: Rect) -> None:
+        rectangle = self.wintypes.RECT()
+        self._check(
+            self._adjust_rect(
+                self.ctypes.byref(rectangle), _PANEL_STYLE, False, _PANEL_EX_STYLE, self._dpi
+            ),
+            "AdjustWindowRectExForDpi",
+        )
+        self._layout_scale = _fit_layout_scale(
+            work,
+            self._dpi,
+            (rectangle.right - rectangle.left, rectangle.bottom - rectangle.top),
+        )
+
+    def _work_area(self, rectangle: Rect | None = None) -> Rect:
+        if rectangle is None:
+            monitor = self.api.MonitorFromWindow(self._panel, self.con.MONITOR_DEFAULTTONEAREST)
+        else:
+            monitor = self.api.MonitorFromRect(rectangle, self.con.MONITOR_DEFAULTTONEAREST)
+        return self.api.GetMonitorInfo(monitor)["Work"]
+
+    def _reflow_panel(self, work: Rect, origin: Point | None = None) -> None:
+        if not self._layout_ready or self._laying_out:
+            return
+        self._laying_out = True
+        try:
+            previous_scale = self._layout_scale
+            self._fit_to_work_area(work)
+            if self._layout_scale != previous_scale:
+                self._make_fonts()
+            width, height = self._outer_size()
+            if origin is None:
+                rectangle = self.gui.GetWindowRect(self._panel)
+                origin = rectangle[0], rectangle[1]
+            x = max(work[0], min(origin[0], work[2] - width))
+            y = max(work[1], min(origin[1], work[3] - height))
+            self.gui.SetWindowPos(
+                self._panel,
+                0,
+                x,
+                y,
+                width,
+                height,
+                self.con.SWP_NOACTIVATE | self.con.SWP_NOZORDER,
+            )
+            self._layout_buttons()
+            self.gui.InvalidateRect(self._panel, None, False)
+        finally:
+            self._laying_out = False
+
+    def _set_label_fonts(self) -> None:
+        for name, handle in self._labels.items():
+            role = "small" if name == "detail" else "body"
+            self.gui.SendMessage(handle, self.con.WM_SETFONT, self._fonts[role], True)
+
     def _make_fonts(self) -> None:
         old_fonts = self._fonts
         self._fonts = {}
@@ -1026,6 +1118,7 @@ class _Win32Adapter:
                 description.lfWeight = weight
                 description.lfQuality = self.con.CLEARTYPE_QUALITY
                 self._fonts[role] = self.gui.CreateFontIndirect(description)
+            self._set_label_fonts()
         finally:
             for font in old_fonts.values():
                 self.gui.DeleteObject(font)
@@ -1048,10 +1141,31 @@ class _Win32Adapter:
                 bottom - top,
                 self.con.SWP_NOACTIVATE | self.con.SWP_NOZORDER,
             )
+        for name, rectangle in (
+            ("detail", (36, 120, 420, 145)),
+            ("action", (23, 191, 434, 213)),
+        ):
+            left, top, right, bottom = self._rect(*rectangle)
+            self.gui.SetWindowPos(
+                self._labels[name],
+                0,
+                left,
+                top,
+                right - left,
+                bottom - top,
+                self.con.SWP_NOACTIVATE | self.con.SWP_NOZORDER,
+            )
 
     def window_handles(self) -> tuple[int, ...]:
         return tuple(
-            handle for handle in (self._panel, self._overlay, *self._buttons.values()) if handle
+            handle
+            for handle in (
+                self._panel,
+                self._overlay,
+                *self._buttons.values(),
+                *self._labels.values(),
+            )
+            if handle
         )
 
     def wake(self) -> None:
@@ -1097,6 +1211,18 @@ class _Win32Adapter:
                 if message == self.con.WM_MOUSEACTIVATE:
                     return self.con.MA_NOACTIVATE
             if hwnd == self._panel:
+                if message == self.con.WM_CTLCOLORSTATIC and lparam in self._labels.values():
+                    detail = lparam == self._labels["detail"]
+                    grey, background = (170, 33) if detail else (215, 21)
+                    self.gui.SetTextColor(wparam, self.api.RGB(grey, grey, grey))
+                    self.gui.SetBkColor(wparam, self.api.RGB(background, background, background))
+                    return self._detail_background if detail else self._background
+                if message in (self.con.WM_SIZE, self.con.WM_DISPLAYCHANGE) or (
+                    message == self.con.WM_SETTINGCHANGE and wparam == self.con.SPI_SETWORKAREA
+                ):
+                    if self._layout_ready and not self.gui.IsIconic(self._panel):
+                        self._reflow_panel(self._work_area())
+                    return 0
                 if message == self.con.WM_CLOSE:
                     self._surface._panel_close()
                     return 0
@@ -1135,19 +1261,12 @@ class _Win32Adapter:
                     suggested = self.ctypes.cast(
                         lparam, self.ctypes.POINTER(self.wintypes.RECT)
                     ).contents
-                    self._make_fonts()
-                    width, height = self._outer_size()
-                    self.gui.SetWindowPos(
-                        self._panel,
-                        0,
-                        suggested.left,
-                        suggested.top,
-                        width,
-                        height,
-                        self.con.SWP_NOACTIVATE | self.con.SWP_NOZORDER,
+                    self._reflow_panel(
+                        self._work_area(
+                            (suggested.left, suggested.top, suggested.right, suggested.bottom)
+                        ),
+                        (suggested.left, suggested.top),
                     )
-                    self._layout_buttons()
-                    self.gui.InvalidateRect(self._panel, None, False)
                 return 0
             return self.gui.DefWindowProc(hwnd, message, wparam, lparam)
         except Exception as error:
@@ -1159,6 +1278,12 @@ class _Win32Adapter:
         self.gui.SetWindowText(
             self._panel, f"Desktop-MCP · {model.mode.title()} · {model.state.title()}"
         )
+        self.gui.SetWindowText(
+            self._buttons[_LocalCommand.TAKEOVER],
+            f"&Human takeover: {'On' if model.human_takeover else 'Off'} (Control mode)",
+        )
+        self.gui.SetWindowText(self._labels["detail"], model.detail)
+        self.gui.SetWindowText(self._labels["action"], f"Current action: {model.action}")
         self.gui.EnableWindow(self._buttons[_LocalCommand.ARM], model.arm_enabled)
         self.gui.EnableWindow(self._buttons[_LocalCommand.STOP], model.stop_enabled)
         self.gui.EnableWindow(self._buttons[_LocalCommand.TAKEOVER], model.mode_enabled)
@@ -1172,6 +1297,8 @@ class _Win32Adapter:
         self.gui.InvalidateRect(self._panel, None, False)
         for button in self._buttons.values():
             self.gui.InvalidateRect(button, None, False)
+        for label in self._labels.values():
+            self.gui.InvalidateRect(label, None, True)
 
     def _text(
         self,
@@ -1225,15 +1352,7 @@ class _Win32Adapter:
             )
             self._rounded_box(dc, self._rect(22, 78, 434, 155), 33, radius=11)
             self._text(dc, self._view.heading, self._rect(36, 91, 420, 113), role="heading")
-            self._text(
-                dc,
-                self._view.detail,
-                self._rect(36, 120, 420, 145),
-                role="small",
-                grey=170,
-            )
             self._text(dc, "CURRENT ACTION", self._rect(23, 170, 434, 188), role="small", grey=135)
-            self._text(dc, self._view.action, self._rect(23, 191, 434, 213), grey=215)
             self._text(dc, _SHORTCUT_HINT, self._rect(23, 321, 434, 341), role="small", grey=158)
         finally:
             self.gui.EndPaint(self._panel, paint)
@@ -1264,7 +1383,7 @@ class _Win32Adapter:
             self._text(
                 item.hDC,
                 (
-                    "Human takeover"
+                    "Human takeover (Control mode)"
                     if self._view.mode == "teach"
                     else "Human takeover · physical input stops control"
                 ),
@@ -1463,6 +1582,7 @@ class _Win32Adapter:
         if self._panel and clean(self.gui.DestroyWindow, self._panel):
             self._panel = 0
             self._buttons.clear()
+            self._labels.clear()
         if self._registered_class and not self._panel and not self._overlay:
             if clean(self.gui.UnregisterClass, self._class_name, self._instance):
                 self._registered_class = False
@@ -1472,6 +1592,9 @@ class _Win32Adapter:
         if self._background and not self._registered_class:
             if clean(self.gui.DeleteObject, self._background):
                 self._background = 0
+        if self._detail_background and not self._registered_class:
+            if clean(self.gui.DeleteObject, self._detail_background):
+                self._detail_background = 0
         if self._old_dpi_context:
             if clean(
                 lambda: self._check(

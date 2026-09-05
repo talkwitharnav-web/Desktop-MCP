@@ -1029,6 +1029,8 @@ def test_native_commands_only_map_clicked_owned_buttons_and_global_hotkey():
     calls = []
     adapter._panel, adapter._overlay = 101, 102
     adapter._buttons = {ui._LocalCommand.ARM: 103, ui._LocalCommand.TEACH_MODE: 104}
+    adapter._labels = {}
+    adapter._layout_ready = False
     adapter._destroying = False
     adapter.con = SimpleNamespace(
         WM_CLOSE=0x10,
@@ -1041,6 +1043,11 @@ def test_native_commands_only_map_clicked_owned_buttons_and_global_hotkey():
         WM_DESTROY=2,
         WM_QUERYENDSESSION=0x11,
         WM_ENDSESSION=0x16,
+        WM_CTLCOLORSTATIC=0x138,
+        WM_SIZE=5,
+        WM_DISPLAYCHANGE=0x7E,
+        WM_SETTINGCHANGE=0x1A,
+        SPI_SETWORKAREA=47,
     )
     adapter._surface = SimpleNamespace(
         _local_command=lambda command: calls.append(("command", command)),
@@ -1170,6 +1177,7 @@ def test_paint_brush_stays_privately_owned_across_class_registration_and_shutdow
     adapter._old_dpi_context = None
     adapter.con = SimpleNamespace(IDC_ARROW=1, IDI_APPLICATION=2)
     adapter.api = SimpleNamespace(RGB=lambda *args: 0)
+    brushes = iter((500, 501))
 
     def register(window_class):
         classes.append(window_class)
@@ -1185,7 +1193,7 @@ def test_paint_brush_stays_privately_owned_across_class_registration_and_shutdow
             delete(classes[0].hbrBackground)
 
     adapter.gui = SimpleNamespace(
-        CreateSolidBrush=lambda color: 500,
+        CreateSolidBrush=lambda color: next(brushes),
         WNDCLASS=SimpleNamespace,
         LoadCursor=lambda *args: 600,
         LoadIcon=lambda *args: 700,
@@ -1200,14 +1208,16 @@ def test_paint_brush_stays_privately_owned_across_class_registration_and_shutdow
         adapter._register_window_class()
     assert classes[0].hbrBackground == 0
     adapter.shutdown()
-    assert deleted == [500]
+    assert deleted == [500, 501]
     assert adapter._background == 0
+    assert adapter._detail_background == 0
 
 
 def test_native_mode_selector_marks_current_mode_and_exposes_owned_handles():
     adapter = object.__new__(ui._Win32Adapter)
     adapter._panel, adapter._overlay = 101, 102
     adapter._buttons = {command: 2000 + int(command) for command in ui._LocalCommand}
+    adapter._labels = {"detail": 1101, "action": 1102}
     enabled = {}
     titles = []
     adapter.gui = SimpleNamespace(
@@ -1220,18 +1230,122 @@ def test_native_mode_selector_marks_current_mode_and_exposes_owned_handles():
             ControlSnapshot("stopped", "Arm locally", interface_ready=True, mode="teach")
         )
     )
-    assert "Teach" in titles[-1][1]
+    assert "Teach" in dict(titles)[adapter._panel]
     assert enabled[adapter._buttons[ui._LocalCommand.CONTROL_MODE]]
     assert not enabled[adapter._buttons[ui._LocalCommand.TEACH_MODE]]
     assert enabled[adapter._buttons[ui._LocalCommand.ARM]]
     assert adapter._buttons[ui._LocalCommand.CONTROL_MODE] in adapter.window_handles()
     assert adapter._buttons[ui._LocalCommand.TEACH_MODE] in adapter.window_handles()
+    assert set(adapter._labels.values()) <= set(adapter.window_handles())
+
+
+def test_native_accessible_names_publish_takeover_rejection_and_activity():
+    adapter = object.__new__(ui._Win32Adapter)
+    adapter._panel, adapter._overlay = 101, 102
+    adapter._buttons = {command: int(command) for command in ui._LocalCommand}
+    adapter._labels = {"detail": 1101, "action": 1102}
+    text = {}
+    adapter.gui = SimpleNamespace(
+        SetWindowText=lambda handle, value: text.update({handle: value}),
+        EnableWindow=lambda *args: None,
+        InvalidateRect=lambda *args: None,
+    )
+    snapshot = ControlSnapshot(
+        "stopped",
+        "Arm not granted: input still finishing",
+        action="Waiting for release",
+        interface_ready=True,
+        human_takeover=False,
+    )
+    adapter.render_panel(ui._panel_model(snapshot))
+    assert "Off" in text[int(ui._LocalCommand.TAKEOVER)]
+    assert text[1101] == snapshot.reason
+    assert text[1102] == "Current action: Waiting for release"
+    adapter.render_panel(ui._panel_model(replace(snapshot, human_takeover=True)))
+    assert "On" in text[int(ui._LocalCommand.TAKEOVER)]
+
+
+@pytest.mark.parametrize("dpi", [96, 144, 192, 288])
+@pytest.mark.parametrize("work", [(0, 0, 800, 600), (-480, -320, 0, 0), (0, 0, 1920, 1080)])
+def test_compact_layout_keeps_every_control_inside_the_work_area(dpi, work):
+    from ctypes import wintypes
+
+    adapter = object.__new__(ui._Win32Adapter)
+    adapter._dpi = dpi
+    adapter.ctypes, adapter.wintypes = ctypes, wintypes
+    adapter._check = lambda result, operation: result
+
+    def adjust(pointer, style, menu, extended, actual_dpi):
+        rectangle = pointer._obj
+        border = round(8 * actual_dpi / 96)
+        rectangle.left -= border
+        rectangle.right += border
+        rectangle.top -= round(31 * actual_dpi / 96)
+        rectangle.bottom += border
+        return True
+
+    adapter._adjust_rect = adjust
+    adapter._fit_to_work_area(work)
+    width, height = adapter._outer_size()
+    assert width <= work[2] - work[0] and height <= work[3] - work[1]
+    assert adapter._dpi == dpi
+    assert 0 < adapter._layout_scale <= dpi / 96
+    positions = {}
+    adapter._buttons = {command: int(command) for command in ui._LocalCommand}
+    adapter._labels = {"detail": 1101, "action": 1102}
+    adapter.con = SimpleNamespace(SWP_NOACTIVATE=16, SWP_NOZORDER=4)
+    adapter.gui = SimpleNamespace(
+        SetWindowPos=lambda handle, after, x, y, w, h, flags: positions.update(
+            {handle: (x, y, w, h)}
+        )
+    )
+    adapter._layout_buttons()
+    client_width, client_height = adapter._scale(ui._PANEL_WIDTH), adapter._scale(ui._PANEL_HEIGHT)
+    for x, y, w, h in positions.values():
+        assert 0 <= x < x + w <= client_width
+        assert 0 <= y < y + h <= client_height
+    assert int(ui._LocalCommand.STOP) in positions
+    assert int(ui._LocalCommand.TAKEOVER) in positions
+
+
+def test_reflow_clamps_origin_without_activation_or_recursive_layout():
+    adapter = object.__new__(ui._Win32Adapter)
+    adapter._layout_ready = True
+    adapter._laying_out = False
+    adapter._layout_scale = 2.0
+    adapter._panel = 101
+    events = []
+    work = (-800, -600, 0, 0)
+    adapter._fit_to_work_area = lambda area: setattr(adapter, "_layout_scale", 1.0)
+    adapter._make_fonts = lambda: events.append("fonts")
+    adapter._outer_size = lambda: (480, 390)
+    adapter._layout_buttons = lambda: events.append("layout")
+    adapter.con = SimpleNamespace(SWP_NOACTIVATE=16, SWP_NOZORDER=4)
+
+    def position(*args):
+        events.append(("position", *args))
+        adapter._reflow_panel(work)
+
+    adapter.gui = SimpleNamespace(
+        GetWindowRect=lambda window: (500, 500, 1400, 1200),
+        SetWindowPos=position,
+        InvalidateRect=lambda *args: events.append("invalidate"),
+    )
+    adapter._reflow_panel(work)
+    assert events == [
+        "fonts",
+        ("position", 101, 0, -480, -390, 480, 390, 20),
+        "layout",
+        "invalidate",
+    ]
+    assert not adapter._laying_out
 
 
 def test_native_fonts_use_logfont_objects_and_scale_for_dpi():
     adapter = object.__new__(ui._Win32Adapter)
     adapter._dpi = 144
     adapter._fonts = {"old": 50}
+    adapter._labels = {}
     descriptions, deleted = [], []
 
     def create(description):
@@ -1337,6 +1451,7 @@ def test_native_overlay_moves_hotspot_without_focus_or_per_frame_bitmap_upload()
     adapter = object.__new__(ui._Win32Adapter)
     calls = []
     adapter._capturing = False
+    adapter._layout_scale = 0.75
     adapter._sprite = render_cursor()
     adapter._sprite_dpi = 96
     adapter._get_window_dpi = lambda _: 96

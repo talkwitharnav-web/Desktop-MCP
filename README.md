@@ -110,6 +110,9 @@ another local allow action. The panel minimizes so it does not intercept input;
 it remains reachable through Alt-Tab. If Windows activates the transcript instead
 of the target app during local minimization, the panel returns to the last
 non-Desktop-MCP window. It does not override a different app selected by the user.
+The panel compacts to fit the current monitor's work area without changing the
+physical pointer scale. Native accessibility text exposes takeover On/Off,
+arm-rejection details and current activity, rather than relying only on painted text.
 
 **Ctrl+Shift+H** and the panel's Stop control revoke input and captures. Pending
 commands from the old generation stay cancelled even after you resume. Keys and

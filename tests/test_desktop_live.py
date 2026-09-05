@@ -897,3 +897,72 @@ def test_native_auto_capture_owned_fixture(monkeypatch):
                 fixture.close()
         finally:
             assert user32.SetThreadDpiAwarenessContext(previous_dpi)
+
+
+def test_native_control_accessibility_and_compact_layout(monkeypatch):
+    """Read native owned-control metadata without arming, typing or capturing."""
+    import win32con
+    import win32gui
+    from desktop_mcp import ui
+    from desktop_mcp.app import DesktopApplication
+    from desktop_mcp.runtime import DesktopStopped
+
+    native_adapter = ui._Win32Adapter
+
+    class CompactAdapter(native_adapter):
+        def _work_area(self, rectangle=None):
+            return getattr(self, "fixture_work", None) or super()._work_area(rectangle)
+
+        def initialize(self, surface):
+            super().initialize(surface)
+            left, top, right, bottom = super()._work_area()
+            self.fixture_work = (left, top, min(right, left + 640), min(bottom, top + 480))
+            self._reflow_panel(self.fixture_work)
+
+    monkeypatch.setattr(ui, "_Win32Adapter", CompactAdapter)
+    application = DesktopApplication()
+    fixture = FixtureWindow()
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    previous_dpi = user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+    assert previous_dpi
+    try:
+        fixture.start()
+        application.start()
+        panel = application.surface.window_handles()[0]
+        takeover = win32gui.GetDlgItem(panel, 1003)
+        detail = win32gui.GetDlgItem(panel, 1101)
+        activity = win32gui.GetDlgItem(panel, 1102)
+        wait_until(lambda: "On" in win32gui.GetWindowText(takeover))
+        assert "Arm" in win32gui.GetWindowText(detail)
+        assert "Current action:" in win32gui.GetWindowText(activity)
+        application.controller.set_human_takeover(False)
+        wait_until(lambda: "Off" in win32gui.GetWindowText(takeover))
+
+        def reject_arm():
+            raise DesktopStopped("Owned fixture arm rejection")
+
+        monkeypatch.setattr(application.controller, "arm_local", reject_arm)
+        win32gui.SendMessage(win32gui.GetDlgItem(panel, 1001), win32con.BM_CLICK, 0, 0)
+        wait_until(lambda: "Owned fixture arm rejection" in win32gui.GetWindowText(detail))
+        assert not application.controller.snapshot().armed
+        assert application.controller.snapshot().interface_ready
+        work = application.surface._adapter.fixture_work
+        left, top, right, bottom = win32gui.GetWindowRect(panel)
+        assert work[0] <= left < right <= work[2] and work[1] <= top < bottom <= work[3]
+        for identifier in (1001, 1002, 1003, 1004, 1005, 1101, 1102):
+            child = win32gui.GetDlgItem(panel, identifier)
+            x1, y1, x2, y2 = win32gui.GetWindowRect(child)
+            assert left <= x1 < x2 <= right and top <= y1 < y2 <= bottom
+        assert detail in application.window_handles() and activity in application.window_handles()
+        print("Native accessible state/text and compact owned-panel bounds passed; no input armed")
+    finally:
+        try:
+            application.close()
+        finally:
+            try:
+                if fixture.thread.ident is not None:
+                    fixture.close()
+            finally:
+                assert user32.SetThreadDpiAwarenessContext(previous_dpi)
