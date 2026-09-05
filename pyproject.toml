@@ -1,7 +1,7 @@
 [project]
-name = "windows-mcp"
-version = "0.8.5"
-description = "Lightweight MCP Server for interacting with Windows Operating System."
+name = "desktop-mcp"
+version = "0.1.0"
+description = "Supervised, visible Windows desktop control built on Windows-MCP."
 authors = [
     { name = "Jeomon George", email = "jeogeoalukka@gmail.com" }
 ]
@@ -25,6 +25,7 @@ dependencies = [
     "fastmcp>=3.0",
     "fuzzywuzzy>=0.18.0",
     "markdownify>=1.1.0",
+    "mss>=10.1.0",
     "pillow>=11.2.1",
     "platformdirs>=4.3.8",
     "posthog>=7.4.0",
@@ -46,12 +47,13 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/CursorTouch"
-Repository = "https://github.com/CursorTouch/Windows-MCP"
-Issues = "https://github.com/CursorTouch/Windows-MCP/issues"
+Homepage = "https://github.com/talkwitharnav-web/Desktop-MCP"
+Repository = "https://github.com/talkwitharnav-web/Desktop-MCP"
+Issues = "https://github.com/talkwitharnav-web/Desktop-MCP/issues"
 
 [project.scripts]
-windows-mcp = "windows_mcp.__main__:main"
+desktop-mcp = "desktop_mcp.__main__:main"
+windows-mcp = "desktop_mcp.__main__:main"
 
 [build-system]
 requires = ["setuptools>=61"]

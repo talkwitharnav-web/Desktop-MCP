@@ -374,6 +374,64 @@ wheels = [
 ]
 
 [[package]]
+name = "desktop-mcp"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "click" },
+    { name = "comtypes" },
+    { name = "dxcam" },
+    { name = "fastmcp" },
+    { name = "fuzzywuzzy" },
+    { name = "markdownify" },
+    { name = "mss" },
+    { name = "pillow" },
+    { name = "platformdirs" },
+    { name = "posthog" },
+    { name = "psutil" },
+    { name = "pygments" },
+    { name = "python-levenshtein" },
+    { name = "pywin32" },
+    { name = "requests" },
+    { name = "tabulate" },
+    { name = "thefuzz" },
+    { name = "uuid7" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "click", specifier = ">=8.2.1" },
+    { name = "comtypes", specifier = ">=1.4.15" },
+    { name = "dxcam", specifier = ">=0.3.0" },
+    { name = "fastmcp", specifier = ">=3.0" },
+    { name = "fuzzywuzzy", specifier = ">=0.18.0" },
+    { name = "markdownify", specifier = ">=1.1.0" },
+    { name = "mss", specifier = ">=10.1.0" },
+    { name = "pillow", specifier = ">=11.2.1" },
+    { name = "platformdirs", specifier = ">=4.3.8" },
+    { name = "posthog", specifier = ">=7.4.0" },
+    { name = "psutil", specifier = ">=7.0.0" },
+    { name = "pygments", specifier = ">=2.20.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
+    { name = "python-levenshtein", specifier = ">=0.27.1" },
+    { name = "pywin32", specifier = ">=311" },
+    { name = "requests", specifier = ">=2.33.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9.0" },
+    { name = "tabulate", specifier = ">=0.9.0" },
+    { name = "thefuzz", specifier = ">=0.22.1" },
+    { name = "uuid7", specifier = ">=0.1.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "distro"
 version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -801,6 +859,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/de/1d/f4da6f02cdffe04d6362210b807146a26044c88d839208aec273bb0d9184/more_itertools-11.1.0.tar.gz", hash = "sha256:48e8f4d9e7e5878571ecf6f2b4e57634f93cd474cc8cfbd2376f2d11b396e30d", size = 145772, upload-time = "2026-05-22T14:14:29.909Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e8/3d/1087453384dbde46a8c7f9356eead2c58be8a7bf156bca40243377c85715/more_itertools-11.1.0-py3-none-any.whl", hash = "sha256:4b65538ae22f6fed0ce4874efd317463a7489796a0939fa66824dd542125a192", size = 72226, upload-time = "2026-05-22T14:14:28.824Z" },
+]
+
+[[package]]
+name = "mss"
+version = "10.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e5/5d/eee782a6d674f562c946ae6a026f4c595ea2b7b031f290bf9fbf60da09b5/mss-10.2.0.tar.gz", hash = "sha256:ab271860775545e62f29d7b11f82f279ac1048f5bbdd26cfad84830208dbd393", size = 200317, upload-time = "2026-04-23T10:44:57.305Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f2/c3/313e14f245c79b4c05bd0f3a84a4813aa26fa10f8993aebd91d04c5fad3f/mss-10.2.0-py3-none-any.whl", hash = "sha256:e79f428899280e7e64e38365b5bfed683851ebea807eeaeadaf06eb8e0d67197", size = 67106, upload-time = "2026-04-23T10:44:56.266Z" },
 ]
 
 [[package]]
@@ -1696,59 +1763,3 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ce/3c/8b9a225b523f06a9389be81f1b0ab07c49bec6014742e6aa359c1f920f1f/websockets-17.1-cp315-cp315t-win_arm64.whl", hash = "sha256:e552e0037230ac16e5f568de7012041344d1b18c9feed30ec2891b8eba55af81", size = 217372, upload-time = "2026-08-26T14:58:22.807Z" },
     { url = "https://files.pythonhosted.org/packages/41/63/23572870e01836a98346075b9e17a8bc24a6ddd9800a3204ceee58677f3c/websockets-17.1-py3-none-any.whl", hash = "sha256:f221081107b8c48184d99f7019604486376e7ef826037e70aad6b02540732c23", size = 211134, upload-time = "2026-08-26T17:25:31.397Z" },
 ]
-
-[[package]]
-name = "windows-mcp"
-version = "0.8.5"
-source = { editable = "." }
-dependencies = [
-    { name = "click" },
-    { name = "comtypes" },
-    { name = "dxcam" },
-    { name = "fastmcp" },
-    { name = "fuzzywuzzy" },
-    { name = "markdownify" },
-    { name = "pillow" },
-    { name = "platformdirs" },
-    { name = "posthog" },
-    { name = "psutil" },
-    { name = "pygments" },
-    { name = "python-levenshtein" },
-    { name = "pywin32" },
-    { name = "requests" },
-    { name = "tabulate" },
-    { name = "thefuzz" },
-    { name = "uuid7" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "click", specifier = ">=8.2.1" },
-    { name = "comtypes", specifier = ">=1.4.15" },
-    { name = "dxcam", specifier = ">=0.3.0" },
-    { name = "fastmcp", specifier = ">=3.0" },
-    { name = "fuzzywuzzy", specifier = ">=0.18.0" },
-    { name = "markdownify", specifier = ">=1.1.0" },
-    { name = "pillow", specifier = ">=11.2.1" },
-    { name = "platformdirs", specifier = ">=4.3.8" },
-    { name = "posthog", specifier = ">=7.4.0" },
-    { name = "psutil", specifier = ">=7.0.0" },
-    { name = "pygments", specifier = ">=2.20.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
-    { name = "python-levenshtein", specifier = ">=0.27.1" },
-    { name = "pywin32", specifier = ">=311" },
-    { name = "requests", specifier = ">=2.33.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9.0" },
-    { name = "tabulate", specifier = ">=0.9.0" },
-    { name = "thefuzz", specifier = ">=0.22.1" },
-    { name = "uuid7", specifier = ">=0.1.0" },
-]
-provides-extras = ["dev"]

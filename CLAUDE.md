@@ -1,6 +1,47 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Desktop-MCP: read first
+
+This is the Desktop-MCP fork, not an installation of the upstream PyPI package.
+Read [SYSTEM_MEMORY.md](SYSTEM_MEMORY.md) for current architecture,
+[DECISIONS.md](DECISIONS.md) for product boundaries, and
+[agent-work.md](agent-work.md) before delegation. Use
+[DOCUMENTATION.md](DOCUMENTATION.md) when updating documentation.
+
+- Work on `main`. Preserve upstream history, unrelated edits and the MIT notices.
+  Commit and sync a baseline before delegating edits. Never force-push, amend,
+  reset, or blanket-revert without explicit permission.
+- The user authorizes work toward stated goals, not large unsolicited projects
+  in response to questions. Autopilot is not permission to exceed the task.
+- Ctrl+Shift+H stops Desktop-MCP. A stop is latched until local human re-arming;
+  no MCP tool may arm the controller. Closing the control window stops input.
+- All desktop input must pass through the shared serial controller, including
+  compatibility tools. Cancellation must release every key/button we hold.
+  Neither an overlay nor a tool permission prompt is a sandbox.
+- Do not exercise input against the user's existing apps, terminals, files,
+  accounts, or browser sessions as verification. Use a dedicated harmless
+  fixture window. Keep screen captures local and out of Git.
+- Never mutation-test cleanup/path selection or run destructive commands to see
+  whether a guard works. Remove only explicitly owned scratch files. Never infer
+  a cleanup root from `cwd`, recursively delete project/session roots, or kill
+  processes by name.
+- Secrets and other projects' credentials never belong in this repository,
+  commands, reports, screenshots, or commit messages.
+- Use `apply_patch` for manual edits. Windows paths and PowerShell 5.1 syntax
+  are required in local commands; check exit codes on dependent steps.
+- Preserve the user's black/grey rounded cursor design and smooth
+  acceleration/deceleration. Do not impose a text-input speed cap.
+- Report failures explicitly. An unavailable capture is not a blank success,
+  and metadata alone is not evidence that a model received image pixels.
+
+Python is **3.14+**, packaging uses **setuptools**, and UV manages the environment.
+The supervised implementation belongs in `src/desktop_mcp`; the existing
+`src/windows_mcp` package is the retained upstream engine. Current commands and
+their scope belong in [TESTING.md](TESTING.md) and the README.
+
+## Retained upstream engine reference
+
+The following describes the retained engine, not the supervised tool surface.
 
 ## Project Overview
 
@@ -13,7 +54,9 @@ Windows-MCP is a Python MCP (Model Context Protocol) server that bridges AI LLM 
 | Timing | `Wait`, `WaitFor` |
 | System | `App`, `PowerShell`, `FileSystem`, `Registry`, `Process`, `Clipboard`, `Notification` |
 
-Tool names are defined by the `name=` argument of each `@mcp.tool(...)` in `src/windows_mcp/tools/`; that directory is the source of truth. Note the shell tool is registered as `PowerShell`, not `Shell`. Any subset can be removed at startup with `--disable-tools` (e.g. `--disable-tools PowerShell,Registry`).
+Upstream tool names are defined by `name=` in `src/windows_mcp/tools/`. The
+supervised entry point has its own explicitly registered surface and does not
+expose upstream PowerShell, registry, filesystem or process-termination tools.
 
 ## Build & Development Commands
 
@@ -27,7 +70,7 @@ pytest                     # Run all tests
 pytest tests/test_foo.py   # Run a single test file
 ```
 
-**Package manager**: UV (not pip). **Python**: 3.13+. **Build backend**: Hatchling.
+**Package manager**: UV. **Python**: 3.14+. **Build backend**: setuptools.
 
 ## Architecture
 
@@ -85,4 +128,7 @@ The codebase follows a layered service architecture under `src/windows_mcp/`:
 
 ## Security Context
 
-This server has **full system access** with no sandboxing. `PowerShell`, `FileSystem`, `Registry`, `Process`, and `App` can all perform irreversible operations, and there is no audit log or rollback. The recommended deployment target is a VM or Windows Sandbox. Use `--disable-tools` to drop the tools a given deployment does not need.
+The retained upstream server has **full system access** with no sandboxing.
+Do not connect `python -m windows_mcp` alongside the supervised server: it
+bypasses Desktop-MCP's controller. The stop switch cannot revoke another
+program's shell tools, another MCP server, or the user's Windows permissions.
