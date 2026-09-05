@@ -53,6 +53,7 @@ class CaptureContext:
     desktop_bounds: Rect
     title: str = ""
     display_bounds: tuple[Rect, ...] = ()
+    scope: CaptureScope = "active"
 
 
 @dataclass(frozen=True)

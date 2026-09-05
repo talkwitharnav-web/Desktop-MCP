@@ -25,6 +25,11 @@ AI model, a remote-desktop service, or a sandbox.
   without continuously sending redundant screenshots.
 - Optional local image files for clients whose native image reader works but
   whose MCP image-result forwarding does not.
+- A local **Teach** mode for guidance without injected input: laser pointing and
+  circling, persistent erasable screen ink, and real learner-cursor dwell waits.
+- A draggable, Alt-Tab-accessible transcript with local pin and top/bottom docking.
+  The model publishes instruction steps explicitly; presentation never moves the
+  learner's pointer or steals keyboard focus.
 
 ## Requirements and installation
 
@@ -95,19 +100,22 @@ administrator elevation, or login startup task is required.
 
 ## Start, stop and take over
 
-The control window starts **stopped**. Choose **Allow desktop control** locally
-when ready. The panel minimizes so it does not intercept input; it remains
-reachable through Alt-Tab.
+The control window starts **stopped**. Select **Control** or **Teach** and allow
+that mode locally when ready. Changing modes stops the session and requires
+another local allow action. The panel minimizes so it does not intercept input;
+it remains reachable through Alt-Tab.
 
 **Ctrl+Shift+H** and the panel's Stop control revoke input and captures. Pending
 commands from the old generation stay cancelled even after you resume. Keys and
 buttons held by Desktop-MCP are released. The model has no `Arm` or `Resume` tool.
 Closing the panel stops control rather than leaving an invisible active agent.
 
-Human mouse/keyboard input pauses automation by default. The local window can
-change that preference; the emergency hotkey remains enabled. This is useful when
-an Autopilot agent is running: local revocation is enforced by the service, not
-merely by a sentence asking the model to behave.
+In Control mode, human mouse/keyboard input pauses automation by default. The
+local window can change that preference; the emergency hotkey remains enabled.
+In Teach mode, the learner can freely move the mouse without takeover pauses.
+Physical clicks/keys invalidate observations, and all injected mouse/keyboard
+input and app launching/focusing are blocked. Local revocation is enforced by the
+service, not merely by a sentence asking the model to behave.
 
 The boundary is **this server**. The hotkey does not terminate Copilot, revoke
 its shell tools, stop another MCP server, undo completed actions, or erase
@@ -129,12 +137,49 @@ or locked desktop may be refused.
 | `App` | List/focus windows or explicitly launch an executable without a shell. |
 | `DisplayInventory` | Physical monitor bounds, DPI and scale. |
 | `Snapshot` | Optional heavier Windows accessibility inspection plus an image. |
+| `Transcript` | Publish instruction text or request front/back stacking without taking focus. |
+| `Laser` | Point, trace a path, or circle a region without moving the real pointer. |
+| `Draw`, `Erase` | Persistent context-bound ink; erase only our annotations, never app content. |
+| `Cursor`, `WaitForCursor` | Observe the real pointer and wait for vicinity plus continuous dwell. |
 
 Upstream PowerShell, registry, filesystem, process-killing and network-scraping
 tools are deliberately not registered. The retained `python -m windows_mcp`
 module is the upstream implementation, **not** an alternative supervised
 connection. Both installed console aliases, `desktop-mcp` and `windows-mcp`,
 launch the supervised entry point.
+
+## Teaching without taking over
+
+Select Teach and allow it in the local panel. The floating instruction window is
+available immediately, including through Alt-Tab before the first model message.
+Drag its title bar, use **Top**/**Bottom** to dock, or **Pin** to keep it above other
+windows. A model `Transcript(action="back")` request cannot override a local pin.
+Closing the instruction window minimizes it; closing the control window stops the
+session.
+
+An agent can publish a step, mark the relevant area, and wait for your pointer:
+
+```json
+{"text": "Move your cursor over the Add menu.", "title": "Next step"}
+```
+
+Send that to `Transcript`; use `Laser(bounds=[left,top,right,bottom], frame_id=...)`
+to circle the area in an observed image, or `Draw` for persistent paths,
+rectangles and ellipses. Coordinates without `frame_id` are physical desktop
+pixels. These marks are separate click-through visual layers; they never move
+your real pointer or modify Blender. `Erase` and the local **Clear ink** button
+remove only Desktop-MCP marks.
+
+`WaitForCursor` is available in Teach mode. Its `radius` is physical pixels;
+`dwell` requires continuously staying nearby. It returns `reached`, `timeout`,
+`context_changed` or `input_changed`; being nearby is **not proof of a click or
+successful app action**. A stop cancels the operation rather than returning a
+false success. Marks disappear when their context becomes stale or control stops.
+
+The transcript is not automatic mirroring of every Copilot CLI token. The model
+must call `Transcript` to publish a useful step. Ink, laser, cursor and control
+windows are excluded from server screenshots so guidance does not feed back into
+the model's view of the application.
 
 ## Use frames, not guessed coordinate math
 

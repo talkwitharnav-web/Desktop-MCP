@@ -61,6 +61,12 @@ def dispatch(surface, command, *, argument="", generation=None):
     return request
 
 
+def test_every_guidance_child_is_protected_from_input_targeting(surface):
+    surface._editor, surface._status = 3, 4
+    surface._buttons = {201: 5, 202: 6}
+    assert surface.window_handles() == (1, 2, 3, 4, 5, 6)
+
+
 def test_nested_guards_preserve_a_minimized_transcript(surface):
     surface._gui.iconic[1] = True
     assert dispatch(surface, "hide").error is None

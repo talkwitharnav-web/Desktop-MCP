@@ -100,7 +100,17 @@ class TeachingSurface:
             raise RuntimeError("The teaching interface could not start.") from self._error
 
     def window_handles(self) -> tuple[int, ...]:
-        return tuple(handle for handle in (self._panel, self._canvas) if handle)
+        return tuple(
+            handle
+            for handle in (
+                self._panel,
+                self._canvas,
+                self._editor,
+                self._status,
+                *self._buttons.values(),
+            )
+            if handle
+        )
 
     def show(self, stacking: Literal["unchanged", "front", "back"] = "unchanged") -> None:
         if stacking not in {"unchanged", "front", "back"}:

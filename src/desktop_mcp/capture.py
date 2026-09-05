@@ -12,7 +12,13 @@ from desktop_mcp.contracts import CaptureContext, CaptureScope, RawCapture, Rect
 
 
 def context_identity(context: CaptureContext) -> tuple:
-    return context.window_id, context.bounds, context.desktop_bounds, context.display_bounds
+    return (
+        context.window_id,
+        context.bounds,
+        context.desktop_bounds,
+        context.display_bounds,
+        context.scope,
+    )
 
 
 class WindowsCapture:
@@ -80,7 +86,7 @@ class WindowsCapture:
             (display.rect.left, display.rect.top, display.rect.right, display.rect.bottom)
             for display in self._uia.GetDisplays()
         )
-        return CaptureContext(handle, bounds, desktop, title, displays)
+        return CaptureContext(handle, bounds, desktop, title, displays, scope)
 
     def capture(self, *, scope: CaptureScope = "active", region: Rect | None = None) -> RawCapture:
         before = self.context(scope)

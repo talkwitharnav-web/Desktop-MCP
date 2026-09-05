@@ -92,11 +92,12 @@ class Controller:
         if not ready:
             self.stop(error or "The local control interface is unavailable.")
         with self._state_lock:
+            closed = self._state.state == "closed"
             self._state = replace(
                 self._state,
-                interface_ready=ready,
+                interface_ready=ready and not closed,
                 last_error=error or self._state.last_error,
-                state="error" if error else self._state.state,
+                state="error" if error and not closed else self._state.state,
             )
 
     def arm_local(self) -> None:
@@ -310,7 +311,7 @@ class Controller:
         with self._state_lock:
             self._state = replace(
                 self._state,
-                state="error",
+                state="closed" if self._state.state == "closed" else "error",
                 reason=message,
                 last_error=message,
                 generation=self._state.generation + 1,

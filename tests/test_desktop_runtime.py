@@ -84,6 +84,48 @@ def test_controller_starts_stopped_and_requires_live_interface():
     assert controller.snapshot().last_error == "Hotkey unavailable"
 
 
+@pytest.mark.parametrize(
+    "ready,error", [(False, "Late UI failure"), (True, None), (True, "Late UI failure")]
+)
+def test_late_interface_notifications_cannot_reopen_a_closed_controller(ready, error):
+    controller = Controller(FakeInput())
+    controller.set_interface_ready(True)
+    controller.arm_local()
+    controller.close()
+    controller.set_interface_ready(ready, error)
+    controller.set_interface_ready(True)
+    status = controller.snapshot()
+    assert status.state == "closed"
+    assert not status.interface_ready
+    assert status.last_error == error
+    with pytest.raises(DesktopStopped):
+        controller.arm_local()
+    with pytest.raises(DesktopStopped):
+        with controller.operation("late observation"):
+            pytest.fail("A closed controller admitted desktop access")
+
+
+def test_late_release_failure_cannot_reopen_a_closed_controller(monkeypatch):
+    backend = FakeInput()
+    controller = Controller(backend)
+    controller.set_interface_ready(True)
+    controller.arm_local()
+    controller.close()
+
+    def failed_cleanup():
+        raise OSError("Fixture late release failure")
+
+    monkeypatch.setattr(backend, "release_pending", failed_cleanup)
+    controller.stop("Late interface cleanup")
+    monkeypatch.setattr(backend, "release_pending", lambda: None)
+    controller.set_interface_ready(True)
+    assert controller.snapshot().state == "closed"
+    assert not controller.snapshot().interface_ready
+    assert "release" in controller.snapshot().last_error
+    with pytest.raises(DesktopStopped):
+        controller.arm_local()
+
+
 def test_human_takeover_latches_stop_and_never_auto_resumes(armed):
     controller, _ = armed
     revision = controller.input_revision

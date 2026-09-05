@@ -182,12 +182,14 @@ def _context(value: object) -> CaptureContext:
         desktop = _rect(value.desktop_bounds, "desktop bounds")
         if not isinstance(value.title, str) or not isinstance(value.display_bounds, (tuple, list)):
             raise ValueError("Invalid context fields.")
+        if value.scope not in ("active", "desktop"):
+            raise ValueError("Invalid context scope.")
         displays = tuple(_rect(rect, "display bounds") for rect in value.display_bounds)
         if any(not _contains(desktop, rect) for rect in displays):
             raise ValueError("Display bounds are outside the virtual desktop.")
     except ValueError as error:
         raise CaptureError("The capture provider returned malformed context geometry.") from error
-    return CaptureContext(window_id, bounds, desktop, value.title, displays)
+    return CaptureContext(window_id, bounds, desktop, value.title, displays, value.scope)
 
 
 def _contains(outer: Rect, inner: Rect) -> bool:
@@ -203,13 +205,16 @@ def _context_key(context: CaptureContext) -> tuple[object, ...]:
         context.bounds,
         context.desktop_bounds,
         tuple(sorted(context.display_bounds)),
+        context.scope,
     )
 
 
 def _same_context(frame: _Frame, scope: CaptureScope, context: CaptureContext) -> bool:
     original = frame.context
     return (
-        original.window_id == context.window_id
+        original.scope == frame.options.scope
+        and context.scope == scope
+        and original.window_id == context.window_id
         and original.desktop_bounds == context.desktop_bounds
         and sorted(original.display_bounds) == sorted(context.display_bounds)
         and (frame.options.scope != scope or original.bounds == context.bounds)
@@ -612,6 +617,8 @@ class VisionService:
     def _read_context(self, scope: CaptureScope, stats: _Stats | None = None) -> CaptureContext:
         started = self._now()
         context = _context(self._source.context(scope))
+        if context.scope != scope:
+            raise CaptureError("The capture provider returned the wrong context scope.")
         if stats is not None:
             stats.context_check_count += 1
             stats.context_seconds += self._now() - started

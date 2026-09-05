@@ -3,7 +3,7 @@
   "name": "Desktop-MCP",
   "version": "0.1.0",
   "description": "Visible, supervised Windows desktop control built on Windows-MCP",
-  "long_description": "Control the real Windows pointer and keyboard through a local supervised MCP server. Smooth accelerated cursor motion, rich input batches, adaptive screenshot feedback, a native control window, and Ctrl+Shift+H emergency stop. Starts stopped; only the human can allow or resume control. Python 3.14+ required. The stop gate applies to this server, not unrelated shell tools.",
+  "long_description": "Control the real Windows pointer and keyboard through a local supervised MCP server. Smooth accelerated cursor motion, rich input batches, adaptive screenshots, a native control window, and Ctrl+Shift+H emergency stop. Local teaching mode blocks injected input while allowing laser/ink guidance, learner cursor waits and a floating transcript. Starts stopped; only the human can allow or resume. Python 3.14+ required. The stop gate applies to this server, not unrelated shell tools.",
   "author": {
     "name": "Desktop-MCP contributors",
     "url": "https://github.com/talkwitharnav-web/Desktop-MCP"
@@ -47,7 +47,13 @@
     {"name": "Wait", "description": "Interruptible waits and optional observations."},
     {"name": "App", "description": "List, focus and explicitly launch applications."},
     {"name": "DisplayInventory", "description": "Monitor geometry, DPI and scale metadata."},
-    {"name": "Snapshot", "description": "Optional Windows accessibility inspection with an image."}
+    {"name": "Snapshot", "description": "Optional Windows accessibility inspection with an image."},
+    {"name": "Transcript", "description": "Publish instructions in a floating local transcript without taking focus."},
+    {"name": "Laser", "description": "Point or circle on a visual layer without moving the real cursor."},
+    {"name": "Draw", "description": "Draw persistent, context-bound screen ink without editing the application."},
+    {"name": "Erase", "description": "Erase only Desktop-MCP annotations."},
+    {"name": "Cursor", "description": "Read the learner's actual cursor in physical desktop pixels."},
+    {"name": "WaitForCursor", "description": "Wait for learner cursor vicinity and dwell in teaching mode."}
   ],
   "compatibility": {
     "platforms": ["win32"],

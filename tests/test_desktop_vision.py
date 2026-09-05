@@ -7,6 +7,7 @@ from dataclasses import replace
 from io import BytesIO
 import math
 from random import Random
+from types import SimpleNamespace
 
 from PIL import Image
 import pytest
@@ -55,14 +56,14 @@ class Provider:
         return (
             self.current
             if scope == "active"
-            else replace(self.current, bounds=self.current.desktop_bounds)
+            else replace(self.current, bounds=self.current.desktop_bounds, scope=scope)
         )
 
     def capture(self, *, scope: CaptureScope = "active", region: Rect | None = None) -> RawCapture:
         context = (
             self.current
             if scope == "active"
-            else replace(self.current, bounds=self.current.desktop_bounds)
+            else replace(self.current, bounds=self.current.desktop_bounds, scope=scope)
         )
         bounds = region if region is not None else context.bounds
         self.calls.append((scope, region))
@@ -213,9 +214,75 @@ def test_desktop_scope_is_preserved_when_checking_action_context(rig: Rig) -> No
     observation = rig.vision.observe(scope="desktop", max_dimension=200, settle=0)
     rig.provider.context_calls.clear()
     context = rig.vision.context_for(observation.frame_id)
+    assert context.scope == "desktop"
     assert context.bounds == rig.provider.current.desktop_bounds
     assert rig.vision.resolve(observation.frame_id, (0, 0)) == (-500, -300)
     assert rig.provider.context_calls == ["desktop", "desktop"]
+
+
+def test_fullscreen_active_and_desktop_contexts_remain_distinct(rig: Rig) -> None:
+    from desktop_mcp.capture import context_identity
+
+    rig.provider.current = replace(rig.provider.current, bounds=rig.provider.current.desktop_bounds)
+    active = rig.vision.observe(settle=0)
+    desktop = rig.vision.observe(scope="desktop", since=active.frame_id, settle=0)
+    active_context = rig.vision.context_for(active.frame_id)
+    desktop_context = rig.vision.context_for(desktop.frame_id)
+    assert active_context.bounds == desktop_context.bounds
+    assert active_context.scope == "active"
+    assert desktop_context.scope == "desktop"
+    assert context_identity(active_context) != context_identity(desktop_context)
+    assert desktop.image is not None
+
+
+@pytest.mark.parametrize("scope", ["active", "desktop"])
+def test_windows_capture_context_propagates_scope_without_capturing(scope) -> None:
+    from desktop_mcp.capture import WindowsCapture
+
+    provider = WindowsCapture.__new__(WindowsCapture)
+    rectangle = SimpleNamespace(left=0, top=0, right=100, bottom=100)
+    provider._uia = SimpleNamespace(
+        GetVirtualScreenRect=lambda: (0, 0, 100, 100),
+        GetDisplays=lambda: [SimpleNamespace(rect=rectangle)],
+    )
+
+    def window_rect(handle, pointer):
+        for field in ("left", "top", "right", "bottom"):
+            setattr(pointer._obj, field, getattr(rectangle, field))
+        return True
+
+    provider._user32 = SimpleNamespace(
+        GetForegroundWindow=lambda: 17,
+        GetWindowTextLengthW=lambda handle: 0,
+        GetWindowTextW=lambda *args: 0,
+        GetWindowRect=window_rect,
+    )
+    provider._repair_text = lambda value: value
+    provider._control_windows = lambda: ()
+    context = provider.context(scope)
+    assert context.scope == scope
+    assert context.bounds == context.desktop_bounds == (0, 0, 100, 100)
+
+
+@pytest.mark.parametrize("scope", ["desktop", "invalid", None])
+def test_provider_context_with_wrong_or_invalid_scope_is_rejected(rig: Rig, scope) -> None:
+    rig.provider.current = replace(rig.provider.current, scope=scope)
+    with pytest.raises(CaptureError, match="scope|context"):
+        rig.vision.observe(settle=0)
+    assert not rig.provider.calls
+
+
+def test_capture_payload_cannot_substitute_another_scope(rig: Rig, monkeypatch) -> None:
+    context = replace(rig.provider.current, scope="desktop")
+    monkeypatch.setattr(
+        rig.provider,
+        "capture",
+        lambda **kwargs: RawCapture(
+            Image.new("RGB", (200, 120)), context.bounds, context, rig.clock()
+        ),
+    )
+    with pytest.raises(StaleFrameError, match="during capture"):
+        rig.vision.observe(settle=0)
 
 
 def test_mutating_returned_metadata_cannot_change_cached_coordinates(rig: Rig) -> None:

@@ -19,6 +19,7 @@ class FixtureVision:
     def __init__(self, controller):
         self.controller = controller
         self.calls = 0
+        self.contexts = {}
 
     def observe(self, **kwargs):
         self.controller.checkpoint()
@@ -28,6 +29,9 @@ class FixtureVision:
         output = io.BytesIO()
         image.save(output, format="PNG")
         frame_id = f"synthetic-{self.calls}"
+        self.contexts[frame_id] = CaptureContext(
+            1, (0, 0, 1000, 1000), (0, 0, 1000, 1000), scope=kwargs.get("scope", "active")
+        )
         return Observation(
             frame_id,
             {"frame_id": frame_id, "image_size": [40, 30], "image_changed": True},
@@ -36,13 +40,13 @@ class FixtureVision:
         )
 
     def context_for(self, frame):
-        return CaptureContext(1, (0, 0, 1000, 1000), (0, 0, 1000, 1000))
+        return self.contexts[frame]
 
     def resolve(self, frame, point):
         return 10, 10
 
     def invalidate(self):
-        pass
+        self.contexts.clear()
 
 
 class FixtureApplication:
@@ -91,6 +95,12 @@ EXPECTED_TOOLS = {
     "App",
     "DisplayInventory",
     "Snapshot",
+    "Transcript",
+    "Laser",
+    "Draw",
+    "Erase",
+    "Cursor",
+    "WaitForCursor",
 }
 
 
@@ -118,6 +128,12 @@ async def test_supervised_surface_has_no_arm_or_raw_system_tools():
         ("App", {}),
         ("DisplayInventory", {}),
         ("Snapshot", {}),
+        ("Transcript", {"text": "must not publish"}),
+        ("Laser", {"loc": [10, 10]}),
+        ("Draw", {"kind": "path", "points": [[10, 10], [20, 20]]}),
+        ("Erase", {}),
+        ("Cursor", {}),
+        ("WaitForCursor", {"loc": [10, 10]}),
     ],
 )
 async def test_every_desktop_surface_obeys_the_stop_gate(name, arguments):
