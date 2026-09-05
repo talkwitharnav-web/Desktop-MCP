@@ -1,9 +1,9 @@
 {
   "manifest_version": "0.4",
   "name": "Desktop-MCP",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Visible, supervised Windows desktop control built on Windows-MCP",
-  "long_description": "Control the real Windows pointer and keyboard through a local supervised MCP server. Smooth accelerated cursor motion, rich input batches, adaptive screenshots, a native control window, and Ctrl+Shift+H emergency stop. Local teaching mode blocks injected input while allowing laser/ink guidance, learner cursor waits and a floating transcript. Starts stopped; only the human can allow or resume. Python 3.14+ required. The stop gate applies to this server, not unrelated shell tools.",
+  "long_description": "One locally armed session combines desktop control and teaching: smooth cursor input, adaptive screenshots, laser/ink guidance, learner cursor waits and a floating transcript. Explain, highlight and operate without changing modes. Ctrl+Shift+H stops the session; only the human can arm or resume. Python 3.14+ required. The stop gate applies to this server, not unrelated shell tools.",
   "author": {
     "name": "Desktop-MCP contributors",
     "url": "https://github.com/talkwitharnav-web/Desktop-MCP"
@@ -53,7 +53,7 @@
     {"name": "Draw", "description": "Draw persistent, context-bound screen ink without editing the application."},
     {"name": "Erase", "description": "Erase only Desktop-MCP annotations."},
     {"name": "Cursor", "description": "Read the learner's actual cursor in physical desktop pixels."},
-    {"name": "WaitForCursor", "description": "Wait for learner cursor vicinity and dwell in teaching mode."}
+    {"name": "WaitForCursor", "description": "Give the learner a turn, then continue in the same armed session."}
   ],
   "compatibility": {
     "platforms": ["win32"],

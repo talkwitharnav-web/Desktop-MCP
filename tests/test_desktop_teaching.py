@@ -62,7 +62,6 @@ class Rig:
         self.clock = Clock()
         self.controller = SyntheticController(self.clock)
         self.controller.set_interface_ready(True)
-        self.controller.set_mode_local("teach")
         self.controller.arm_local()
         desktop = (-400, -200, 400, 300)
         self.current: CaptureContext | None = CaptureContext(
@@ -168,12 +167,10 @@ def test_agent_mutations_require_an_operation_but_ui_reads_and_clears_do_not(rig
     assert rig.session.snapshot().marks == ()
     rig.session.clear_local()
     rig.session.clear_transcript_local()
-    rig.controller.set_mode_local("control")
-    rig.controller.arm_local()
-    assert rig.call("publish", "Control-mode presentation").sequence == 1
+    assert rig.call("publish", "Guidance in the same session").sequence == 1
     assert rig.draw()
-    with pytest.raises(RuntimeError, match="teaching mode"):
-        rig.call("wait_for_cursor", (0, 0))
+    assert rig.call("wait_for_cursor", (0, 0), timeout=0)["status"] == "timeout"
+    assert not rig.controller.snapshot().awaiting_user
 
 
 @pytest.mark.parametrize("method", ["draw", "wait_for_cursor"])

@@ -410,15 +410,35 @@ class TeachingSession:
         Polling is bounded. Position/context callbacks must themselves return
         promptly; they cannot be preempted by this pure state model.
         """
+        with self._controller.learner_turn():
+            return self._wait_for_cursor(
+                target,
+                radius=radius,
+                dwell=dwell,
+                timeout=timeout,
+                expected_context=expected_context,
+                expected_input_revision=expected_input_revision,
+            )
+
+    def _wait_for_cursor(
+        self,
+        target: Point,
+        *,
+        radius: float,
+        dwell: float,
+        timeout: float,
+        expected_context: CaptureContext | None,
+        expected_input_revision: int | None,
+    ) -> dict[str, object]:
         target = _point(target)
         radius = _number(radius, "radius", 0.0, 512.0)
         dwell = _number(dwell, "dwell", 0.0, 30.0)
         timeout = _number(timeout, "timeout", 0.0, 30.0)
         expected = _context(expected_context) if expected_context is not None else None
-        initial = self._authorize(teach=True)
+        initial = self._authorize()
         _expected_revision(initial, expected_input_revision)
         started = previous_time = self._now()
-        prepared = self._authorize(teach=True, generation=initial.generation)
+        prepared = self._authorize(generation=initial.generation)
         token = object()
         with self._lock:
             self._require_sync(prepared, started)
@@ -430,11 +450,11 @@ class TeachingSession:
         checked_at = -math.inf
         try:
             for _ in range(1024):
-                self._authorize(teach=True, generation=initial.generation)
+                self._authorize(generation=initial.generation)
                 cursor = self._read_position()
                 now = self._wait_time(previous_time)
                 previous_time = now
-                state = self._authorize(teach=True, generation=initial.generation)
+                state = self._authorize(generation=initial.generation)
                 status = self._wait_status(token, state, now)
                 distance = math.dist(cursor, target)
                 inside = distance <= radius
@@ -465,7 +485,7 @@ class TeachingSession:
                         inside_since = None
                 now = self._wait_time(previous_time)
                 previous_time = now
-                state = self._authorize(teach=True, generation=initial.generation)
+                state = self._authorize(generation=initial.generation)
                 status = self._wait_status(token, state, now) or status
                 if inside_since is None:
                     progress = 0.0
@@ -499,7 +519,7 @@ class TeachingSession:
                     elif now >= started + timeout:
                         status = "timeout"
                 if status is not None:
-                    final = self._authorize(teach=True, generation=initial.generation)
+                    final = self._authorize(generation=initial.generation)
                     now = self._wait_time(previous_time)
                     status = self._wait_status(token, final, now) or status
                     if status == "reached" and now > started + timeout:
@@ -615,7 +635,7 @@ class TeachingSession:
             self._text_epoch += 1
             self._revision += 1
 
-    def _authorize(self, *, teach: bool = False, generation: int | None = None) -> ControlSnapshot:
+    def _authorize(self, *, generation: int | None = None) -> ControlSnapshot:
         ticket = self._controller.snapshot().generation
         self._controller.checkpoint()
         state = self._controller.snapshot()
@@ -626,8 +646,6 @@ class TeachingSession:
             or (generation is not None and generation != state.generation)
         ):
             raise DesktopStopped("The teaching operation was revoked.")
-        if teach and state.mode != "teach":
-            raise RuntimeError("Cursor-vicinity waits require locally armed teaching mode.")
         return state
 
     def _now(self) -> float:

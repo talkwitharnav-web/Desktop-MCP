@@ -72,12 +72,16 @@ saves the actual returned MCP fixture image. Do not confuse the two evidence
 scopes. Appearance artifacts remain local and must be viewed; passing a synthetic
 image assertion does not verify native layout.
 
-The same fixture selects Teach through the real local controls, checks transcript
+The same fixture uses the same Arm authorization for guidance and input, checks transcript
 stacking/pinning without focus theft, renders/erases ink and a laser, verifies their
 capture exclusion, and reaches a cursor-dwell target. It tests both the local
 instruction-window Stop button and the global hotkey during a teaching wait.
 The trusted fixture emulates only that harmless stop chord and learner motion;
-MCP still has no remote arm or teaching-mode input path.
+MCP still has no remote Arm. `test_desktop_unified.py` also covers the real tool
+chain around a fake desktop: explain/highlight/click/explain, and learner
+dwell followed by an agent click without a second authorization. Ordinary
+idle movement does not stop the session; interruption during automated input
+and Ctrl+Shift+H still revoke it.
 It also opens only Desktop-MCP's own system menus and verifies capture-guard
 acknowledgement plus both control/transcript shutdowns while Windows is running
 those modal menu loops.

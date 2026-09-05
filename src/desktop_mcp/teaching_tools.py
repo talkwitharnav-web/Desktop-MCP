@@ -37,7 +37,7 @@ def register_teaching_tools(mcp, get_app: Callable[[], DesktopApplication]) -> N
 
     @mcp.tool(
         name="Transcript",
-        description="Publish an instruction/status step to the floating transcript so the user need not return to the terminal. Plain text, no scripts or automatic CLI token mirroring. action=front/back changes stacking without stealing keyboard focus; a local pin preference wins. Presentation works in teaching or control mode, but not while stopped.",
+        description="Publish an instruction/status step to the floating transcript so the user need not return to the terminal. Plain text, no scripts or automatic CLI token mirroring. action=front/back changes stacking without stealing keyboard focus; a local pin preference wins. Guidance and control share the same armed session; no mode change is needed.",
         annotations=presentation,
     )
     def transcript(
@@ -164,12 +164,12 @@ def register_teaching_tools(mcp, get_app: Callable[[], DesktopApplication]) -> N
             return {
                 "position": list(app.teaching.cursor_position()),
                 "units": "physical virtual-desktop pixels",
-                "mode": app.controller.snapshot().mode,
+                "awaiting_user": app.controller.snapshot().awaiting_user,
             }
 
     @mcp.tool(
         name="WaitForCursor",
-        description="In local teaching mode, wait until the user's cursor stays near a target for a continuous dwell. Returns reached/timeout/context_changed/input_changed, not proof a button was clicked. radius is in physical pixels; frame_id translates loc from the screenshot. Ctrl+Shift+H cancels immediately. Publish the instruction with Transcript first.",
+        description="Give the learner a turn: wait until their cursor stays near a target for a continuous dwell. No mode switch needed; control tools can resume after the wait if access is still armed. Returns reached/timeout/context_changed/input_changed, not proof a button was clicked. radius is physical pixels; frame_id maps screenshot coordinates. Ctrl+Shift+H always cancels. Publish the instruction with Transcript first.",
         annotations=read,
     )
     def wait_for_cursor(

@@ -357,8 +357,6 @@ class TeachingSurface:
             self._dock("bottom")
             self._layout()
             self._refresh()
-            win32gui.ShowWindow(self._panel, win32con.SW_SHOWNOACTIVATE)
-            self._shown = True
             if not self._user32.SetTimer(self._panel, 1, 33, None):
                 raise ctypes.WinError(ctypes.get_last_error())
             self._ready.set()
@@ -757,16 +755,16 @@ class TeachingSurface:
                 status = (
                     f"Ctrl+Shift+H | {progress}"
                     if self._status_lines < 2
-                    else f"Ctrl+Shift+H stops\r\n{control.mode.title()}: cursor {progress}"
+                    else f"Ctrl+Shift+H stops\r\nYour cursor: {progress}"
                 )
             else:
                 status = (
                     "Ctrl+Shift+H stops"
                     if self._status_lines < 2
-                    else f"{control.mode.title()} | {control.state.title()}\r\nCtrl+Shift+H stops"
+                    else f"{control.state.title()}\r\nCtrl+Shift+H stops"
                 )
         else:
-            status = f"{control.mode.title()} | {control.state.title()} | Ctrl+Shift+H stops"
+            status = f"{control.state.title()} | Ctrl+Shift+H stops"
             if snapshot.waiting is not None:
                 status += f"\r\nWaiting for your cursor ({snapshot.waiting.dwell_progress:.0%})"
         if gui.GetWindowText(self._status) != status:

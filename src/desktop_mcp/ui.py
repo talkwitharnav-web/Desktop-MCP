@@ -42,21 +42,18 @@ class _LocalCommand(IntEnum):
     ARM = 1001
     STOP = 1002
     TAKEOVER = 1003
-    CONTROL_MODE = 1004
-    TEACH_MODE = 1005
 
 
 @dataclass(frozen=True)
 class _PanelModel:
     state: str
-    mode: Literal["control", "teach"]
     heading: str
     detail: str
     action: str
     arm_enabled: bool
     stop_enabled: bool
     human_takeover: bool
-    mode_enabled: bool
+    settings_enabled: bool
 
 
 def _fit_layout_scale(work: Rect, dpi: int, chrome: Point) -> float:
@@ -70,17 +67,15 @@ def _fit_layout_scale(work: Rect, dpi: int, chrome: Point) -> float:
 def _panel_model(snapshot: ControlSnapshot) -> _PanelModel:
     headings = {
         "stopped": "Stopped · local approval required",
-        "ready": "Ready · control is armed",
-        "running": "Running · Desktop-MCP has control",
+        "ready": "Ready · guidance and control",
+        "running": "Working · guidance and control",
         "error": "Error · control is stopped",
         "closed": "Closed · control is unavailable",
     }
-    if snapshot.mode == "teach":
-        headings["ready"] = "Ready · teaching, no injected input"
-        headings["running"] = "Teaching · observing / presenting"
+    if snapshot.awaiting_user:
+        headings["running"] = "Your turn · waiting for your cursor"
     return _PanelModel(
         state=snapshot.state,
-        mode=snapshot.mode,
         heading=headings[snapshot.state],
         detail=snapshot.last_error or snapshot.reason or "Arm locally when you are ready.",
         action=snapshot.action or "No action running",
@@ -89,7 +84,7 @@ def _panel_model(snapshot: ControlSnapshot) -> _PanelModel:
         ),
         stop_enabled=snapshot.state != "closed",
         human_takeover=snapshot.human_takeover,
-        mode_enabled=snapshot.interface_ready and snapshot.state != "closed",
+        settings_enabled=snapshot.interface_ready and snapshot.state != "closed",
     )
 
 
@@ -387,13 +382,13 @@ class ControlSurface:
             self._model = model
         if (
             snapshot.armed
-            and snapshot.mode == "control"
+            and snapshot.input_active
             and not self._captures
             and not self._closing.is_set()
         ):
             adapter.track_cursor(adapter.cursor_position())
             current = self._controller.snapshot()
-            if self._closing.is_set() or not current.armed or current.mode == "teach":
+            if self._closing.is_set() or not current.armed or not current.input_active:
                 adapter.hide_cursor()
         else:
             adapter.hide_cursor()
@@ -428,20 +423,6 @@ class ControlSurface:
                 return
         elif command == _LocalCommand.TAKEOVER:
             self._controller.set_human_takeover(not snapshot.human_takeover)
-        elif command in (_LocalCommand.CONTROL_MODE, _LocalCommand.TEACH_MODE):
-            mode: Literal["control", "teach"] = (
-                "control" if command == _LocalCommand.CONTROL_MODE else "teach"
-            )
-            if _panel_model(snapshot).mode_enabled and mode != snapshot.mode:
-                self._local_rejection = None
-                try:
-                    self._controller.set_mode_local(mode)
-                except Exception as error:
-                    self._controller.stop("Local mode change was not granted")
-                    self._local_rejection = (
-                        self._controller.snapshot().generation,
-                        f"Mode not changed: {str(error) or type(error).__name__}",
-                    )
         self._refresh()
 
     def _stop_local(self, reason: str) -> None:
@@ -481,11 +462,11 @@ class ControlSurface:
         ):
             return
         try:
-            # The controller owns mode/takeover policy and physical-cursor history.
+            # The controller owns interruption policy and physical-cursor history.
             self._controller.notify_human_input(kind=kind, position=position)
         finally:
             snapshot = self._controller.snapshot()
-            if self._adapter is not None and (not snapshot.armed or snapshot.mode == "teach"):
+            if self._adapter is not None and (not snapshot.armed or not snapshot.input_active):
                 self._adapter.hide_cursor()
 
     def _record_failure(self, error: BaseException) -> None:
@@ -512,7 +493,7 @@ class ControlSurface:
         adapter: _Win32Adapter | None = None
         try:
             self._controller.set_interface_ready(False)
-            self._controller.stop("Select Control or Teach, then Arm / Resume locally.")
+            self._controller.stop("Arm / Resume enables guidance and desktop control together.")
             self._controller.set_human_takeover(True)
             if self._closing.is_set():
                 return
@@ -906,8 +887,6 @@ class _Win32Adapter:
             _LocalCommand.ARM: "Arm / Resume",
             _LocalCommand.STOP: "&Stop",
             _LocalCommand.TAKEOVER: "&Human takeover",
-            _LocalCommand.CONTROL_MODE: "Control",
-            _LocalCommand.TEACH_MODE: "Teach",
         }
         for command, label in labels.items():
             self._buttons[command] = self.gui.CreateWindowEx(
@@ -1135,8 +1114,6 @@ class _Win32Adapter:
             (_LocalCommand.ARM, (22, 224, 284, 264)),
             (_LocalCommand.STOP, (296, 224, 434, 264)),
             (_LocalCommand.TAKEOVER, (22, 277, 434, 302)),
-            (_LocalCommand.CONTROL_MODE, (252, 21, 338, 48)),
-            (_LocalCommand.TEACH_MODE, (344, 21, 434, 48)),
         ):
             left, top, right, bottom = self._rect(*rectangle)
             self.gui.SetWindowPos(
@@ -1282,25 +1259,16 @@ class _Win32Adapter:
 
     def render_panel(self, model: _PanelModel) -> None:
         self._view = model
-        self.gui.SetWindowText(
-            self._panel, f"Desktop-MCP · {model.mode.title()} · {model.state.title()}"
-        )
+        self.gui.SetWindowText(self._panel, f"Desktop-MCP · {model.state.title()}")
         self.gui.SetWindowText(
             self._buttons[_LocalCommand.TAKEOVER],
-            f"&Human takeover: {'On' if model.human_takeover else 'Off'} (Control mode)",
+            f"&Pause on interruption: {'On' if model.human_takeover else 'Off'}",
         )
         self.gui.SetWindowText(self._labels["detail"], model.detail)
         self.gui.SetWindowText(self._labels["action"], f"Current action: {model.action}")
         self.gui.EnableWindow(self._buttons[_LocalCommand.ARM], model.arm_enabled)
         self.gui.EnableWindow(self._buttons[_LocalCommand.STOP], model.stop_enabled)
-        self.gui.EnableWindow(self._buttons[_LocalCommand.TAKEOVER], model.mode_enabled)
-        self.gui.EnableWindow(
-            self._buttons[_LocalCommand.CONTROL_MODE],
-            model.mode_enabled and model.mode != "control",
-        )
-        self.gui.EnableWindow(
-            self._buttons[_LocalCommand.TEACH_MODE], model.mode_enabled and model.mode != "teach"
-        )
+        self.gui.EnableWindow(self._buttons[_LocalCommand.TAKEOVER], model.settings_enabled)
         self.gui.InvalidateRect(self._panel, None, False)
         for button in self._buttons.values():
             self.gui.InvalidateRect(button, None, False)
@@ -1348,11 +1316,7 @@ class _Win32Adapter:
             self._text(dc, "Desktop-MCP", self._rect(22, 17, 242, 46), role="title")
             self._text(
                 dc,
-                (
-                    "TEACH MODE  /  OBSERVATION & PRESENTATION"
-                    if self._view.mode == "teach"
-                    else "CONTROL MODE  /  HUMAN PERMISSION"
-                ),
+                "GUIDE, EXPLAIN & ACT  /  ONE SESSION",
                 self._rect(23, 49, 434, 68),
                 role="small",
                 grey=145,
@@ -1372,15 +1336,7 @@ class _Win32Adapter:
         rectangle = (rc.left, rc.top, rc.right, rc.bottom)
         self.gui.FillRect(item.hDC, rectangle, self._background)
         flags = self.con.DT_CENTER | self.con.DT_VCENTER | self.con.DT_SINGLELINE
-        if command in (_LocalCommand.CONTROL_MODE, _LocalCommand.TEACH_MODE):
-            mode = "control" if command == _LocalCommand.CONTROL_MODE else "teach"
-            chosen = self._view.mode == mode
-            fill, ink = (190, 21) if chosen else (46, 180)
-            if not self._view.mode_enabled:
-                ink = 115
-            self._rounded_box(item.hDC, rectangle, fill, radius=7)
-            self._text(item.hDC, mode.title(), rectangle, role="small", grey=ink, flags=flags)
-        elif command == _LocalCommand.TAKEOVER:
+        if command == _LocalCommand.TAKEOVER:
             checked = self._view.human_takeover
             self._rounded_box(item.hDC, self._rect(1, 5, 17, 21), 188 if checked else 65, 3)
             if checked:
@@ -1389,11 +1345,7 @@ class _Win32Adapter:
                 )
             self._text(
                 item.hDC,
-                (
-                    "Human takeover (Control mode)"
-                    if self._view.mode == "teach"
-                    else "Human takeover · physical input stops control"
-                ),
+                "Pause when I interrupt automated input",
                 (self._scale(27), rc.top, rc.right, rc.bottom),
                 role="small",
                 grey=195,

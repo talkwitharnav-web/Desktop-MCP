@@ -198,7 +198,9 @@ def test_deferred_release_failure_after_close_remains_terminal(armed):
 def test_human_takeover_latches_stop_and_never_auto_resumes(armed):
     controller, _ = armed
     revision = controller.input_revision
-    controller.notify_human_input()
+    with pytest.raises(DesktopStopped), controller.operation("active input"):
+        with controller._input_activity():
+            controller.notify_human_input()
     assert not controller.snapshot().armed
     assert controller.input_revision > revision
     with pytest.raises(DesktopStopped):
@@ -224,11 +226,13 @@ def test_stop_during_target_check_never_releases_an_unattempted_down(armed, kind
 
 
 @pytest.mark.parametrize("kind", ["key", "button"])
-def test_teaching_mode_rejection_cannot_emit_an_unowned_release(armed, kind):
+def test_learner_turn_cannot_emit_an_unowned_release(armed, kind):
     controller, backend = armed
-    controller.set_mode_local("teach")
-    controller.arm_local()
-    with pytest.raises(InputNotAllowed), controller.operation("Fixture teaching gate"):
+    with (
+        pytest.raises(InputNotAllowed),
+        controller.operation("Fixture learner turn"),
+        controller.learner_turn(),
+    ):
         if kind == "key":
             controller._key(key_code("ctrl"), True)
         else:
@@ -257,13 +261,14 @@ def test_attempted_native_down_failure_still_releases_owned_input(armed, kind):
 
 
 @pytest.mark.parametrize("kind", ["button", "key"])
-def test_physical_input_invalidates_real_frames_without_forcing_takeover(armed, kind):
+@pytest.mark.parametrize("takeover", [True, False])
+def test_idle_physical_input_invalidates_frames_without_forcing_takeover(armed, kind, takeover):
     from PIL import Image
     from desktop_mcp.vision import StaleFrameError, VisionService
     from tests.test_desktop_vision import Clock, Provider
 
     controller, backend = armed
-    controller.set_human_takeover(False)
+    controller.set_human_takeover(takeover)
     clock = Clock()
     provider = Provider(clock)
     vision = VisionService(
@@ -291,12 +296,10 @@ def test_physical_input_invalidates_real_frames_without_forcing_takeover(armed, 
     assert backend.events == []
 
 
-@pytest.mark.parametrize("mode", ["control", "teach"])
-def test_motion_without_takeover_keeps_the_revision_and_session(armed, mode):
+@pytest.mark.parametrize("takeover", [True, False])
+def test_idle_motion_keeps_the_revision_and_session(armed, takeover):
     controller, _ = armed
-    controller.set_mode_local(mode)
-    controller.arm_local()
-    controller.set_human_takeover(False)
+    controller.set_human_takeover(takeover)
     before = controller.snapshot()
     controller.notify_human_input(kind="move", position=(55, 66))
     after = controller.snapshot()
@@ -707,32 +710,96 @@ def test_targeted_drag_aborts_if_focus_changes_while_approaching_start(armed):
     assert not any(event[0] == "button" for event in backend.events)
 
 
-def test_teaching_mode_follows_human_motion_without_allowing_injected_input(armed):
+def test_learner_turn_then_control_uses_one_authorized_session(armed):
     controller, backend = armed
-    controller.set_mode_local("teach")
-    assert not controller.snapshot().armed
-    controller.arm_local()
+    generation = controller.snapshot().generation
     revision = controller.input_revision
-    controller.notify_human_input(kind="move", position=(100, 120))
+    with controller.operation("guidance"), controller.learner_turn():
+        assert controller.snapshot().awaiting_user
+        controller.notify_human_input(kind="move", position=(100, 120))
+        assert controller.input_revision == revision
+        controller.notify_human_input(kind="button", position=(100, 120))
+        assert controller.input_revision > revision
+        with pytest.raises(InputNotAllowed):
+            controller.execute([Action(kind="text", text="not during the learner's turn")])
     assert controller.snapshot().armed
+    assert not controller.snapshot().awaiting_user
     assert controller.snapshot().user_cursor == (100, 120)
-    assert controller.input_revision == revision
-    controller.notify_human_input(kind="button", position=(100, 120))
-    assert controller.snapshot().armed
-    assert controller.input_revision > revision
-    with controller.operation("teaching"), pytest.raises(InputNotAllowed):
-        controller.execute([Action(kind="text", text="must not type")])
-    with controller.operation("teaching"), pytest.raises(InputNotAllowed):
-        controller.emit(lambda: backend.text("must not type"))
-    assert backend.events == []
-    controller.stop("Ctrl+Shift+H")
-    assert not controller.snapshot().armed
+    with controller.operation("next step"):
+        controller.execute([Action(kind="text", text="now demonstrate the next step")])
+    assert backend.events == [("text", "now demonstrate the next step")]
+    assert controller.snapshot().generation == generation
+    assert not controller.snapshot().input_active
 
 
-def test_mode_change_revokes_the_existing_operation(armed):
+def test_hard_stop_still_revokes_a_learner_turn(armed):
     controller, backend = armed
-    with pytest.raises(DesktopStopped), controller.operation("old control mode"):
-        controller.set_mode_local("teach")
-        controller.arm_local()
+    with (
+        pytest.raises(DesktopStopped),
+        controller.operation("learner"),
+        controller.learner_turn(),
+    ):
+        controller.stop("Ctrl+Shift+H")
         controller.checkpoint()
+    assert not controller.snapshot().awaiting_user
     assert backend.events == []
+
+
+def test_human_interruption_during_input_still_latches_stop(armed):
+    controller, backend = armed
+    backend.on_event = lambda event: (
+        controller.notify_human_input(kind="move") if event[0] == "move" else None
+    )
+    with pytest.raises(BatchInterrupted), controller.operation("automated move"):
+        controller.execute([Action(kind="move", loc=(500, 500))])
+    assert not controller.snapshot().armed
+    assert not controller.snapshot().input_active
+    assert len([event for event in backend.events if event[0] == "move"]) == 1
+
+
+def test_queued_input_waits_for_the_learner_without_an_extra_arm(armed):
+    controller, backend = armed
+    entered = threading.Event()
+    release = threading.Event()
+    queued = threading.Event()
+    errors = []
+    generation = controller.snapshot().generation
+
+    def learner():
+        try:
+            with controller.operation("learner turn"), controller.learner_turn():
+                entered.set()
+                if not release.wait(2):
+                    raise RuntimeError("Test learner was not released")
+        except Exception as error:
+            errors.append(error)
+
+    def next_action():
+        try:
+            queued.set()
+            with controller.operation("next action"):
+                controller.execute([Action(kind="text", text="next step")])
+        except Exception as error:
+            errors.append(error)
+
+    first, second = threading.Thread(target=learner), threading.Thread(target=next_action)
+    first.start()
+    try:
+        assert entered.wait(1)
+        second.start()
+        assert queued.wait(1)
+        controller.notify_human_input(kind="move", position=(40, 40))
+        assert controller.snapshot().armed
+        assert controller.snapshot().awaiting_user
+        assert backend.events == []
+    finally:
+        release.set()
+        first.join(2)
+        if second.ident is not None:
+            second.join(2)
+    assert not errors
+    assert not first.is_alive() and not second.is_alive()
+    assert backend.events == [("text", "next step")]
+    assert controller.snapshot().generation == generation
+    assert not controller.snapshot().input_active
+    assert not controller.snapshot().awaiting_user

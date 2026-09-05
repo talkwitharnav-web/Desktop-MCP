@@ -1,6 +1,6 @@
 [project]
 name = "desktop-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "Supervised, visible Windows desktop control built on Windows-MCP."
 authors = [
     { name = "Jeomon George", email = "jeogeoalukka@gmail.com" }

@@ -42,6 +42,8 @@ class FakeController:
                 state="stopped",
                 action=None,
                 reason=reason,
+                input_active=False,
+                awaiting_user=False,
                 generation=self.value.generation + 1,
             )
 
@@ -59,11 +61,6 @@ class FakeController:
         self.calls.append(("takeover", enabled))
         self.update(human_takeover=enabled)
 
-    def set_mode_local(self, mode):
-        self.calls.append(("mode", mode))
-        self.stop(f"Mode changed to {mode}; arm locally")
-        self.update(mode=mode)
-
     def notify_human_input(self, *, kind="move", position=None):
         with self.lock:
             self.calls.append(("human", kind, position))
@@ -71,7 +68,7 @@ class FakeController:
                 self.value = replace(self.value, user_cursor=position)
             if not self.value.armed:
                 return
-            if self.value.mode == "control" and self.value.human_takeover:
+            if self.value.input_active and self.value.human_takeover:
                 self.stop("Human input")
             elif kind != "move":
                 self.value = replace(self.value, input_revision=self.value.input_revision + 1)
@@ -263,8 +260,7 @@ def test_panel_state_mapping(state, ready, enabled):
     assert model.detail == "Reason"
     assert model.action == "No action running"
     assert model.stop_enabled is (state != "closed")
-    assert model.mode == "control"
-    assert model.mode_enabled is (ready and state != "closed")
+    assert model.settings_enabled is (ready and state != "closed")
 
 
 def test_panel_shows_current_action_and_failure():
@@ -278,14 +274,10 @@ def test_panel_shows_current_action_and_failure():
 
 
 @pytest.mark.parametrize("state", ["ready", "running"])
-def test_teach_panel_labels_do_not_claim_input_control(state):
-    model = ui._panel_model(
-        ControlSnapshot(state, "Local teaching", interface_ready=True, mode="teach")
-    )
-    assert model.mode == "teach"
-    assert "teach" in model.heading.lower()
-    assert "has control" not in model.heading.lower()
-    assert model.mode_enabled
+def test_unified_panel_makes_guidance_and_control_available(state):
+    model = ui._panel_model(ControlSnapshot(state, "Ready to help", interface_ready=True))
+    assert "guidance and control" in model.heading.lower()
+    assert model.settings_enabled
     assert not model.arm_enabled
 
 
@@ -387,7 +379,9 @@ def test_ready_stopped_panel_explains_local_arming_instead_of_unavailability(sur
     surface.start()
     assert controller.snapshot().interface_ready
     assert adapter.models[-1].arm_enabled
-    assert adapter.models[-1].detail == "Select Control or Teach, then Arm / Resume locally."
+    assert (
+        adapter.models[-1].detail == "Arm / Resume enables guidance and desktop control together."
+    )
 
 
 @pytest.mark.parametrize("outcome", ["refused", "revoked", "error"])
@@ -500,6 +494,7 @@ def test_overlay_follows_actual_pointer_not_snapshot_or_an_animation(surface_fac
     surface.start()
     assert adapter.cursor is None
     adapter.invoke(lambda: surface._local_command(ui._LocalCommand.ARM))
+    controller.update(input_active=True)
     for point in ((-200, 42), (-191, 50), (0, 0), (501, -99)):
         adapter.point = point
         adapter.invoke(surface._refresh)
@@ -512,6 +507,7 @@ def test_overlay_follows_actual_pointer_not_snapshot_or_an_animation(surface_fac
 def test_stop_racing_cursor_render_cannot_leave_an_armed_visual(surface_factory):
     surface, controller, adapter = surface_factory()
     surface.start()
+    controller.update(input_active=True)
     adapter.on_track = lambda: controller.stop("Stopped during rendering")
     adapter.invoke(lambda: surface._local_command(ui._LocalCommand.ARM))
     assert not controller.snapshot().armed
@@ -522,6 +518,7 @@ def test_human_takeover_ignores_injection_and_can_be_disabled_locally(surface_fa
     surface, controller, adapter = surface_factory()
     surface.start()
     adapter.invoke(lambda: surface._local_command(ui._LocalCommand.ARM))
+    controller.update(input_active=True)
     for kind, flags, extra in (
         ("keyboard", 0x10, 0),
         ("mouse", 1, 0),
@@ -547,77 +544,56 @@ def test_human_takeover_ignores_injection_and_can_be_disabled_locally(surface_fa
     assert not controller.snapshot().armed
 
 
-def test_local_mode_selector_stops_and_requires_rearm_without_teach_cursor(surface_factory):
+def test_cursor_tracks_automatic_input_not_idle_learner_movement(surface_factory):
     surface, controller, adapter = surface_factory()
     surface.start()
     adapter.invoke(lambda: surface._local_command(ui._LocalCommand.ARM))
-    assert adapter.cursor == adapter.point
+    assert adapter.cursor is None
     generation = controller.snapshot().generation
-    adapter.invoke(lambda: surface._local_command(ui._LocalCommand.TEACH_MODE))
-    assert controller.snapshot().mode == "teach"
-    assert not controller.snapshot().armed
-    assert controller.snapshot().generation > generation
+    controller.update(input_active=True)
+    adapter.invoke(surface._refresh)
+    assert adapter.cursor == adapter.point
+    controller.update(input_active=False, awaiting_user=True, state="running")
+    adapter.invoke(surface._refresh)
+    assert "Your turn" in adapter.models[-1].heading
     assert adapter.cursor is None
-    assert adapter.models[-1].mode == "teach"
-    assert ("mode", "teach") in controller.calls
     assert sum(call[0] == "arm" for call in controller.calls) == 1
-
-    adapter.invoke(lambda: surface._local_command(ui._LocalCommand.ARM))
     assert controller.snapshot().armed
-    assert adapter.cursor is None
     with surface.capture_guard():
         assert adapter.cursor is None
-    assert adapter.cursor is None
-    adapter.invoke(lambda: surface._local_command(ui._LocalCommand.CONTROL_MODE))
-    assert controller.snapshot().mode == "control"
-    assert not controller.snapshot().armed
-    assert adapter.cursor is None
-    adapter.invoke(lambda: surface._local_command(ui._LocalCommand.ARM))
+    controller.update(awaiting_user=False, input_active=True)
+    adapter.invoke(surface._refresh)
     assert controller.snapshot().armed
     assert adapter.cursor == adapter.point
+    assert controller.snapshot().generation == generation
 
 
-def test_current_mode_and_capture_do_not_trigger_mode_changes(surface_factory):
+def test_there_is_no_mutually_exclusive_mode_selector():
+    assert set(ui._LocalCommand) == {
+        ui._LocalCommand.ARM,
+        ui._LocalCommand.STOP,
+        ui._LocalCommand.TAKEOVER,
+    }
+
+
+def test_capture_does_not_change_unified_permission(surface_factory):
     surface, controller, adapter = surface_factory()
     surface.start()
     adapter.invoke(lambda: surface._local_command(ui._LocalCommand.ARM))
     generation = controller.snapshot().generation
-    adapter.invoke(lambda: surface._local_command(ui._LocalCommand.CONTROL_MODE))
     with surface.capture_guard():
-        adapter.invoke(lambda: surface._local_command(ui._LocalCommand.TEACH_MODE))
+        assert adapter.cursor is None
     assert controller.snapshot().generation == generation
-    assert controller.snapshot().mode == "control"
     assert controller.snapshot().armed
-    assert not any(call[0] == "mode" for call in controller.calls)
-
-
-def test_local_mode_rejection_is_recoverable_and_stops_input(surface_factory, monkeypatch):
-    surface, controller, adapter = surface_factory()
-    surface.start()
-    adapter.invoke(lambda: surface._local_command(ui._LocalCommand.ARM))
-
-    def reject(_mode):
-        raise RuntimeError("Mode change is unavailable")
-
-    monkeypatch.setattr(controller, "set_mode_local", reject)
-    adapter.invoke(lambda: surface._local_command(ui._LocalCommand.TEACH_MODE))
-    assert controller.snapshot().mode == "control"
-    assert not controller.snapshot().armed
-    assert controller.snapshot().interface_ready
-    assert surface._error is None
-    assert surface._thread.is_alive()
-    assert adapter.cursor is None
-    assert "Mode not changed" in adapter.models[-1].detail
 
 
 @pytest.mark.parametrize("takeover", [True, False])
-def test_teach_input_notifications_include_kind_position_and_bypass_ui_takeover_gate(
+def test_idle_input_notifications_keep_guidance_usable_with_either_takeover_preference(
     surface_factory, takeover
 ):
     surface, controller, adapter = surface_factory()
     surface.start()
     controller.update(human_takeover=takeover)
-    adapter.invoke(lambda: surface._local_command(ui._LocalCommand.TEACH_MODE))
     adapter.invoke(lambda: surface._local_command(ui._LocalCommand.ARM))
     generation = controller.snapshot().generation
     revision = controller.snapshot().input_revision
@@ -682,6 +658,7 @@ def test_nested_capture_hides_until_last_exit_and_defers_show(surface_factory):
     surface, controller, adapter = surface_factory()
     surface.start()
     adapter.invoke(lambda: surface._local_command(ui._LocalCommand.ARM))
+    controller.update(input_active=True)
     with surface.capture_guard():
         assert adapter.hidden and not adapter.visible and adapter.cursor is None
         with surface.capture_guard():
@@ -1038,7 +1015,7 @@ def test_native_commands_only_map_clicked_owned_buttons_and_global_hotkey():
     adapter = object.__new__(ui._Win32Adapter)
     calls = []
     adapter._panel, adapter._overlay = 101, 102
-    adapter._buttons = {ui._LocalCommand.ARM: 103, ui._LocalCommand.TEACH_MODE: 104}
+    adapter._buttons = {ui._LocalCommand.ARM: 103, ui._LocalCommand.TAKEOVER: 104}
     adapter._labels = {}
     adapter._layout_ready = False
     adapter._destroying = False
@@ -1071,12 +1048,12 @@ def test_native_commands_only_map_clicked_owned_buttons_and_global_hotkey():
     adapter._wndproc(101, 0x312, ui._HOTKEY_ID + 1, 0)
     assert calls == []
     adapter._wndproc(101, 0x111, int(ui._LocalCommand.ARM), 103)
-    adapter._wndproc(101, 0x111, int(ui._LocalCommand.TEACH_MODE), 104)
+    adapter._wndproc(101, 0x111, int(ui._LocalCommand.TAKEOVER), 104)
     adapter._wndproc(101, 0x312, ui._HOTKEY_ID, 0)
     adapter._wndproc(101, 0x10, 0, 0)
     assert calls == [
         ("command", ui._LocalCommand.ARM),
-        ("command", ui._LocalCommand.TEACH_MODE),
+        ("command", ui._LocalCommand.TAKEOVER),
         ("hotkey",),
         ("close",),
     ]
@@ -1089,7 +1066,7 @@ def test_wake_dispatch_services_capture_and_shutdown_inside_a_native_modal_loop(
     wndproc = ui._Win32Adapter._wndproc
     surface, controller, adapter = surface_factory()
     surface.start()
-    controller.update(mode="teach", state="ready")
+    controller.update(state="ready")
     adapter.modal_exit = threading.Event()
     entered = threading.Event()
     errors = []
@@ -1223,7 +1200,7 @@ def test_paint_brush_stays_privately_owned_across_class_registration_and_shutdow
     assert adapter._detail_background == 0
 
 
-def test_native_mode_selector_marks_current_mode_and_exposes_owned_handles():
+def test_native_unified_controls_expose_owned_handles_without_mode_tabs():
     adapter = object.__new__(ui._Win32Adapter)
     adapter._panel, adapter._overlay = 101, 102
     adapter._buttons = {command: 2000 + int(command) for command in ui._LocalCommand}
@@ -1236,16 +1213,12 @@ def test_native_mode_selector_marks_current_mode_and_exposes_owned_handles():
         InvalidateRect=lambda *args: None,
     )
     adapter.render_panel(
-        ui._panel_model(
-            ControlSnapshot("stopped", "Arm locally", interface_ready=True, mode="teach")
-        )
+        ui._panel_model(ControlSnapshot("stopped", "Arm locally", interface_ready=True))
     )
-    assert "Teach" in dict(titles)[adapter._panel]
-    assert enabled[adapter._buttons[ui._LocalCommand.CONTROL_MODE]]
-    assert not enabled[adapter._buttons[ui._LocalCommand.TEACH_MODE]]
+    assert dict(titles)[adapter._panel] == "Desktop-MCP · Stopped"
     assert enabled[adapter._buttons[ui._LocalCommand.ARM]]
-    assert adapter._buttons[ui._LocalCommand.CONTROL_MODE] in adapter.window_handles()
-    assert adapter._buttons[ui._LocalCommand.TEACH_MODE] in adapter.window_handles()
+    assert len(adapter._buttons) == 3
+    assert set(adapter._buttons.values()) <= set(adapter.window_handles())
     assert set(adapter._labels.values()) <= set(adapter.window_handles())
 
 

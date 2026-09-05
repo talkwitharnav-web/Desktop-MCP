@@ -153,7 +153,6 @@ def test_wait_progress_has_its_own_readable_line_without_hiding_stop(surface, sc
     texts = {}
     surface._gui.GetWindowText = lambda window: texts.get(window, "")
     surface._gui.SetWindowText = lambda window, text: texts.update({window: text})
-    surface.controller.set_mode_local("teach")
     surface.controller.arm_local()
     with surface.controller.operation("Fixture cursor wait"):
         surface._refresh()
@@ -206,7 +205,6 @@ def test_clamped_work_area_keeps_readable_editor_status_and_stop(surface, scale,
     texts = {}
     surface._gui.GetWindowText = lambda window: texts.get(window, "")
     surface._gui.SetWindowText = lambda window, text: texts.update({window: text})
-    surface.controller.set_mode_local("teach")
     surface.controller.arm_local()
     with surface.controller.operation("Fixture compact wait"):
         surface._refresh()

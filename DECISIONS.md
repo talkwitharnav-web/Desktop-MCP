@@ -67,18 +67,24 @@ are deliberate owner/assistant work, not unattended edits.
 Public read access and upstream license notices do not grant anyone write access.
 Keep required attribution while preventing automated changes.
 
-## D-009: Teaching is guidance, not mouse ownership
+## D-009: Guidance and control share one authorization
 
-Local teaching mode permits observations, laser/ink overlays, cursor-vicinity
-waits and transcript updates, but never mouse/keyboard injection or application
-launch/focus. The learner's physical movement does not trigger control-mode
-takeover pauses. Physical clicks/keys invalidate observations; Ctrl+Shift+H still
-stops every agent operation.
+The user explicitly removed the mutually exclusive Teach/Control modes. One
+local Arm enables observations, laser/ink, transcript, cursor waits and input.
+An assistant can explain, highlight, click the next tab and explain again without
+a mode switch or re-arming. Stop remains latched and can never be bypassed.
+
+Interruption pauses apply while an automated input sequence is active, not while
+the learner is reading or moving during a cursor wait. A bounded `learner_turn`
+temporarily reserves the pointer for the user and blocks injected input within
+that wait; it is automatic operation state, not a second permission mode.
+Physical clicks/keys invalidate observations regardless of interruption preference.
 
 Laser/ink are separate visual layers, not movements of the user's pointer and
 not edits to the underlying application. Erase removes only our annotations.
 The transcript is an independently draggable, Alt-Tab-accessible window with
-local pin/dock controls. The model publishes content explicitly through tools;
+local pin/dock controls. It appears on first content, not as a second empty
+startup window. The model publishes content explicitly through tools;
 this is not automatic mirroring of every Copilot terminal token.
 
 Cursor proximity is not proof that a button was clicked or an application action

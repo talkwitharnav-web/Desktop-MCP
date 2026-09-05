@@ -430,8 +430,6 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
 
     assert win32gui.GetForegroundWindow() == fixture.hwnd
     win32gui.ShowWindow(main_window, win32con.SW_SHOWNOACTIVATE)
-    click_local_button(main_window, "Teach")
-    wait_until(lambda: application.controller.snapshot().mode == "teach")
     assert not application.controller.snapshot().armed
     arm_fixture_locally(main_window)
     wait_until(lambda: application.controller.snapshot().armed)
@@ -440,7 +438,7 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
 
     transcript = application.teaching_surface._panel
     editor = application.teaching_surface._editor
-    assert win32gui.IsWindowVisible(transcript)
+    assert not win32gui.IsWindowVisible(transcript)
     assert not win32gui.GetWindowLong(transcript, win32con.GWL_EXSTYLE) & win32con.WS_EX_TOOLWINDOW
     assert win32gui.GetWindowLong(editor, win32con.GWL_STYLE) & win32con.ES_READONLY
     pointer = win32api.GetCursorPos()
@@ -449,6 +447,7 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
         "Transcript", {"title": "Isolated teaching fixture", "text": note}
     )
     assert not result.is_error
+    wait_until(lambda: win32gui.IsWindowVisible(transcript))
     wait_until(lambda: note in win32gui.GetWindowText(editor))
     assert win32gui.GetForegroundWindow() == fixture.hwnd
     assert win32api.GetCursorPos() == pointer
@@ -468,12 +467,18 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
             restore_foreground=fixture.hwnd,
         )
 
-    before_text = win32gui.GetWindowText(fixture.editor)
-    denied = await client.call_tool(
-        "Type", {"text": "must not type in teaching mode", "observe": False}, raise_on_error=False
+    combined_text = "Guidance and input in one session."
+    combined = await client.call_tool(
+        "Type",
+        {
+            "text": combined_text,
+            "loc": list(win32gui.ClientToScreen(fixture.editor, (30, 40))),
+            "observe": False,
+        },
     )
-    assert denied.is_error
-    assert win32gui.GetWindowText(fixture.editor) == before_text
+    assert not combined.is_error
+    wait_until(lambda: combined_text in win32gui.GetWindowText(fixture.editor))
+    before_text = win32gui.GetWindowText(fixture.editor)
     assert application.controller.snapshot().armed
 
     top_left = win32gui.ClientToScreen(fixture.hwnd, (30, 322))

@@ -26,8 +26,9 @@ class ControlSnapshot:
     interface_ready: bool = False
     human_takeover: bool = True
     last_error: str | None = None
-    mode: Literal["control", "teach"] = "control"
     user_cursor: Point | None = None
+    input_active: bool = False
+    awaiting_user: bool = False
 
     @property
     def armed(self) -> bool:
@@ -40,7 +41,6 @@ class LocalControl(Protocol):
     def stop(self, reason: str = "Stopped locally") -> None: ...
     def set_interface_ready(self, ready: bool, error: str | None = None) -> None: ...
     def set_human_takeover(self, enabled: bool) -> None: ...
-    def set_mode_local(self, mode: Literal["control", "teach"]) -> None: ...
     def notify_human_input(
         self, *, kind: Literal["move", "button", "key"] = "move", position: Point | None = None
     ) -> None: ...

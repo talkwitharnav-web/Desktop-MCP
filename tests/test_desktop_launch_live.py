@@ -44,6 +44,7 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
             channel.close()
         assert info["status"]["state"] == "stopped"
         assert info["status"]["completed_actions"] == 0
+        assert "mode" not in info["status"]
         windows = []
 
         def collect(handle, _):
@@ -56,6 +57,16 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
             return True
 
         win32gui.EnumWindows(collect, None)
+        visible = [handle for handle, _ in windows if win32gui.IsWindowVisible(handle)]
+        assert len(visible) == 1, "Startup must not open separate empty teaching/control panels."
+        main_panel = visible[0]
+        children = []
+        win32gui.EnumChildWindows(
+            main_panel,
+            lambda handle, _: children.append(win32gui.GetDlgCtrlID(handle)) or True,
+            None,
+        )
+        assert 1004 not in children and 1005 not in children
         handle = next(
             handle
             for handle, title in windows

@@ -9,7 +9,7 @@ AI model, a remote-desktop service, or a sandbox.
 
 ## What changes from stock Windows-MCP
 
-- In Control mode, a rounded black/grey arrow overlay follows real pointer movement. Pointer
+- During automated input, a rounded black/grey arrow overlay follows real pointer movement. Pointer
   moves, including movement before clicks, accelerate and decelerate smoothly.
 - Left, right, middle and extra mouse buttons; modifier-aware drags; native
   horizontal/vertical wheel input; named keys, chords, repeats and batch-scoped
@@ -27,8 +27,8 @@ AI model, a remote-desktop service, or a sandbox.
   without continuously sending redundant screenshots.
 - Optional local image files for clients whose native image reader works but
   whose MCP image-result forwarding does not.
-- A local **Teach** mode for guidance without injected input: laser pointing and
-  circling, persistent erasable screen ink, and real learner-cursor dwell waits.
+- Teaching and control in **one armed session**: explain, circle a control,
+  click the next tab, and keep explaining without changing modes.
 - A draggable, Alt-Tab-accessible transcript with local pin and top/bottom docking.
   The model publishes instruction steps explicitly; presentation never moves the
   learner's pointer or steals keyboard focus.
@@ -137,14 +137,14 @@ starting a shared host that would be killed when the first client exits.
 Clients still use STDIO. The bridge uses a Windows named pipe restricted to the
 current account and interactive session; remote pipe clients are rejected.
 No TCP listener, firewall rule, administrator elevation, or login startup task
-is required. All connected clients share the same local mode/Arm/Stop state;
+is required. All connected clients share the same local Arm/Stop state;
 connect only clients you intend to give desktop access.
 
 ## Start, stop and take over
 
-The control window starts **stopped**. Select **Control** or **Teach** and press
-**Arm** (or **Resume**) locally when ready. Changing modes stops the session and requires
-another local allow action. The panel minimizes so it does not intercept input;
+The application starts **stopped**. Press **Arm / Resume** locally when ready.
+That single authorization enables guidance, observations and desktop input
+together; there is no Control/Teach selector. The panel minimizes so it does not intercept input;
 it remains reachable through Alt-Tab. If Windows activates the transcript instead
 of the target app during local minimization, the panel returns to the last
 non-Desktop-MCP window. It does not override a different app selected by the user.
@@ -166,13 +166,11 @@ instance starts stopped. Closing a Copilot terminal alone leaves the desktop
 application available; disconnecting a client that used the desktop revokes
 access until local re-arming.
 
-In Control mode, human mouse/keyboard input pauses automation by default. The
-local window can change that preference; the emergency hotkey remains enabled.
-Physical clicks/keys still invalidate prior frames when auto-pausing is disabled.
-In Teach mode, the learner can freely move the mouse without takeover pauses.
-Physical clicks/keys invalidate observations, and all injected mouse/keyboard
-input and app launching/focusing are blocked. Local revocation is enforced by the
-service, not merely by a sentence asking the model to behave.
+**Pause on interruption** stops an active automated input sequence when you use
+the mouse or keyboard. Moving while reading instructions or while the assistant
+waits for your cursor does not require another Arm click. The local checkbox can
+disable interruption pauses; the emergency hotkey always remains enabled.
+Physical clicks/keys still invalidate prior observations.
 
 The boundary is **this server**. The hotkey does not terminate Copilot, revoke
 its shell tools, stop another MCP server, undo completed actions, or erase
@@ -205,10 +203,15 @@ module is the upstream implementation, **not** an alternative supervised
 connection. Both installed console aliases, `desktop-mcp` and `windows-mcp`,
 launch the supervised entry point.
 
-## Teaching without taking over
+## Explain and act in the same session
 
-Select Teach and press Arm/Resume in the local panel. The floating instruction window is
-available immediately, including through Alt-Tab before the first model message.
+Arm once. The assistant can publish instructions, highlight a button, operate it,
+and publish the next explanation using ordinary tool calls. It can also wait for
+you to try a step before continuing. No mode switches or extra authorization are
+needed unless you stop or interrupt an active automated input sequence.
+
+Startup shows one main window. The floating instruction window appears when
+the assistant first publishes content, rather than opening a second empty panel.
 Drag its title bar, use **Top**/**Bottom** to dock, or **Pin** to keep it above other
 windows. A model `Transcript(action="back")` request cannot override a local pin.
 Closing either main window quits the application. Minimize the instruction window
@@ -231,11 +234,13 @@ The combined ink/laser/wait canvas is limited to 8,192 pixels per side and
 16,777,216 pixels total. Oversized combinations are rejected before publication;
 erase older marks before guiding across widely separated monitors.
 
-`WaitForCursor` is available in Teach mode. Its `radius` is physical pixels;
+`WaitForCursor` automatically gives you a turn. Its `radius` is physical pixels;
 `dwell` requires continuously staying nearby. It returns `reached`, `timeout`,
 `context_changed` or `input_changed`; being nearby is **not proof of a click or
 successful app action**. A stop cancels the operation rather than returning a
-false success. Marks disappear when their context becomes stale or control stops.
+false success. During that bounded wait, automated input cannot take your pointer
+away; afterward input tools are available again if access is still armed.
+Marks disappear when their context becomes stale or control stops.
 
 The transcript is not automatic mirroring of every Copilot CLI token. The model
 must call `Transcript` to publish a useful step. Ink, laser, cursor and control

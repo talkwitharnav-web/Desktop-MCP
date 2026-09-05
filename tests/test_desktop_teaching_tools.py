@@ -127,7 +127,6 @@ def test_input_ticket_survives_the_gap_between_mapping_and_session_authorization
     teaching_tools, name, arguments, method, kind
 ):
     app, tools, _ = teaching_tools
-    app.controller.set_mode_local("teach")
     app.controller.arm_local()
     app.backend.point = (120, 70)
     app.teaching = TeachingSession(
@@ -153,7 +152,6 @@ def test_input_ticket_survives_the_gap_between_mapping_and_session_authorization
 
 def test_input_during_bulk_mapping_never_publishes_guidance(teaching_tools):
     app, tools, calls = teaching_tools
-    app.controller.set_mode_local("teach")
     app.controller.arm_local()
     resolve = app.vision.resolve_many
 

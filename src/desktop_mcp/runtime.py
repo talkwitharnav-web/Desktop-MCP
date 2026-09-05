@@ -26,7 +26,7 @@ class DesktopStopped(RuntimeError):
 
 
 class InputNotAllowed(RuntimeError):
-    """Teaching mode is observation/presentation only, never injected input."""
+    """Input cannot run while an active cursor wait gives the learner a turn."""
 
 
 class BatchInterrupted(RuntimeError):
@@ -132,12 +132,10 @@ class Controller:
                 self._state = replace(
                     self._state,
                     state="ready",
-                    reason=(
-                        "Teaching mode: use your own mouse. Ctrl+Shift+H stops the session."
-                        if self._state.mode == "teach"
-                        else "Desktop control allowed. Ctrl+Shift+H stops immediately."
-                    ),
+                    reason="Ready to guide and act. Ctrl+Shift+H stops the session.",
                     action=None,
+                    input_active=False,
+                    awaiting_user=False,
                     generation=self._state.generation + 1,
                     input_revision=self._state.input_revision + 1,
                     last_error=None,
@@ -155,6 +153,8 @@ class Controller:
                 state="closed" if self._state.state == "closed" else "stopped",
                 reason=reason,
                 action=None,
+                input_active=False,
+                awaiting_user=False,
                 generation=self._state.generation + 1,
                 input_revision=self._state.input_revision + 1,
             )
@@ -210,32 +210,21 @@ class Controller:
         with self._state_lock:
             self._state = replace(self._state, human_takeover=enabled)
 
-    def set_mode_local(self, mode: Literal["control", "teach"]) -> None:
-        if mode not in {"control", "teach"}:
-            raise ValueError("Mode must be control or teach.")
-        with self._state_lock:
-            if self._state.state == "closed":
-                raise DesktopStopped("The controller is closed.")
-            if self._state.mode == mode:
-                return
-        self.stop("Mode changed. Allow the new mode locally when ready.")
-        with self._state_lock:
-            self._state = replace(self._state, mode=mode)
-
     def notify_human_input(
         self, *, kind: Literal["move", "button", "key"] = "move", position: Point | None = None
     ) -> None:
         if kind not in {"move", "button", "key"}:
             raise ValueError("Unknown physical input kind.")
-        status = self.snapshot()
-        if position is not None:
-            with self._state_lock:
-                self._state = replace(self._state, user_cursor=position)
-        if status.armed:
-            if status.mode == "control" and status.human_takeover:
-                self.stop("Paused because you used the mouse or keyboard.")
-            elif kind != "move":
-                self._bump_revision()
+        with self._state_lock:
+            status = self._state
+            self._state = replace(
+                status,
+                user_cursor=status.user_cursor if position is None else position,
+                input_revision=status.input_revision + int(status.armed and kind != "move"),
+            )
+            interrupt = status.armed and status.input_active and status.human_takeover
+        if interrupt:
+            self.stop("Paused because you interrupted automated input.")
 
     def _check_generation(self, generation: int) -> None:
         status = self.snapshot()
@@ -314,6 +303,8 @@ class Controller:
                 state="closed" if self._state.state == "closed" else "error",
                 reason=message,
                 last_error=message,
+                input_active=False,
+                awaiting_user=False,
                 generation=self._state.generation + 1,
             )
             self._stopped.set()
@@ -347,15 +338,50 @@ class Controller:
         with self._state_lock:
             self._state = replace(self._state, input_revision=self._state.input_revision + 1)
 
+    @contextmanager
+    def _input_activity(self) -> Iterator[None]:
+        self.checkpoint()
+        depth = getattr(self._local, "input_depth", 0)
+        generation = self._local.generation
+        with self._state_lock:
+            self.checkpoint()
+            if self._state.awaiting_user:
+                raise InputNotAllowed("Wait for the learner's turn to finish before sending input.")
+            if not depth:
+                self._state = replace(self._state, input_active=True)
+        self._local.input_depth = depth + 1
+        try:
+            yield
+        finally:
+            self._local.input_depth = depth
+            if not depth:
+                with self._state_lock:
+                    if self._state.generation == generation:
+                        self._state = replace(self._state, input_active=False)
+
+    @contextmanager
+    def learner_turn(self) -> Iterator[None]:
+        """An automatic, bounded wait gives the real pointer to the learner."""
+        self.checkpoint()
+        generation = self._local.generation
+        with self._input_lock, self._state_lock:
+            self.checkpoint()
+            if self._state.input_active or self._keys or self._buttons:
+                raise InputNotAllowed("Release automated input before waiting for the learner.")
+            if self._state.awaiting_user:
+                raise RuntimeError("A learner turn is already active.")
+            self._state = replace(self._state, awaiting_user=True)
+        try:
+            yield
+        finally:
+            with self._state_lock:
+                if self._state.generation == generation:
+                    self._state = replace(self._state, awaiting_user=False)
+
     def emit(self, callback: Callable[[], T]) -> T:
         """A short critical section closes the stop-versus-new-input race."""
-        with self._input_lock:
+        with self._input_activity(), self._input_lock:
             self.checkpoint()
-            if self.snapshot().mode != "control":
-                raise InputNotAllowed(
-                    "Teaching mode cannot inject input or launch/focus apps. "
-                    "Change to control mode locally if you want the agent to operate them."
-                )
             result = callback()
             with self._state_lock:
                 self._state = replace(self._state, input_revision=self._state.input_revision + 1)
@@ -461,8 +487,18 @@ class Controller:
         self.checkpoint()
         if not 1 <= len(actions) <= 64:
             raise ValueError("A batch must contain between 1 and 64 actions.")
-        if self.snapshot().mode == "teach" and any(action.kind != "wait" for action in actions):
-            raise InputNotAllowed("Teaching mode does not inject mouse or keyboard input.")
+        if any(action.kind != "wait" for action in actions):
+            with self._input_activity():
+                return self._execute_batch(actions, resolve=resolve, window_id=window_id)
+        return self._execute_batch(actions, resolve=resolve, window_id=window_id)
+
+    def _execute_batch(
+        self,
+        actions: Sequence[Action],
+        *,
+        resolve: Callable[[str, Point], Point] | None,
+        window_id: int | None,
+    ) -> list[dict[str, object]]:
         prepared: list[Action] = []
         held_keys: set[int] = set()
         held_buttons: set[Button] = set()

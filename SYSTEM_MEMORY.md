@@ -99,11 +99,15 @@ implementation lives under `src/desktop_mcp`.
 - `CaptureContext.scope` distinguishes desktop observations from fullscreen active
   windows. `teaching_context` checks geometry without pixels or an operation lock;
   own foreground windows and unavailable targets have no teaching context.
-- Control/Teach is a local-only selector. Teach permits observation/presentation
-  but blocks native emission and app launch/focus. Learner motion does not revoke
-  the session; clicks/keys invalidate frames and context-sensitive guidance.
-  Physical clicks/keys also invalidate Control-mode frames when local human
-  takeover is disabled; that preference changes auto-pausing, not frame freshness.
+- Guidance and input share one locally armed session; there is no mode selector
+  or mode field. `input_active` tracks an actual automated input sequence, while
+  `awaiting_user` tracks a bounded cursor wait. Both are operation state, not
+  permission grants. `Controller._input_activity` spans input validation through
+  owned-input release; nested emission reuses that scope. Interruption pauses
+  apply only during that activity, not idle instruction reading or learner waits.
+  `Controller.learner_turn` requires an active operation and no held input;
+  it cannot inject input and clears on success/error/cancellation without rearming.
+  Physical clicks/keys always invalidate frames and context-sensitive guidance.
   Teaching point mapping preserves an input-revision ticket through the model's
   initial authorization, rather than taking a new baseline after frame resolution.
 - Teaching model commits validate the combined mark/wait canvas before publishing.
@@ -115,7 +119,8 @@ implementation lives under `src/desktop_mcp`.
   and use compact status copy so readable instructions and the Stop row still fit.
 - `Transcript` explicitly publishes bounded plain text; it is not a CLI token
   mirror. Front/back requests use no-activate window operations, and local pinning
-  wins. The transcript is available through Alt-Tab before the first message.
+  wins. Only the main panel is visible at startup; the transcript appears when
+  the first instruction is published and then remains accessible through Alt-Tab.
   Docking and minimum sizes share the current monitor's work-area/DPI constraints;
   panel minimum tracking sizes never apply to the separately sized ink canvas.
   Transcript close/fatal-exit handling sends owned `WM_CANCELMODE`, so native
