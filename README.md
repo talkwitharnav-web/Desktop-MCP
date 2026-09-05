@@ -7,6 +7,24 @@ An MCP client supplies the model and decides what to do. Desktop-MCP supplies th
 real mouse, keyboard, screenshots, and a local control window. It is not another
 AI model, a remote-desktop service, or a sandbox.
 
+## Instructions for the connected model
+
+[AGENT_GUIDE.md](src/desktop_mcp/AGENT_GUIDE.md) is the canonical operating
+explanation for agents. The server includes its contents directly in MCP
+initialization instructions and also serves it as `desktop-mcp://guide`.
+The guide ships inside the package; clients do not need access to this repository.
+
+Loading an MCP server does not automatically load its repository's Markdown
+files. This connection-level guide covers the normal observe/act workflow,
+combined teaching/control, transcript listening and replies, visibility and
+local authorization. You can ask for the desktop task normally rather than
+having to restate its tool-call procedure. The client decides how it presents
+MCP instructions to the model; documentation is not a guarantee of model compliance.
+
+After installing this update, reopen Desktop-MCP and reconnect existing MCP
+clients to receive the guide. New server connections read the packaged guide,
+so there is no separate hardcoded copy to keep synchronized.
+
 ## What changes from stock Windows-MCP
 
 - During automated input, a rounded black/grey arrow overlay follows real pointer movement. Pointer

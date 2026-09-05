@@ -1,6 +1,6 @@
 [project]
 name = "desktop-mcp"
-version = "0.4.0"
+version = "0.4.1"
 description = "Supervised, visible Windows desktop control built on Windows-MCP."
 authors = [
     { name = "Jeomon George", email = "jeogeoalukka@gmail.com" }
@@ -67,6 +67,9 @@ where = ["src"]
 
 [tool.setuptools]
 license-files = ["LICENSE.md", "LICENSE-UIAUTOMATION.txt", "THIRD-PARTY-NOTICES.md"]
+
+[tool.setuptools.package-data]
+desktop_mcp = ["AGENT_GUIDE.md"]
 
 [tool.ruff]
 line-length = 100

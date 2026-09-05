@@ -7,6 +7,8 @@ Read [SYSTEM_MEMORY.md](SYSTEM_MEMORY.md) for current architecture,
 [DECISIONS.md](DECISIONS.md) for product boundaries, and
 [agent-work.md](agent-work.md) before delegation. Use
 [DOCUMENTATION.md](DOCUMENTATION.md) when updating documentation.
+The connected model's operating instructions are in
+[AGENT_GUIDE.md](src/desktop_mcp/AGENT_GUIDE.md), not this contributor guide.
 
 - Work on `main`. Preserve upstream history, unrelated edits and the MIT notices.
   Commit and sync a baseline before delegating edits. Never force-push, amend,

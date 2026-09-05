@@ -110,6 +110,10 @@ and small/negative-origin work areas; they do not change Windows display setting
 After integration, validate distribution metadata with
 `.\.venv\Scripts\python.exe scripts\check_versions.py`, and use the existing
 `python -m uv build` packaging path. A local build is not package publication.
+`test_desktop_packaging.py` also checks that MCP initialization and the guide
+resource return the packaged Markdown, even outside the repository directory.
+Distribution inspection must confirm the guide is included in the wheel/source
+archive, not merely present in an editable checkout.
 
 ## Safety
 

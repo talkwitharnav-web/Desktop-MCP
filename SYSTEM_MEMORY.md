@@ -18,6 +18,7 @@ implementation lives under `src/desktop_mcp`.
 | Teaching windows/tools | `teaching_ui.py`, `teaching_tools.py`; native two-way transcript, visibility toggle, separate ink/laser layer and seven presentation/conversation/cursor tools. |
 | Capture/Windows engine | Reuse `windows_mcp.desktop.screenshot` and `windows_mcp.uia`; do not copy the UIA implementation. |
 | MCP entry point | `app.py`, `tools.py`, `policy.py`, `__main__.py`; explicit supervised registration and dispatch-time request tickets. Stdout is reserved for MCP. |
+| Agent operating instructions | Packaged `AGENT_GUIDE.md`, read by `app.read_agent_guide` for initialization and `desktop-mcp://guide`; no client filesystem dependency. |
 | Shared host and launcher | `service.py`, `pipe_transport.py`, `stdio_bridge.py`, `launcher.py`; one Windows user/session host, per-client MCP streams, explicit Quit, searchable local launch. |
 | Accessibility worker | `accessibility.py`; inspect one selected foreground window in an owned, cancellable subprocess with a five-second bound. |
 | Optional image files | `image_files.py`; bounded exports in a uniquely owned temporary directory, disabled by default. |

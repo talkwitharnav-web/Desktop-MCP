@@ -7,7 +7,7 @@ from fastmcp import Client
 
 from desktop_mcp import __version__
 from desktop_mcp.__main__ import main
-from desktop_mcp.app import create_server
+from desktop_mcp.app import AGENT_GUIDE_URI, create_server, read_agent_guide
 from tests.test_desktop_tools import FixtureApplication
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -38,3 +38,24 @@ async def test_extension_manifest_names_the_actual_supervised_surface():
     assert manifest["server"]["entry_point"] == "src/desktop_mcp/__main__.py"
     assert manifest["server"]["mcp_config"]["env"]["ANONYMIZED_TELEMETRY"] == "false"
     assert manifest["compatibility"]["runtimes"]["python"] == ">=3.14"
+
+
+def test_agent_guide_is_shipped_package_data_and_not_relative_to_cwd(tmp_path, monkeypatch):
+    configuration = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "AGENT_GUIDE.md" in configuration["tool"]["setuptools"]["package-data"]["desktop_mcp"]
+    expected = (ROOT / "src" / "desktop_mcp" / "AGENT_GUIDE.md").read_text(encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert read_agent_guide() == expected
+
+
+async def test_initialization_and_resource_deliver_the_same_agent_guide():
+    expected = read_agent_guide()
+    async with Client(create_server(FixtureApplication())) as client:
+        assert client.initialize_result.instructions == expected
+        resources = await client.list_resources()
+        assert AGENT_GUIDE_URI in {str(resource.uri) for resource in resources}
+        content = await client.read_resource(AGENT_GUIDE_URI)
+        assert len(content) == 1
+        assert content[0].text == expected
+        assert content[0].mimeType == "text/markdown"
+        assert (await client.call_tool("DesktopStatus")).data["state"] == "stopped"
