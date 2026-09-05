@@ -23,6 +23,7 @@ from desktop_mcp.teaching import (
 
 MAX_RENDER_PIXELS = 16_777_216
 MAX_RENDER_DIMENSION = 8192
+_INK_EDGE_WIDTH = 2.0
 _XY = tuple[float, float]
 _RGBA = tuple[int, int, int, int]
 
@@ -90,7 +91,11 @@ def visible_bounds(
     marks, waiting = _scene(snapshot, now)
     regions: list[tuple[float, float, float, float]] = []
     for mark in marks:
-        padding = max(12.0, mark.width * 4) if mark.kind == "laser" else mark.width / 2 + 2
+        padding = (
+            max(12.0, mark.width * 4)
+            if mark.kind == "laser"
+            else (mark.width + _INK_EDGE_WIDTH) / 2 + 2
+        )
         xs, ys = zip(*mark.points)
         regions.append((min(xs) - padding, min(ys) - padding, max(xs) + padding, max(ys) + padding))
     if waiting is not None:
@@ -277,6 +282,7 @@ def render_marks(
                 a, b = points
                 points = (a, (b[0], a[1]), b, (a[0], b[1]), a)
             rgb = tuple(int(mark.color[index : index + 2], 16) for index in (1, 3, 5))
+            _stroke(canvas, points, (mark.width + _INK_EDGE_WIDTH) * factor, (35, 35, 35, 220))
             _stroke(canvas, points, mark.width * factor, (*rgb, 255))
         if waiting is not None:
             x = (waiting.center[0] - bounds[0]) * factor

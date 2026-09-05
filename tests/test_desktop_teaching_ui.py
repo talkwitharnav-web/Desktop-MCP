@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 import ctypes
 
-from PIL import Image
+from PIL import Image, ImageFont
 import pytest
 
 from desktop_mcp.layers import upload_rgba
@@ -117,6 +117,44 @@ def test_docking_accounts_for_scaled_minimum_size_before_positioning(surface, wo
     assert width >= minimum[0] and height >= minimum[1]
     assert work[0] + 18 <= x and x + width <= work[2] - 18
     assert work[1] + 18 <= y and y + height == work[3] - 18
+
+
+@pytest.mark.parametrize("scale,client", [(1.0, (444, 201)), (1.5, (666, 302)), (2.0, (888, 402))])
+def test_wait_progress_has_its_own_readable_line_without_hiding_stop(surface, scale, client):
+    surface._scale = scale
+    surface._editor, surface._status = 3, 4
+    surface._buttons = {201 + index: 10 + index for index in range(5)}
+    surface._gui.GetClientRect = lambda window: (0, 0, *client)
+    positions = {}
+    surface._gui.MoveWindow = lambda window, x, y, w, h, repaint: positions.update(
+        {window: (x, y, w, h)}
+    )
+    surface._layout()
+    status_box = positions[4]
+    assert status_box[3] >= round(48 * scale)
+    stop_box = positions[14]
+    assert stop_box[1] + stop_box[3] <= client[1]
+    assert positions[3][3] >= round(16 * scale)
+
+    snapshot = TeachingSnapshot(1, (), (), WaitTarget((10, 10), 28, True, 1.0, 1.0), None)
+    surface.session.snapshot = lambda: snapshot
+    surface._hide_count = 1
+    texts = {}
+    surface._gui.GetWindowText = lambda window: texts.get(window, "")
+    surface._gui.SetWindowText = lambda window, text: texts.update({window: text})
+    surface.controller.set_mode_local("teach")
+    surface.controller.arm_local()
+    with surface.controller.operation("Fixture cursor wait"):
+        surface._refresh()
+    lines = texts[4].splitlines()
+    assert len(lines) == 2
+    assert "Ctrl+Shift+H" in lines[0]
+    assert lines[1] == "Waiting for your cursor (100%)"
+    try:
+        font = ImageFont.truetype("segoeui.ttf", round(16 * scale))
+    except OSError:
+        pytest.skip("Segoe UI font metrics unavailable on this test host")
+    assert all(font.getlength(line) <= status_box[2] for line in lines)
 
 
 def test_rounded_buttons_clear_their_corners_to_the_panel_background(surface):
@@ -270,9 +308,9 @@ def test_fatal_dispatch_cancels_modal_processing_without_reentering_ui_logic(sur
 def test_ink_window_bounds_are_cropped_to_the_actual_scene():
     mark = Mark("ink", "path", ((100, 100), (200, 200)), "#ffb454", 3, 0, None, None)
     snapshot = TeachingSnapshot(1, (), (mark,), None, None)
-    assert TeachingSurface._scene_bounds(snapshot, (0, 0, 1920, 1080)) == (96, 96, 205, 205)
+    assert TeachingSurface._scene_bounds(snapshot, (0, 0, 1920, 1080)) == (95, 95, 206, 206)
     snapshot = TeachingSnapshot(2, (), (mark,), WaitTarget((300, 400), 28, False, 0, 0), None)
-    assert TeachingSurface._scene_bounds(snapshot, (0, 0, 1920, 1080)) == (96, 96, 333, 433)
+    assert TeachingSurface._scene_bounds(snapshot, (0, 0, 1920, 1080)) == (95, 95, 333, 433)
 
 
 def test_scene_bounds_include_wide_laser_glow():

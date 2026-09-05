@@ -86,6 +86,9 @@ implementation lives under `src/desktop_mcp`.
 - Teaching model commits validate the combined mark/wait canvas before publishing.
   Native sizing uses the renderer's same stroke/glow-aware bounds and allocation
   limits; an oversized transient scene is hidden with a diagnostic, not a UI crash.
+  Outline ink keeps its requested hue above a neutral contrast edge; shared bounds
+  include the extra stroke and antialiasing margin. Cursor-wait progress has a
+  reserved second status line, leaving the readable font and Stop row intact.
 - `Transcript` explicitly publishes bounded plain text; it is not a CLI token
   mirror. Front/back requests use no-activate window operations, and local pinning
   wins. The transcript is available through Alt-Tab before the first message.

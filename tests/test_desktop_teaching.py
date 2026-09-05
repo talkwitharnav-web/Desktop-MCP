@@ -619,6 +619,41 @@ def test_rendered_ink_is_transparent_outlined_and_has_round_antialiased_endpoint
         assert any(0 < alpha < 255 for alpha in image.getchannel("A").tobytes())
 
 
+@pytest.mark.parametrize("kind", ["path", "rectangle", "ellipse"])
+def test_outline_ink_keeps_its_hue_and_a_contrasting_edge_on_light_surfaces(kind) -> None:
+    points = ((10, 20), (60, 20)) if kind == "path" else ((10, 10), (60, 60))
+    snapshot = scene(mark(kind, points=points, width=3))
+
+    def luminance(rgb):
+        values = [value / 255 for value in rgb[:3]]
+        linear = [
+            value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+            for value in values
+        ]
+        return sum(weight * value for weight, value in zip((0.2126, 0.7152, 0.0722), linear))
+
+    with render_marks(snapshot, (0, 0, 80, 80), now=0) as ink:
+        pixels = [ink.getpixel((x, y)) for y in range(ink.height) for x in range(ink.width)]
+        assert any(
+            alpha > 230
+            and max(abs(value - target) for value, target in zip((r, g, b), (255, 180, 84))) < 15
+            for r, g, b, alpha in pixels
+        )
+        with Image.new("RGBA", ink.size, (242, 242, 242, 255)) as composite:
+            composite.alpha_composite(ink)
+            darkest = min(
+                luminance(composite.getpixel((x, y)))
+                for y in range(composite.height)
+                for x in range(composite.width)
+            )
+            assert (luminance((242, 242, 242)) + 0.05) / (darkest + 0.05) >= 4.5
+        declared = visible_bounds(snapshot, now=0)
+        actual = ink.getbbox()
+        assert declared[0] <= actual[0] and declared[1] <= actual[1]
+        assert declared[2] >= actual[2] and declared[3] >= actual[3]
+        assert any(0 < alpha < 255 for alpha in ink.getchannel("A").tobytes())
+
+
 def test_renderer_handles_negative_origins_ellipses_and_wait_progress() -> None:
     snapshot = scene(
         mark("ellipse", ((-20, -10), (20, 10))),

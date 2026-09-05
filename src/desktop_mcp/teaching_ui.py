@@ -473,7 +473,7 @@ class TeachingSurface:
         _, _, width, height = gui.GetClientRect(self._panel)
         pad = round(14 * self._scale)
         button_height = round(32 * self._scale)
-        status_height = round(24 * self._scale)
+        status_height = round(48 * self._scale)
         body_height = max(24, height - button_height - status_height - pad * 4)
         gui.MoveWindow(self._editor, pad, pad, max(40, width - 2 * pad), body_height, True)
         gui.MoveWindow(
@@ -716,7 +716,7 @@ class TeachingSurface:
             self._last_text = entries
         status = f"{control.mode.title()} | {control.state.title()} | Ctrl+Shift+H stops"
         if snapshot.waiting is not None:
-            status += f" | Waiting for your cursor ({snapshot.waiting.dwell_progress:.0%})"
+            status += f"\r\nWaiting for your cursor ({snapshot.waiting.dwell_progress:.0%})"
         if gui.GetWindowText(self._status) != status:
             gui.SetWindowText(self._status, status)
         if self._hide_count or not control.armed:
