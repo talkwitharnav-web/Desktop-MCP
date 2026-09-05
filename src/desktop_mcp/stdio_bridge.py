@@ -7,6 +7,8 @@ import os
 import queue
 import threading
 
+import win32event
+
 from desktop_mcp.pipe_transport import MAX_PACKET, PipeChannel
 from desktop_mcp.service import ensure_host
 
@@ -19,6 +21,7 @@ async def forward_stdio(channel: PipeChannel, input_fd: int = 0, output_fd: int 
     input_done = threading.Event()
     output_failed = threading.Event()
     errors: list[Exception] = []
+    process = channel.host_process()
 
     def enqueue(target: queue.Queue[bytes], packet: bytes) -> bool:
         while not stopping.is_set():
@@ -96,7 +99,15 @@ async def forward_stdio(channel: PipeChannel, input_fd: int = 0, output_fd: int 
                 except queue.Full:
                     await asyncio.sleep(0.005)
 
-    tasks = [asyncio.create_task(send()), asyncio.create_task(receive())]
+    async def host_exited() -> None:
+        while win32event.WaitForSingleObject(process, 0) == win32event.WAIT_TIMEOUT:
+            await asyncio.sleep(0.02)
+
+    tasks = [
+        asyncio.create_task(send()),
+        asyncio.create_task(receive()),
+        asyncio.create_task(host_exited()),
+    ]
     try:
         finished, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in finished:
@@ -112,6 +123,7 @@ async def forward_stdio(channel: PipeChannel, input_fd: int = 0, output_fd: int 
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         channel.close()
+        process.Close()
 
 
 async def run_bridge() -> None:

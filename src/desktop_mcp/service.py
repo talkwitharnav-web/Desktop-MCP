@@ -104,7 +104,10 @@ async def _rpc_stream(channel: PipeChannel, application: DesktopApplication) -> 
                                 root = message.root
                                 if getattr(root, "method", None) == "tools/call":
                                     params = getattr(root, "params", None)
-                                    if isinstance(params, dict) and params.get("name") not in {
+                                    tool_name = (
+                                        params.get("name") if isinstance(params, dict) else None
+                                    )
+                                    if isinstance(tool_name, str) and tool_name not in {
                                         "DesktopStatus",
                                         "DesktopStop",
                                     }:
@@ -167,7 +170,7 @@ async def run_host(
                         if not isinstance(request, dict) or request.get("protocol") != PROTOCOL:
                             raise ValueError("Unsupported Desktop-MCP connection protocol.")
                         command = request.get("command")
-                        if command not in {"mcp", "show", "probe"}:
+                        if not isinstance(command, str) or command not in {"mcp", "show", "probe"}:
                             raise ValueError("Unsupported Desktop-MCP connection command.")
                         if active.exit_requested.is_set():
                             raise EOFError("Desktop-MCP is quitting.")
@@ -251,6 +254,25 @@ async def _handshake(channel: PipeChannel, command: str) -> dict[str, object]:
     return result
 
 
+def _spawn_host(executable: Path) -> subprocess.Popen:
+    """Never let one MCP client's kill-on-close job own everybody's GUI host."""
+    try:
+        return subprocess.Popen(
+            [str(executable), "-m", "desktop_mcp", "host"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_BREAKAWAY_FROM_JOB,
+        )
+    except OSError as error:
+        if error.winerror == 5:
+            raise RuntimeError(
+                "This MCP client prevents an independent desktop application from starting. "
+                "Open Desktop-MCP from Windows Start first, then reconnect in /mcp."
+            ) from error
+        raise
+
+
 async def ensure_host(*, show: bool = False) -> tuple[PipeChannel, dict[str, object]]:
     """Connect first; serialize only startup so racing Copilot sessions share the host."""
     name = channel_name()
@@ -271,13 +293,7 @@ async def ensure_host(*, show: bool = False) -> tuple[PipeChannel, dict[str, obj
                 executable = Path(sys.executable).with_name("pythonw.exe")
                 if not executable.is_file():
                     raise FileNotFoundError("The Desktop-MCP environment is missing pythonw.exe.")
-                process = subprocess.Popen(
-                    [str(executable), "-m", "desktop_mcp", "host"],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
+                process = _spawn_host(executable)
                 deadline = time.monotonic() + 30
                 while True:
                     try:

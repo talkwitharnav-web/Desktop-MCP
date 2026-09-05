@@ -3,6 +3,9 @@
 import asyncio
 from contextlib import asynccontextmanager
 import json
+import os
+from pathlib import Path
+import subprocess
 import sys
 import threading
 from types import SimpleNamespace
@@ -181,10 +184,11 @@ async def test_autostart_refuses_to_reverse_an_explicit_x_click(tmp_path, monkey
         await service.ensure_host()
 
 
-async def test_unknown_client_command_does_not_take_down_the_host(tmp_path):
+@pytest.mark.parametrize("command", ["arm", [], {"name": "arm"}, None])
+async def test_unknown_client_command_does_not_take_down_the_host(tmp_path, command):
     async with host(tmp_path) as (_, name, _):
         bad = await connect(name)
-        await bad.send(b'{"protocol":1,"command":"arm"}')
+        await bad.send(json.dumps({"protocol": 1, "command": command}).encode())
         with pytest.raises(EOFError):
             await bad.receive()
         bad.close()
@@ -193,3 +197,138 @@ async def test_unknown_client_command_does_not_take_down_the_host(tmp_path):
             assert (await _handshake(good, "probe"))["status"]["state"] == "stopped"
         finally:
             good.close()
+
+
+async def test_malformed_tool_name_cannot_terminate_other_clients(tmp_path):
+    async with host(tmp_path) as (_, name, task):
+        bad = await connect(name)
+        try:
+            await _handshake(bad, "mcp")
+            await bad.send(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": {},
+                            "clientInfo": {"name": "test", "version": "1"},
+                        },
+                    }
+                ).encode()
+            )
+            assert "result" in json.loads(await bad.receive())
+            await bad.send(b'{"jsonrpc":"2.0","method":"notifications/initialized"}')
+            await bad.send(b'{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":[]}}')
+            result = json.loads(await asyncio.wait_for(bad.receive(), 3))
+            assert "error" in result
+            good = await connect(name)
+            try:
+                assert (await _handshake(good, "probe"))["status"]["state"] == "stopped"
+                assert not task.done()
+            finally:
+                good.close()
+        finally:
+            bad.close()
+
+
+def test_host_spawn_requests_independent_lifetime(monkeypatch):
+    calls = []
+    monkeypatch.setattr(service.subprocess, "Popen", lambda *args, **kwargs: calls.append(kwargs))
+    service._spawn_host(Path(sys.executable))
+    flags = calls[0]["creationflags"]
+    assert flags & subprocess.CREATE_BREAKAWAY_FROM_JOB
+    assert flags & subprocess.CREATE_NO_WINDOW
+
+
+def test_forbidden_job_breakaway_does_not_fall_back_to_a_client_owned_host(monkeypatch):
+    calls = []
+
+    def denied(*args, **kwargs):
+        calls.append(True)
+        error = OSError("The test job forbids breakaway")
+        error.winerror = 5
+        raise error
+
+    monkeypatch.setattr(service.subprocess, "Popen", denied)
+    with pytest.raises(RuntimeError, match="Start first"):
+        service._spawn_host(Path(sys.executable))
+    assert calls == [True]
+
+
+async def test_backed_up_stdout_does_not_prevent_bridge_exit_when_its_host_exits(tmp_path):
+    """The host is another process so its exit signal is independent of pipe reads."""
+    name = f"Desktop-MCP-output-test-{uuid.uuid4().hex}"
+    site_packages = Path(sys.prefix) / "Lib" / "site-packages"
+    host_script = (
+        f"import site; site.addsitedir({str(site_packages)!r}); "
+        "import asyncio; from pathlib import Path; "
+        "from desktop_mcp.service import run_host; "
+        "from tests.test_desktop_service import SharedApplication; "
+        f"asyncio.run(run_host(SharedApplication(), name={name!r}, state_root=Path({str(tmp_path)!r})))"
+    )
+    host_process = await asyncio.create_subprocess_exec(
+        sys._base_executable,
+        "-c",
+        host_script,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    proxy = None
+    try:
+        ready = await connect(name, timeout=5)
+        info = await _handshake(ready, "probe")
+        assert info["pid"] == host_process.pid
+        ready.close()
+        # A raw OS pipe is deliberately never read, unlike asyncio's buffered stdout reader.
+        read_fd, write_fd = os.pipe()
+        try:
+            proxy = await asyncio.create_subprocess_exec(
+                sys._base_executable,
+                "-c",
+                f"import site; site.addsitedir({str(site_packages)!r}); " + bridge_script(name),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=write_fd,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            initialize = {
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "blocked-stdout", "version": "1"},
+                },
+            }
+            proxy.stdin.write(json.dumps(initialize).encode() + b"\n")
+            proxy.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+            for index in range(1, 20):
+                proxy.stdin.write(
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": index,
+                            "method": "tools/list",
+                            "params": {},
+                        }
+                    ).encode()
+                    + b"\n"
+                )
+            await proxy.stdin.drain()
+            await asyncio.sleep(1.0)
+            assert proxy.returncode is None
+            # Only this owned, fake-desktop host is ended. No UI or user process exists here.
+            host_process.kill()
+            await host_process.wait()
+            assert await asyncio.wait_for(proxy.wait(), 3) == 0
+        finally:
+            os.close(write_fd)
+            os.close(read_fd)
+    finally:
+        for process in (proxy, host_process):
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()

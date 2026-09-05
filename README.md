@@ -129,6 +129,10 @@ before the configuration was installed may need a fresh Copilot session.
 explicit-quit state; it never starts or arms desktop control. The first cold
 startup can take longer than subsequent connections, so the example allows 45
 seconds. Do not respond to a loading problem by disabling the local stop gate.
+Some MCP clients deliberately put their tools in a Windows job that forbids
+independent child applications. In that case, open Desktop-MCP from **Start
+first**, then connect Copilot. The bridge reports this explicitly rather than
+starting a shared host that would be killed when the first client exits.
 
 Clients still use STDIO. The bridge uses a Windows named pipe restricted to the
 current account and interactive session; remote pipe clients are rejected.

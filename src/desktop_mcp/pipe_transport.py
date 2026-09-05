@@ -32,6 +32,11 @@ _CLOSED = {
 }
 _cancel_io = ctypes.WinDLL("kernel32", use_last_error=True).CancelIoEx
 _cancel_io.argtypes, _cancel_io.restype = [wintypes.HANDLE, ctypes.c_void_p], wintypes.BOOL
+_server_pid = ctypes.WinDLL("kernel32", use_last_error=True).GetNamedPipeServerProcessId
+_server_pid.argtypes, _server_pid.restype = (
+    [wintypes.HANDLE, ctypes.POINTER(wintypes.ULONG)],
+    wintypes.BOOL,
+)
 
 
 def current_identity() -> tuple[str, int]:
@@ -115,6 +120,13 @@ class PipeChannel:
         if self.handle is not None:
             self.handle.Close()
             self.handle = None
+
+    def host_process(self):
+        """An OS-derived process handle detects exit even when output is backed up."""
+        process_id = wintypes.ULONG()
+        if not _server_pid(int(self.handle), ctypes.byref(process_id)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return win32api.OpenProcess(win32con.SYNCHRONIZE, False, process_id.value)
 
     async def send(self, packet: bytes) -> None:
         if not 0 < len(packet) <= MAX_PACKET:

@@ -42,6 +42,10 @@ implementation lives under `src/desktop_mcp`.
   folder. Existing bridges exit and never reconnect/replay. New automatic clients
   report how to reopen the app; the Start-menu launcher can explicitly start it.
   State stores only lifecycle metadata, not screen contents or tool arguments.
+- Host startup requests Windows job breakaway, not just a hidden console. A
+  client job that forbids breakaway gets an explicit Start-first instruction;
+  it never owns a shared host that disappears when that client exits. Bridges
+  monitor the actual pipe-server process independently of stdout backpressure.
 - FastMCP's low-level stream adapter is isolated in `service._rpc_stream` and
   follows its stdio lifecycle contract. FastMCP is pinned; transport tests cover
   real simultaneous clients, framing, reconnect and host-driven exit.

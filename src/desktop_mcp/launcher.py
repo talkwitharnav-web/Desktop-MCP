@@ -45,16 +45,6 @@ def install_shortcut() -> Path:
         )
     programs = Path(shell.SHGetFolderPath(0, shellcon.CSIDL_PROGRAMS, None, 0))
     shortcut_path = programs / "Desktop-MCP.lnk"
-    data = Path(user_data_dir("Desktop-MCP", appauthor=False))
-    data.mkdir(parents=True, exist_ok=True)
-    icon_path = data / "desktop-mcp.ico"
-    icon = Image.new("RGBA", (128, 128))
-    ImageDraw.Draw(icon).rounded_rectangle((4, 4, 123, 123), radius=28, fill="#dddddd")
-    sprite = render_cursor(dpi=240)
-    # The renderer's own monochrome arrow is also the application icon.
-    image = sprite.image
-    icon.alpha_composite(image, ((128 - image.width) // 2, (128 - image.height) // 2))
-    icon.save(icon_path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (128, 128)])
     pythoncom.CoInitialize()
     try:
         shortcut = Dispatch("WScript.Shell").CreateShortcut(str(shortcut_path))
@@ -62,8 +52,20 @@ def install_shortcut() -> Path:
             raise FileExistsError(
                 "A different Desktop-MCP shortcut already exists. It was not overwritten."
             )
+        data = Path(user_data_dir("Desktop-MCP", appauthor=False))
+        data.mkdir(parents=True, exist_ok=True)
+        icon_path = data / "desktop-mcp.ico"
+        with Image.new("RGBA", (128, 128)) as icon:
+            ImageDraw.Draw(icon).rounded_rectangle((4, 4, 123, 123), radius=28, fill="#dddddd")
+            sprite = render_cursor(dpi=240)
+            # The renderer's own monochrome arrow is also the application icon.
+            with sprite.image as image:
+                icon.alpha_composite(image, ((128 - image.width) // 2, (128 - image.height) // 2))
+            icon.save(icon_path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (128, 128)])
         shortcut.TargetPath = str(executable)
+        shortcut.Arguments = ""
         shortcut.WorkingDirectory = str(executable.parent)
+        shortcut.WindowStyle = 1
         shortcut.Description = "Desktop-MCP - local desktop control and teaching"
         shortcut.IconLocation = f"{icon_path},0"
         shortcut.Save()
