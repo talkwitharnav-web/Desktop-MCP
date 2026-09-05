@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
@@ -532,8 +532,21 @@ class VisionService:
 
     def resolve(self, frame_id: str, point: Point) -> Point:
         """Map an in-image integer point to physical pixels after freshness checks."""
-        point = _point(point)
+        return self.resolve_many(frame_id, (point,))[0]
+
+    def resolve_many(self, frame_id: str, points: Sequence[Point]) -> list[Point]:
+        """Validate one frame context for a whole path instead of once per vertex."""
+        if not 1 <= len(points) <= 512:
+            raise ValueError("Provide between 1 and 512 image points.")
+        points = [_point(point) for point in points]
+        epoch = self._epoch
         frame = self._require_frame(_frame_id(frame_id))
+        mapped = [self._physical_point(frame, point) for point in points]
+        self._guard(frame.input_revision, epoch)
+        return mapped
+
+    @staticmethod
+    def _physical_point(frame: _Frame, point: Point) -> Point:
         width, height = frame.image_details.size
         x, y = point
         if not (0 <= x < width and 0 <= y < height):
