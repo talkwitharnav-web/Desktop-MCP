@@ -1,4 +1,5 @@
 import base64
+import asyncio
 import io
 import sys
 
@@ -10,6 +11,7 @@ import pytest
 from desktop_mcp.app import create_server
 from desktop_mcp.contracts import CaptureContext, Observation
 from desktop_mcp.runtime import Controller
+from desktop_mcp.image_files import ImageFiles
 from tests.test_desktop_runtime import FakeInput
 
 
@@ -51,12 +53,18 @@ class FixtureApplication:
         if armed:
             self.controller.arm_local()
         self.vision = FixtureVision(self.controller)
+        self.export_frames = False
+        self.image_files = ImageFiles()
 
     def start(self):
         pass
 
     def close(self):
         self.controller.close()
+        self.image_files.close()
+
+    def export_observation(self, observation):
+        return self.image_files.export(observation)
 
     def windows(self):
         return []
@@ -184,6 +192,52 @@ async def test_observation_failure_does_not_disguise_completed_input():
         assert "1 action(s) completed" in result.content[0].text
         assert "Do not replay" in result.content[0].text
     assert ("text", "already entered") in application.backend.events
+
+
+async def test_client_can_request_a_local_file_without_losing_the_image_block():
+    from pathlib import Path
+
+    application = FixtureApplication(armed=True)
+    async with Client(create_server(application)) as client:
+        result = await client.call_tool("Screenshot", {"export_image": True})
+        path = Path(result.structured_content["observation"]["image_path"])
+        assert path.is_absolute()
+        with Image.open(path) as image:
+            assert image.getpixel((7, 9)) == (10, 20, 30)
+        assert any(content.type == "image" for content in result.content)
+    assert not path.exists()
+
+
+async def test_rpc_waiting_before_the_worker_cannot_revive_after_resume():
+    from fastmcp.server.middleware import Middleware
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class DelayedTool(Middleware):
+        async def on_call_tool(self, context, call_next):
+            if context.message.name == "Type":
+                entered.set()
+                await release.wait()
+            return await call_next(context)
+
+    application = FixtureApplication(armed=True)
+    server = create_server(application)
+    server.add_middleware(DelayedTool())
+    async with Client(server) as client:
+        pending = asyncio.create_task(
+            client.call_tool("Type", {"text": "old queued request"}, raise_on_error=False)
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            await client.call_tool("DesktopStop")
+            application.controller.arm_local()
+        finally:
+            release.set()
+        result = await asyncio.wait_for(pending, 2)
+        assert result.is_error
+        assert "revoked" in result.content[0].text
+    assert application.backend.events == []
 
 
 async def test_real_stdio_transport_preserves_image_blocks():

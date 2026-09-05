@@ -1,831 +1,247 @@
-<div align="center">
-  <h1>🪟 Windows-MCP</h1>
+# Desktop-MCP
 
-  <a href="https://github.com/CursorTouch/Windows-MCP/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-  </a>
-  <img src="https://img.shields.io/badge/python-3.13%2B-blue" alt="Python">
-  <img src="https://img.shields.io/badge/platform-Windows%207–11-blue" alt="Platform: Windows 7 to 11">
-  <img src="https://img.shields.io/github/last-commit/CursorTouch/Windows-MCP" alt="Last Commit">
-  <a href="https://pepy.tech/projects/windows-mcp">
-    <img src="https://static.pepy.tech/personalized-badge/windows-mcp?period=total&amp;units=INTERNATIONAL_SYSTEM&amp;left_color=BLACK&amp;right_color=GREEN&amp;left_text=downloads" alt="PyPI Downloads">
-  </a>
-  <br>
-  <a href="https://x.com/CursorTouch">
-    <img src="https://img.shields.io/badge/follow-%40CursorTouch-1DA1F2?logo=twitter&style=flat" alt="Follow on Twitter">
-  </a>
-  <a href="https://discord.com/invite/Aue9Yj2VzS">
-    <img src="https://img.shields.io/badge/Join%20on-Discord-5865F2?logo=discord&logoColor=white&style=flat" alt="Join us on Discord">
-  </a>
+Visible, supervised Windows desktop control, built on
+[Windows-MCP](https://github.com/CursorTouch/Windows-MCP).
 
-  <a href="https://trendshift.io/repositories/20935?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-20935" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/20935/daily?language=Python" alt="CursorTouch%2FWindows-MCP | Trendshift" width="250" height="55"/></a>
+An MCP client supplies the model and decides what to do. Desktop-MCP supplies the
+real mouse, keyboard, screenshots, and a local control window. It is not another
+AI model, a remote-desktop service, or a sandbox.
 
-</div>
+## What changes from stock Windows-MCP
 
-**Windows-MCP** is a lightweight, open-source project that enables seamless integration between AI agents and the Windows operating system. Acting as an MCP server bridges the gap between LLMs and the Windows operating system, allowing agents to perform tasks such as **file navigation, application control, UI interaction, QA testing,** and more.
+- A rounded black/grey arrow overlay follows real pointer movement. Pointer
+  moves, including movement before clicks, accelerate and decelerate smoothly.
+- Left, right, middle and extra mouse buttons; modifier-aware drags; native
+  horizontal/vertical wheel input; named keys, chords, repeats and batch-scoped
+  key/button holds.
+- Fast Unicode typing without an artificial per-character speed limit or
+  clipboard replacement. Long input stays cancellable.
+- An Alt-Tab-accessible control window and a global **Ctrl+Shift+H** stop.
+  Control starts stopped and can only be allowed/resumed locally.
+- Short serial input batches with a single final observation, instead of a
+  model round trip for every key.
+- Cropped, resized, efficiently encoded observations with frame IDs and
+  server-side coordinate conversion. Bounded adaptive waits detect changes
+  without continuously sending redundant screenshots.
+- Optional local image files for clients whose native image reader works but
+  whose MCP image-result forwarding does not.
 
-mcp-name: io.github.CursorTouch/Windows-MCP
+## Requirements and installation
 
-## Updates
-- Windows-MCP reached `2M+ Users` in [Claude Desktop Extensiosn](https://claude.ai/directory). 
-- Try out [🪟Windows-Use](https://pypi.org/project/windows-use/), an agent built using Windows-MCP.
-- Windows-MCP is now available on [PyPI](https://pypi.org/project/windows-mcp/) (thus supports `uvx windows-mcp`)
-- Windows-MCP is added to [MCP Registry](https://github.com/modelcontextprotocol/registry)
+Use an interactive Windows 10/11 desktop and Python **3.14+**. The package
+metadata, not old upstream installation guides, is authoritative.
 
-### Supported Operating Systems
+In PowerShell, inside this checkout:
 
-- Windows 7
-- Windows 8, 8.1
-- Windows 10
-- Windows 11  
+```powershell
+# If uv is missing:
+python -m pip install --user uv
 
-## 🎥 Demos
-
-<https://github.com/user-attachments/assets/d0e7ed1d-6189-4de6-838a-5ef8e1cad54e>
-
-<https://github.com/user-attachments/assets/d2b372dc-8d00-4d71-9677-4c64f5987485>
-
-## ✨ Key Features
-
-- **Seamless Windows Integration**  
-  Interacts natively with Windows UI elements, opens apps, controls windows, simulates user input, and more.
-
-- **Use Any LLM (Vision Optional)**
-   Unlike many automation tools, Windows-MCP doesn't rely on any traditional computer vision techniques or specific fine-tuned models; it works with any LLMs, reducing complexity and setup time.
-
-- **Rich Toolset for UI Automation**  
-  Includes tools for basic keyboard, mouse operation and capturing window/UI state.
-
-- **Lightweight & Open-Source**  
-  Minimal dependencies and easy setup with full source code available under MIT license.
-
-- **Customizable & Extendable**  
-  Easily adapt or extend tools to suit your unique automation or AI integration needs.
-
-- **Real-Time Interaction**  
-  Typical latency between actions (e.g., from one mouse click to the next) ranges from **0.2 to 0.5 secs**, and may slightly vary based on the number of active applications and system load, also the inferencing speed of the llm.
-
-- **DOM Mode for Browser Automation**  
-  Special `use_dom=True` mode for State-Tool that focuses exclusively on web page content, filtering out browser UI elements for cleaner, more efficient web automation. Supports Chrome, Edge, and Firefox (Firefox uses an IAccessible2 fallback since it doesn't expose `RootWebArea` via UIA).
-
-## 🛠️Installation
-
-**Note:** When you install this MCP server for the first time it may take a minute or two because of installing the dependencies in `pyproject.toml`. In the first run the server may timeout ignore it and restart it.
-
-### Prerequisites
-
-- Python 3.13+
-- UV (Package Manager) from Astra, install with `pip install uv` or `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- `English` as the default language in Windows preferred else disable the `App-Tool` in the MCP Server for Windows with other languages.
-
-### Run at Login
-
-Run the server directly when needed:
-
-```shell
-uvx windows-mcp serve
-uvx windows-mcp serve --transport sse --host localhost --port 8000
-uvx windows-mcp serve --transport streamable-http --host localhost --port 8000
+python -m uv sync --frozen --extra dev
 ```
 
-Install it as a background task that starts now and at every login:
+UV can install the required Python interpreter into its managed environment.
+Dependencies remain in this project's `.venv`.
 
-```shell
-windows-mcp install
+This project is local-first. Do **not** assume `uvx desktop-mcp` installs this
+fork: PyPI and MCP registry publication are not part of setting up the checkout.
+`server.json` is release metadata, not a publication receipt.
 
-# Or choose the HTTP transport and bind address explicitly
-windows-mcp install --transport sse --host 127.0.0.1 --port 8000
+## Connect to Copilot CLI
+
+From the project folder:
+
+```powershell
+copilot mcp add desktop-mcp -- "$((Get-Location).Path)\.venv\Scripts\python.exe" -m desktop_mcp serve
 ```
 
-This creates a per-user Scheduled Task named `windows-mcp-server` and a wrapper script at
-`~/.windows-mcp/start-server.cmd`. Use `windows-mcp uninstall` to remove it. Logs are written
-to `~/.windows-mcp/server.log` and `~/.windows-mcp/server.error.log`.
+Alternatively, use `/mcp add` inside Copilot and enter:
 
-<details>
-  <summary>Install in Claude Desktop</summary>
+| Field | Value |
+|---|---|
+| Name | `desktop-mcp` |
+| Type | Local / STDIO |
+| Command | `"C:\path\Desktop-MCP\.venv\Scripts\python.exe" -m desktop_mcp serve` |
+| Tools | `*` (the supervised tools listed below) |
 
-  1. Install [Claude Desktop](https://claude.ai/download).
-
-```shell
-npm install -g @anthropic-ai/mcpb
-```
-
-  2. Configure the MCP server.
-
-  **Option A: Install from PyPI (Recommended)**
-  
-  Use `uvx` to run the latest version directly from PyPI.
-
-  Add this to your `claude_desktop_config.json`:
-  ```json
-  {
-    "mcpServers": {
-      "windows-mcp": {
-        "command": "uvx",
-        "args": [
-          "windows-mcp",
-          "serve"
-        ]
-      }
-    }
-  }
-  ```
-
-  **Option B: Install from Source**
-
-  1. Clone the repository:
-  ```shell
-  git clone https://github.com/CursorTouch/Windows-MCP.git
-  cd Windows-MCP
-  ```
-
-  2. Add this to your `claude_desktop_config.json`:
-  ```json
-  {
-    "mcpServers": {
-      "windows-mcp": {
-        "command": "uv",
-        "args": [
-          "--directory",
-          "<path to the windows-mcp directory>",
-          "run",
-          "windows-mcp",
-          "serve"
-        ]
-      }
-    }
-  }
-  ```
-  3. Fully restart Claude Desktop and verify the server appears in the MCP tools list.
-
-  **Claude Desktop MSIX (Windows Store)**
-
-  The MSIX-packaged Claude Desktop (Microsoft Store version) virtualizes `%APPDATA%`. This causes two main issues:
-  1. The config file is located at: `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json` (not `%APPDATA%\Claude\`).
-  2. Automatic installation from the "Claude Directory" will fail because the `${__dirname}` variable resolves to the incorrect (non-virtualized) path.
-
-  **To configure Windows-MCP on the Windows Store version of Claude:**
-  
-  You must manually edit the configuration file. Note that Electron apps in the MSIX sandbox do not inherit the system `PATH`, so you must use the **full absolute path** to `uvx.exe` (or `uv.exe`).
-
-  **Option A: Using pre-installed executable**
-
-  1. In a terminal, run `uv tool install windows-mcp`.
-  2. Use the generated executable in your config:
-  ```json
-  {
-    "mcpServers": {
-      "windows-mcp": {
-        "command": "C:\\Users\\<user>\\.local\\bin\\windows-mcp.exe",
-        "args": ["serve"]
-      }
-    }
-  }
-  ```
-
-  **Option B: Using uvx**
-  ```json
-  {
-    "mcpServers": {
-      "windows-mcp": {
-        "command": "C:\\Users\\<user>\\.local\\bin\\uvx.exe",
-        "args": ["windows-mcp", "serve"]
-      }
-    }
-  }
-  ```
-
-  **Option C: Install from Source**
-  ```json
-  {
-    "mcpServers": {
-      "windows-mcp": {
-        "command": "C:\\Users\\<user>\\.local\\bin\\uv.exe",
-        "args": [
-          "--directory",
-          "C:\\path\\to\\Windows-MCP",
-          "run",
-          "windows-mcp",
-          "serve"
-        ]
-      }
-    }
-  }
-  ```
-
-  Replace `<user>` with your Windows username. To find the correct paths, run `where uvx`, `where windows-mcp`, or `where uv`. Fully quit Claude Desktop (Tray → Quit) and reopen after saving the config.
-
-  For additional Claude Desktop integration troubleshooting, see the [MCP documentation](https://modelcontextprotocol.io/quickstart/server#claude-for-desktop-integration-issues).
-</details>
-
-<details>
-  <summary>Install in Perplexity Desktop</summary>
-
-  1. Install [Perplexity Desktop](https://apps.microsoft.com/detail/xp8jnqfbqh6pvf).
-  2. Open Perplexity Desktop and go to `Settings -> Connectors -> Add Connector -> Advanced`.
-  3. Enter the name as `Windows-MCP`, then paste one of the following configs.
-
-
-  **Option A: Install from PyPI (Recommended)**
-
-  ```json
-  {
-    "command": "uvx",
-    "args": [
-      "windows-mcp",
-      "serve"
-    ]
-  }
-  ```
-
-  **Option B: Install from Source**
-
-  ```json
-  {
-    "command": "uv",
-    "args": [
-      "--directory",
-      "<path to the windows-mcp directory>",
-      "run",
-      "windows-mcp",
-      "serve"
-    ]
-  }
-  ```
-
-  4. Click `Save`, then restart Perplexity Desktop if needed.
-
-For additional Claude Desktop integration troubleshooting, see the [Perplexity MCP Support](https://www.perplexity.ai/help-center/en/articles/11502712-local-and-remote-mcps-for-perplexity). The documentation includes helpful tips for checking logs and resolving common issues.
-</details>
-
-<details>
-  <summary> Install in Gemini CLI</summary>
-
-  1. Install Gemini CLI.
-
-```shell
-npm install -g @google/gemini-cli
-```
-
-  2. Open `%USERPROFILE%/.gemini/settings.json`.
-  3. Add the `windows-mcp` config and save it.
-
-```json
-{
-  "theme": "Default",
-  ...
-  "mcpServers": {
-    "windows-mcp": {
-      "command": "uvx",
-      "args": [
-        "windows-mcp",
-        "serve"
-      ]
-    }
-  }
-}
-```
-*Note: To run from source, replace the command with `uv` and args with `["--directory", "<path>", "run", "windows-mcp", "serve"]`.*
-
-  4. Restart Gemini CLI.
-</details>
-
-<details>
-  <summary>Install in Qwen Code</summary>
-  1. Install Qwen Code.
-
-```shell
-npm install -g @qwen-code/qwen-code@latest
-```
-  2. Open `%USERPROFILE%/.qwen/settings.json`.
-  3. Add the `windows-mcp` config and save it.
+The equivalent configuration is:
 
 ```json
 {
   "mcpServers": {
-    "windows-mcp": {
-      "command": "uvx",
-      "args": [
-        "windows-mcp",
-        "serve"
-      ]
-    }
-  }
-}
-```
-*Note: To run from source, replace the command with `uv` and args with `["--directory", "<path>", "run", "windows-mcp", "serve"]`.*
-
-  4. Restart Qwen Code.
-</details>
-
-<details>
-  <summary>Install in Codex CLI</summary>
-  1. Install Codex CLI.
-
-```shell
-npm install -g @openai/codex
-```
-  2. Open `%USERPROFILE%/.codex/config.toml`.
-  3. Add the `windows-mcp` config and save it.
-
-```toml
-[mcp_servers.windows-mcp]
-command="uvx"
-args=[
-  "windows-mcp",
-  "serve"
-]
-```
-*Note: To run from source, replace the command with `uv` and args with `["--directory", "<path>", "run", "windows-mcp", "serve"]`.*
-
-  4. Restart Codex CLI.
-</details>
-
-<details>
-  <summary>Install in Autohand Code</summary>
-
-  Add the published stdio server from a Windows terminal:
-
-  ```shell
-  autohand mcp add windows-mcp uvx windows-mcp serve
-  ```
-
-  Add `--scope project` after `add` to keep the server configuration in the current project. See [Autohand Code](https://github.com/autohandai/code-cli/) for current installation and CLI details.
-</details>
-
-<details>
-  <summary>Install in Claude Code</summary>
-
-  1. Install [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview):
-
-```shell
-npm install -g @anthropic-ai/claude-code
-```
-
-  2. Configure the server:
-
-  **Option A: Install from PyPI (Recommended)**
-
-  Use `uvx` to run the latest version directly from PyPI.
-
-  ```shell
-  claude mcp add --transport stdio windows-mcp -- uvx windows-mcp serve
-  ```
-
-  **Option B: Install from Source**
-
-  1. Clone the repository:
-  ```shell
-  git clone https://github.com/CursorTouch/Windows-MCP.git
-  cd Windows-MCP
-  ```
-
-  2. Run the following command in your terminal:
-  ```shell
-  claude mcp add --transport stdio windows-mcp -- uv --directory "<path>" run windows-mcp serve
-  ```
-
-  *Note: To make the server available across all projects, add `--scope user` to the command.*
-
-  3. Rerun Claude Code in terminal. Enjoy 🥳
-
-  **Note:** On Windows, if you encounter "Connection closed" errors, use the full path to `uvx.exe`:
-
-  ```shell
-  claude mcp add --transport stdio windows-mcp -- C:\Users\<user>\.local\bin\uvx.exe windows-mcp serve
-  ```
-
-  To verify the server is registered, run `claude mcp list`. Inside Claude Code, use `/mcp` to check server status.
-
-  **WSL (Windows Subsystem for Linux)**
-
-  If you run Claude Code from WSL, the MCP server must still execute on the Windows side (it needs Windows APIs for UI automation). Use `powershell.exe` as the command to bridge WSL and Windows:
-
-  1. Install `uv` on **Windows** (from a PowerShell terminal):
-  ```powershell
-  irm https://astral.sh/uv/install.ps1 | iex
-  ```
-
-  2. From your **WSL terminal**, register the server:
-  ```shell
-  claude mcp add windows-mcp --transport stdio -s user -- powershell.exe -Command "C:\Users\<user>\.local\bin\uvx.exe windows-mcp serve"
-  ```
-
-  Replace `<user>` with your Windows username. The `-s user` flag makes the server available across all projects.
-
-  3. Restart Claude Code and verify with `/mcp`.
-</details>
-
----
-
-## 🖥️ Running Windows-MCP
-
-Windows-MCP runs directly on your Windows machine and exposes its tools to the connected MCP client.
-
-```shell
-# Runs with stdio transport (default)
-uvx windows-mcp serve
-
-# Or with SSE/Streamable HTTP for network access
-uvx windows-mcp serve --transport sse --host localhost --port 8000
-uvx windows-mcp serve --transport streamable-http --host localhost --port 8000
-```
-
-Optional environment variables can be set to customize behavior — see [Environment Variables](#-environment-variables) below.
-
-### Security for Remote Access
-
-For network access, enable authentication and TLS:
-
-```shell
-windows-mcp serve --transport sse --host 0.0.0.0 \
-  --auth-key "your_secret_token" \
-  --ip-allowlist "203.0.113.0/24" \
-  --ssl-certfile cert.pem --ssl-keyfile key.pem
-```
-
-See [🔐 Security & Access Control](#-security--access-control) for all options.
-
-### Transport Options
-
-| Transport | Command | Use Case |
-|---|---|---|
-| `stdio` (default) | `serve --transport stdio` | Direct connection from MCP clients like Claude Desktop, Cursor, etc. |
-| `sse` | `serve --transport sse --host HOST --port PORT` | Network-accessible via Server-Sent Events |
-| `streamable-http` | `serve --transport streamable-http --host HOST --port PORT` | Network-accessible via HTTP streaming (recommended for production) |
-
----
-
-## 🔐 Security & Access Control
-
-### Authentication
-```shell
-windows-mcp serve --transport sse --host 0.0.0.0 --auth-key "your_token"
-```
-Requires `Authorization: Bearer your_token` header on all requests.
-
-### IP Allowlist
-```shell
-windows-mcp serve --auth-key "token" --ip-allowlist "203.0.113.0/24,198.51.100.5"
-```
-Restricts connections to specified CIDR ranges. Blocks private/loopback IPs by default.
-
-### CORS Origins
-
-By default, **no CORS headers are emitted**. Browsers block cross-origin requests via their own Same-Origin Policy, which means arbitrary websites cannot reach the MCP control plane even if the server is on `localhost`. Host-header validation (DNS rebinding protection) is also applied automatically based on the bind address.
-
-If you need a browser-based MCP client to reach the server, opt in with an explicit origin allowlist:
-
-```shell
-windows-mcp serve --cors-origins "https://my-client.example.com,https://other.example.com"
-```
-
-Only the listed origins receive `Access-Control-Allow-Origin` headers; all other cross-origin requests are rejected by the browser. The equivalent environment variable is `WINDOWS_MCP_CORS_ORIGINS`.
-
-### Tool Selection
-All tools are enabled by default. Use `--tools` to whitelist specific tools, or `--exclude-tools` to block specific ones.
-
-```shell
-windows-mcp serve --tools "Screenshot,Click,Snapshot"   # Enable only these tools
-windows-mcp serve --exclude-tools "PowerShell,Registry" # Disable specific tools
-```
-
-### TLS/HTTPS
-```shell
-openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
-
-windows-mcp serve --ssl-certfile cert.pem --ssl-keyfile key.pem
-```
-
-### OAuth 2.0 + PKCE
-
-For MCP clients that use OAuth (e.g. Claude Desktop) instead of a static API key:
-
-```shell
-windows-mcp serve --transport streamable-http --host 0.0.0.0 \
-  --ssl-certfile ~/.windows-mcp/cert.pem \
-  --ssl-keyfile  ~/.windows-mcp/key.pem \
-  --oauth-client-id my-client \
-  --oauth-client-secret my-secret
-```
-
-**Claude Desktop config:**
-```json
-{
-  "mcpServers": {
-    "windows-mcp": {
-      "type": "http",
-      "url": "https://<host>:8000/mcp/",
-      "oauth": {
-        "clientId": "my-client",
-        "clientSecret": "my-secret"
-      }
+    "desktop-mcp": {
+      "type": "local",
+      "command": "C:\\path\\Desktop-MCP\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "desktop_mcp", "serve"],
+      "tools": ["*"]
     }
   }
 }
 ```
 
-The OAuth server exposes:
-- `GET /.well-known/oauth-authorization-server` — server metadata (RFC 8414)
-- `GET /oauth/authorize` — Authorization Code + PKCE (`S256` required)
-- `POST /oauth/token` — token exchange (client secret required)
-- `POST /oauth/register` — disabled; clients must be pre-provisioned
+Use the virtual environment's absolute Python path so the connection does not
+depend on the client's working directory or PATH. Do not start a second copy
+manually while the MCP client is already running it: only one process can own
+the global stop hotkey.
 
-Dynamic client registration is disabled. Redirect URIs must be loopback `http(s)` only.
-Auth key and OAuth can coexist — both are accepted as valid Bearer tokens.
+To launch without an MCP client for local development:
 
-### Config File (`~/.windows-mcp/config.toml`)
-
-Instead of passing flags every time, store your configuration in `~/.windows-mcp/config.toml`. CLI flags always override config file values.
-
-**Search order:**
-1. `--config /path/to/config.toml`
-2. `~/.windows-mcp/config.toml`
-
-**stdio** — local only, no security needed:
-```toml
-[server]
-transport = "stdio"
+```powershell
+.\.venv\Scripts\desktop-mcp.exe serve
 ```
 
-**SSE** — network access with auth and IP restriction:
-```toml
-[server]
-transport = "sse"
-host      = "0.0.0.0"
-port      = 8000
-auth_key  = "your-secret-key"
+STDIO is the only supported transport. No network listener, firewall rule,
+administrator elevation, or login startup task is required.
 
-[security]
-ip_allowlist = ["192.168.1.0/24"]
-```
+## Start, stop and take over
 
-**Streamable HTTP** — with auth, TLS, and tool exclusions:
-```toml
-[server]
-transport    = "streamable-http"
-host         = "0.0.0.0"
-port         = 8000
-auth_key     = "your-secret-key"
-ssl_certfile = "cert.pem"   # resolved relative to ~/.windows-mcp/
-ssl_keyfile  = "key.pem"
+The control window starts **stopped**. Choose **Allow desktop control** locally
+when ready. The panel minimizes so it does not intercept input; it remains
+reachable through Alt-Tab.
 
-[security]
-ip_allowlist        = ["192.168.1.0/24"]
-cors_origins        = ["https://my-client.example.com"]   # optional — browser CORS opt-in
-oauth_client_id     = "my-client"      # optional — enables OAuth 2.0 + PKCE
-oauth_client_secret = "my-secret"
+**Ctrl+Shift+H** and the panel's Stop control revoke input and captures. Pending
+commands from the old generation stay cancelled even after you resume. Keys and
+buttons held by Desktop-MCP are released. The model has no `Arm` or `Resume` tool.
+Closing the panel stops control rather than leaving an invisible active agent.
 
-[tools]
-exclude = ["PowerShell", "Registry"]   # disable specific tools
-```
+Human mouse/keyboard input pauses automation by default. The local window can
+change that preference; the emergency hotkey remains enabled. This is useful when
+an Autopilot agent is running: local revocation is enforced by the service, not
+merely by a sentence asking the model to behave.
 
-Place cert and key files in the same directory:
+The boundary is **this server**. The hotkey does not terminate Copilot, revoke
+its shell tools, stop another MCP server, undo completed actions, or erase
+information already delivered to a model. Do not work around a stop using other
+tools. Normal Windows integrity restrictions still apply; input to an elevated
+or locked desktop may be refused.
 
-```
-~/.windows-mcp/
-├── config.toml
-├── cert.pem
-└── key.pem
-```
+## Tool surface
 
-Generate a self-signed cert directly into that directory:
+| Tool | Purpose |
+|---|---|
+| `DesktopStatus` | State, stop reason, input revision and activity, without a capture. |
+| `DesktopStop` | Latch a stop; never resumes control. |
+| `DesktopBatch` | Validate and run a short ordered sequence; observe once afterward. |
+| `Screenshot` | Fast visual observation, adaptive waiting, encoding and frame references. |
+| `Click`, `Move`, `Scroll` | Smooth pointer movement, any supported button, drags and wheel gestures. |
+| `Keyboard`, `Shortcut`, `Type` | Keys/chords/repeats and fast literal text. |
+| `Wait` | A cancellable delay with optional observation. |
+| `App` | List/focus windows or explicitly launch an executable without a shell. |
+| `DisplayInventory` | Physical monitor bounds, DPI and scale. |
+| `Snapshot` | Optional heavier Windows accessibility inspection plus an image. |
 
-```shell
-mkdir -p ~/.windows-mcp
-openssl req -x509 -newkey rsa:4096 \
-  -keyout ~/.windows-mcp/key.pem \
-  -out ~/.windows-mcp/cert.pem \
-  -days 365 -nodes
-```
+Upstream PowerShell, registry, filesystem, process-killing and network-scraping
+tools are deliberately not registered. The retained `python -m windows_mcp`
+module is the upstream implementation, **not** an alternative supervised
+connection. Both installed console aliases, `desktop-mcp` and `windows-mcp`,
+launch the supervised entry point.
 
-### `auth` Helper
+## Use frames, not guessed coordinate math
 
-Generate an auth key and save a working config to `~/.windows-mcp/config.toml`:
+`Screenshot` defaults to the active application. Use `scope="desktop"` for the
+full desktop, or supply an explicit physical-pixel `region=[left,top,right,bottom]`.
+Its response contains a real MCP image block, capture/image dimensions and a
+`frame_id`.
 
-```shell
-windows-mcp auth
-```
-
-Generate auth plus a self-signed TLS certificate:
-
-```shell
-windows-mcp auth --transport streamable-http --host 0.0.0.0 --port 8000 --with-tls
-```
-
-This command writes the auth key into the config file, can generate `cert.pem` and `key.pem`, and prints an example MCP client configuration for the selected transport.
-
-### SSRF Protection
-`Scrape` tool blocks: private IPs, loopback, link-local, credentials-in-URLs, non-HTTP schemes.
-
----
-
-## ⚙️ Environment Variables
-
-All variables are optional unless noted. Set them via the `env` key in `claude_desktop_config.json` (or your MCP client's equivalent config).
-
-### Screenshot & Snapshot
-
-| Variable | Default | Description |
-|---|---|---|
-| `WINDOWS_MCP_SCREENSHOT_SCALE` | `1.0` | Scale factor applied to screenshots before encoding. Accepts a float in the range `0.1`–`1.0`. Useful on high-resolution displays (1440p, 4K) where the default produces images that exceed Claude Desktop's 1 MB tool-result limit. Set to `0.5` to halve both dimensions (quarter the file size). |
-| `WINDOWS_MCP_SCREENSHOT_BACKEND` | `auto` | Screenshot capture backend. Accepted values: `auto` (tries dxcam → mss → pillow in order), `dxcam`, `mss`, `pillow`. Use `mss` or `pillow` if `dxcam` is unavailable or causes issues on your GPU. |
-| `WINDOWS_MCP_PROFILE_SNAPSHOT` | _(disabled)_ | Set to `1`, `true`, `yes`, or `on` to emit per-stage timing logs for Screenshot/Snapshot calls. Useful for diagnosing slow captures. |
-| `WINDOWS_MCP_DISABLE_FLASH` | _(disabled)_ | Set to `1`, `true`, `yes`, or `on` to suppress the orange-red glowing border that briefly highlights the captured area after every screenshot. The flash is rendered on a transparent always-on-top window *after* capture so it never appears in the captured image. |
-
-### Security
-
-| Variable | Default | Description |
-|---|---|---|
-| `WINDOWS_MCP_AUTH_KEY` | _(none)_ | Bearer token required on all HTTP requests. Alternative to `--auth-key` CLI flag. |
-| `WINDOWS_MCP_IP_ALLOWLIST` | _(none)_ | Comma-separated list of allowed client IPs or CIDR ranges (e.g., `203.0.113.0/24,198.51.100.5`). Alternative to `--ip-allowlist` CLI flag. |
-| `WINDOWS_MCP_CORS_ORIGINS` | _(none)_ | Comma-separated list of origins permitted to make cross-origin browser requests (e.g., `https://my-client.example.com`). No CORS headers are emitted when unset. Alternative to `--cors-origins` CLI flag. |
-| `WINDOWS_MCP_TOOLS` | _(all enabled)_ | Comma-separated explicit list of tools to enable (e.g., `Screenshot,Click,Snapshot`). Alternative to `--tools` CLI flag. |
-| `WINDOWS_MCP_EXCLUDE_TOOLS` | _(none)_ | Comma-separated list of tools to disable (e.g., `PowerShell,Registry`). Alternative to `--exclude-tools` CLI flag. |
-| `WINDOWS_MCP_SSL_CERTFILE` | _(none)_ | Path to TLS certificate file (.pem) for HTTPS. Must be provided with `WINDOWS_MCP_SSL_KEYFILE`. |
-| `WINDOWS_MCP_SSL_KEYFILE` | _(none)_ | Path to TLS private key file (.pem) for HTTPS. Must be provided with `WINDOWS_MCP_SSL_CERTFILE`. |
-| `WINDOWS_MCP_OAUTH_CLIENT_ID` | _(none)_ | OAuth client ID for HTTP transports. Must be provided with `WINDOWS_MCP_OAUTH_CLIENT_SECRET`. |
-| `WINDOWS_MCP_OAUTH_CLIENT_SECRET` | _(none)_ | OAuth client secret for HTTP transports. Must be provided with `WINDOWS_MCP_OAUTH_CLIENT_ID`. |
-| `WINDOWS_MCP_STATELESS_HTTP` | `false` | Set to `1`, `true`, `yes`, or `on` to run `streamable-http` without `Mcp-Session-Id` connection state. Useful for reconnects after restarts and for horizontally scaled deployments. |
-
-[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/cursortouch-windows-mcp-badge.png)](https://mseep.ai/app/cursortouch-windows-mcp)
-
-### Telemetry
-
-| Variable | Default | Description |
-|---|---|---|
-| `ANONYMIZED_TELEMETRY` | `true` | Set to `false` to disable anonymous usage telemetry. No personal data, tool arguments, or outputs are ever collected regardless of this setting. |
-| `POSTHOG_API_KEY` | Project default | Override the PostHog project write key used for anonymous telemetry. Set to an empty string to skip PostHog client initialization. |
-| `POSTHOG_HOST` | `https://us.i.posthog.com` | Override the PostHog host for anonymous telemetry, such as for a self-hosted PostHog deployment. |
-
-### Debug
-
-| Variable | Default | Description |
-|---|---|---|
-| `WINDOWS_MCP_DEBUG` | `false` | Set to `1`, `true`, `yes`, or `on` to enable debug mode, which sets the log level to DEBUG for verbose output. Also available as the `--debug` CLI flag. |
-
-### WatchDog
-
-| Variable | Default | Description |
-|---|---|---|
-| `WINDOWS_MCP_WATCHDOG` | `false` | Set to `on`, `1`, `true`, `yes`, or `enabled` (case-insensitive) to run the UIA focus watchdog. It is off by default because its only remaining effect is debug logging of focus changes, while it costs a background thread and a long-lived UIA event subscription that can crash the server on unstable UIA environments after long uptime (e.g. across a sleep/resume or session change). The accessibility tree is built on demand for every tool call either way, so tool behaviour is unaffected. |
-
-**Example `claude_desktop_config.json`:**
-
-Local (no security):
-```json
-{
-  "mcpServers": {
-    "windows-mcp": {
-      "command": "uvx",
-      "args": ["windows-mcp", "serve"],
-      "env": { "WINDOWS_MCP_SCREENSHOT_SCALE": "0.5" }
-    }
-  }
-}
-```
-
-Remote (with auth + IP allowlist + TLS):
-```json
-{
-  "mcpServers": {
-    "windows-mcp": {
-      "command": "uvx",
-      "args": ["windows-mcp", "serve", "--transport", "sse", "--host", "0.0.0.0"],
-      "env": {
-        "WINDOWS_MCP_AUTH_KEY": "your_token",
-        "WINDOWS_MCP_IP_ALLOWLIST": "203.0.113.0/24",
-        "WINDOWS_MCP_SSL_CERTFILE": "/path/to/cert.pem",
-        "WINDOWS_MCP_SSL_KEYFILE": "/path/to/key.pem"
-      }
-    }
-  }
-}
-```
-
----
-
-## 🔨MCP Tools
-
-MCP Client can access the following tools to interact with Windows:
-
-- `Click`: Click on the screen at the given coordinates.
-- `Type`: Type text on an element (optionally clears existing text).
-- `Scroll`: Scroll vertically or horizontally on the window or specific regions.
-- `Move`: Move mouse pointer or drag (set drag=True) to coordinates. For deterministic
-  drag, set `from_loc=[x, y]` with `drag=True` to press at an explicit start point and
-  release at `loc` in one tool call. Optional `duration` adds bounded intermediate
-  movement.
-- `Shortcut`: Press keyboard shortcuts (`Ctrl+c`, `Alt+Tab`, etc).
-- `Wait`: Pause for a defined duration.
-- `WaitFor`: Wait until text, an active window, an element, or a focused element appears by polling UI state inside one tool call.
-- `DisplayInventory`: Read display layout, work areas, effective DPI, and scale metadata.
-- `Screenshot`: Fast screenshot-first desktop capture with cursor position, active/open windows, and an image. Skips UI tree extraction for speed and should be the default first call when you mainly need visual context. Supports `display=[0]` or `display=[0,1]` using zero-based active Windows display indices, and `region=[left, top, right, bottom]` (virtual-desktop pixel coordinates) to capture just that rectangle instead of the whole screen — cheaper on tokens when you already know which area matters. `region` takes precedence over `display` when both are given; an invalid or out-of-bounds region raises an error. After capture, a brief orange-red glowing border is drawn inside the captured area as a visual confirmation (set `WINDOWS_MCP_DISABLE_FLASH=1` to disable).
-- `Snapshot`: Full desktop state capture for workflows that need interactive element ids, scrollable regions, or `use_dom=True` browser extraction. Supports `use_vision=True` for including screenshots, `display=[0]` or `display=[0,1]` using zero-based active Windows display indices, and `region=[left, top, right, bottom]` (virtual-desktop pixel coordinates) to inspect just that rectangle instead of the whole screen; `region` takes precedence over `display` when both are given, and an invalid or out-of-bounds region raises an error.
-- `App`: Launch an application by Start Menu name or strictly by executable path with separated argv and optional cwd; resize, move, and switch between windows.
-- `PowerShell`: To execute PowerShell commands.
-- `FileSystem`: Read, write, copy, move, delete, list, search, and inspect files and directories.
-- `Scrape`: To scrape the entire webpage for information.
-- `MultiSelect`: Select multiple items (files, folders, checkboxes) with optional Ctrl key. Uses bulk label-to-coordinate resolution when labels are provided.
-- `MultiEdit`: Enter text into multiple input fields at specified coordinates. Uses bulk label-to-coordinate resolution when labels are provided.
-- `Clipboard`: Read or set Windows clipboard content.
-- `Process`: List running processes or terminate them by PID or name.
-- `Notification`: Send a Windows toast notification with a title and message.
-- `Registry`: Read, write, delete, or list Windows Registry values and keys.
-
-
-## 🤝 Connect with Us
-Stay updated and join our community:
-
-- 📢 Follow us on [X](https://x.com/CursorTouch) for the latest news and updates
-
-- 💬 Join our [Discord Community](https://discord.com/invite/Aue9Yj2VzS)
-
-## Star History
-
-[![Star History Chart](https://star-history.dera.page/svg?repos=CursorTouch/Windows-MCP&type=Date)](https://star-history.dera.page/#CursorTouch/Windows-MCP&Date)
-
-## 👥 Contributors
-
-Thanks to all the amazing people who have contributed to Windows-MCP! 🎉
-
-<a href="https://github.com/CursorTouch/Windows-MCP/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=CursorTouch/Windows-MCP" />
-</a>
-
-We appreciate every contribution, whether it's code, documentation, bug reports, or feature suggestions. Want to contribute? Check out our [Contributing Guidelines](CONTRIBUTING)!
-
-## 🔒 Security
-
-**Important**: Windows-MCP operates with full system access and can perform irreversible operations. Please review our comprehensive security guidelines before deployment.
-
-For detailed security information, including:
-- Tool-specific risk assessments
-- Deployment recommendations
-- Vulnerability reporting procedures
-- Compliance and auditing guidelines
-
-Please read our [Security Policy](SECURITY.md).
-
-## 📊 Telemetry
-
-Windows-MCP collects usage data to help improve the MCP server. No personal information, no tool arguments, no outputs are tracked.
-
-To disable telemetry, set `ANONYMIZED_TELEMETRY` to `false` in your MCP client configuration:
+When clicking a point measured in that image:
 
 ```json
 {
-  "mcpServers": {
-    "windows-mcp": {
-      "command": "uvx",
-      "args": [
-        "windows-mcp",
-        "serve"
-      ],
-      "env": {
-        "ANONYMIZED_TELEMETRY": "false"
-      }
-    }
-  }
+  "loc": [340, 210],
+  "frame_id": "<the Screenshot frame_id>"
 }
 ```
 
-See the [Environment Variables](#-environment-variables) section for the full list of configurable options.
+The server converts image pixels using the actual image dimensions and capture
+origin, including negative monitor origins and independently rounded x/y scales.
+Do not multiply coordinates yourself when supplying `frame_id`.
 
-For detailed information on what data is collected and how it is handled, please refer to the [Telemetry and Data Privacy](SECURITY.md#telemetry-and-data-privacy) section in our Security Policy.
+Without `frame_id`, coordinates are explicitly physical virtual-desktop pixels.
+Frame references expire, are bounded in memory, and are rejected after input
+changes or relevant window/display geometry changes. A reference is not an
+eternal guarantee that an application has not redrawn its own contents.
 
-## 📝 Limitations
+Coordinate-bound batches guard the observed foreground window. If an action
+opens a new dialog or switches applications, use the returned fresh observation
+before deciding the next coordinate-based action.
 
-- Selecting specific sections of the text in a paragraph, as the MCP is relying on a11y tree. (⌛ Working on it.)
-- `Type-Tool` is meant for typing text, not programming in IDE because of it types program as a whole in a file. (⌛ Working on it.)
-- This MCP server can't be used to play video games 🎮.
+## Faster observations and actions
 
-## 🪪 License
+MCP is a request/response protocol, not a video stream into a model. The efficient
+loop is:
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+1. Observe at a decision point.
+2. Send a short batch of already-understood actions.
+3. Receive one fresh observation.
+4. When waiting for rendering, use `Screenshot(since=..., wait_for_change=...)`
+   instead of repeatedly asking the model to poll.
 
-## 🙏 Acknowledgements
+An unchanged image can be omitted while fresh frame metadata is returned,
+explicitly referencing the prior image. Use `since` only when the caller already
+has that image; omit it when starting a new agent/context.
 
-Windows-MCP makes use of several excellent open-source projects that power its Windows automation features:
+The service adapts its polling interval within a bounded wait, briefly settles
+changed frames, and encodes only the observation it returns. Crop deliberately
+and tune `max_dimension`, `encoding` and `quality` instead of capturing a giant
+desktop for a small dialog. Timing and encoded-size metadata describe actual
+work; these choices do not remove model inference latency.
 
-- [UIAutomation](https://github.com/yinkaisheng/Python-UIAutomation-for-Windows)
+A short batch in an already-focused blank editor:
 
-Huge thanks to the maintainers and contributors of these libraries for their outstanding work and open-source spirit.
-
-## 🤝Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING](CONTRIBUTING) for setup instructions and development guidelines.
-
-Made with ❤️ by [CursorTouch](https://github.com/CursorTouch)
-
-## Citation
-
-```bibtex
-@software{
-  author       = {CursorTouch},
-  title        = {Windows-MCP: Lightweight open-source project for integrating LLM agents with Windows},
-  year         = {2024},
-  publisher    = {GitHub},
-  url={https://github.com/CursorTouch/Windows-MCP}
+```json
+{
+  "actions": [
+    {"kind": "text", "text": "Hello from Desktop-MCP."},
+    {"kind": "key", "keys": ["enter"]}
+  ],
+  "observe": true
 }
 ```
+
+Batch kinds also include `move`, `click`, `drag`, `scroll`, `wait`, `key_down`,
+`key_up`, `button_down` and `button_up`. A hold lasts only within that batch and
+is always released at its end. Use `keys` as mouse modifiers, for example
+`{"kind":"drag","button":"middle","keys":["shift"],"start":[100,100],"loc":[300,200]}`.
+Do not enter literal text while batch-held modifier keys are down.
+
+Movement uses a minimum-jerk curve: zero initial/final velocity and acceleration,
+without overshooting a click target. Its default duration adapts to distance;
+an explicit positive `duration` can slow a demonstration. Text has no corresponding
+speed cap.
+
+Do not automatically replay a failed input request. The error identifies how
+many complete steps ran; the current step can be partially applied. An error
+from the observation after a successful batch explicitly says the input already
+completed.
+
+## If your client cannot see MCP images
+
+Successful MCP negotiation does not prove a client forwards image pixels to its
+model. `Screenshot(export_image=true)` returns both the normal image block and
+an `image_path` that a native image-reading tool can open. Omit `since` when
+requesting a full exported image.
+
+For a client needing this regularly, set `DESKTOP_MCP_IMAGE_FILES=true` in its
+MCP environment configuration. Full observations then include a temporary file
+as well. This costs disk I/O and possibly another tool round trip, so it is a
+compatibility path, not the fastest default.
+
+Images remain in memory by default. Explicit exports are private screen content
+on disk, retained among the latest 16 exports until server exit. They are never
+committed. A local server does not make Copilot/model processing offline; only
+show applications whose content you intend to share with your model service.
+
+## Development and documentation
+
+See [CLAUDE.md](CLAUDE.md), [SYSTEM_MEMORY.md](SYSTEM_MEMORY.md),
+[DECISIONS.md](DECISIONS.md), [agent-work.md](agent-work.md), and
+[TESTING.md](TESTING.md) for the relevant contracts and safe development workflow.
+
+The preserved Windows engine is in `src/windows_mcp`. Supervision, the native
+interface, observation service and explicit MCP surface live in `src/desktop_mcp`.
+The repository preserves upstream history; `upstream` points to Windows-MCP and
+`origin` points to this fork.
+
+MIT terms are in [LICENSE.md](LICENSE.md). Bundled UIAutomation attribution and
+Apache 2.0 terms are preserved in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)
+and [LICENSE-UIAUTOMATION.txt](LICENSE-UIAUTOMATION.txt).

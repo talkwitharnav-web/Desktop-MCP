@@ -68,6 +68,8 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
             )
             try:
                 observation = app.vision.observe(scope=scope, since=since) if observe else None
+                if observation is not None and observation.image is not None and app.export_frames:
+                    observation = app.export_observation(observation)
             except (OSError, RuntimeError, ValueError) as error:
                 raise RuntimeError(
                     f"{len(completed)} action(s) completed, but the follow-up observation failed: "
@@ -98,7 +100,7 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
 
     @mcp.tool(
         name="Screenshot",
-        description="Observe the active window (default) or desktop, with an actual image block and a frame_id. For loc coordinates taken from this image, pass its frame_id to input tools: the server applies crop origins/scales. since reuses identical image content with fresh metadata. wait_for_change performs bounded adaptive polling, not video streaming; settle waits briefly for visual stability. Stop blocks capture too.",
+        description="Observe the active window (default) or desktop, with an actual image block and a frame_id. For loc coordinates taken from this image, pass its frame_id to input tools: the server applies crop origins/scales. since reuses identical image content with fresh metadata. wait_for_change performs bounded adaptive polling, not video streaming; settle waits briefly for visual stability. If your client drops image blocks, export_image=true also returns a temporary image_path for a native image-reading tool. Stop blocks capture too.",
         annotations=read,
     )
     def screenshot(
@@ -110,9 +112,12 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
         since: str | None = None,
         wait_for_change: float = 0.0,
         settle: float = 0.06,
+        export_image: bool = False,
     ) -> ToolResult:
         app = get_app()
         with app.controller.operation("Observing"):
+            if export_image and since is not None:
+                raise ValueError("For a full image file, omit since when using export_image.")
             observation = app.vision.observe(
                 scope=scope,
                 region=region,
@@ -123,6 +128,8 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
                 wait_for_change=wait_for_change,
                 settle=settle,
             )
+            if observation.image is not None and (export_image or app.export_frames):
+                observation = app.export_observation(observation)
             return observation_result(observation)
 
     @mcp.tool(
@@ -298,7 +305,15 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
                     raise ValueError("Launch requires executable and optional args, not window_id.")
                 pid = app.controller.emit(lambda: app.backend.launch(executable, args or []))
                 result = {"pid": pid, "launched": True}
-            observation = app.vision.observe() if observe else None
+            try:
+                observation = app.vision.observe() if observe else None
+                if observation is not None and observation.image is not None and app.export_frames:
+                    observation = app.export_observation(observation)
+            except (OSError, RuntimeError, ValueError) as error:
+                raise RuntimeError(
+                    f"The application {mode} completed, but observation failed: {error}. "
+                    "Do not launch the application again just to obtain an image."
+                ) from error
             return observation_result(observation, extra=result)
 
     @mcp.tool(
@@ -322,4 +337,6 @@ def register_tools(mcp, get_app: Callable[[], DesktopApplication]) -> None:
             tree = app.accessibility_tree(use_dom=use_dom)
             app.controller.checkpoint()
             observation = app.vision.observe()
+            if observation.image is not None and app.export_frames:
+                observation = app.export_observation(observation)
             return observation_result(observation, extra={"accessibility_tree": tree})

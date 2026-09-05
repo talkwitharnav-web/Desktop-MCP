@@ -59,7 +59,7 @@ class TestCollectVersions:
     def test_collects_every_checked_version(self, repo):
         assert set(check_versions.collect_versions(repo)) == {
             "pyproject.toml:project.version",
-            "uv.lock:windows-mcp",
+            "uv.lock:desktop-mcp",
             "manifest.json:version",
             "server.json:packages[0].version",
         }
@@ -121,8 +121,8 @@ class TestCheck:
         lock = repo / "uv.lock"
         lock.write_text(
             lock.read_text(encoding="utf-8").replace(
-                f'name = "windows-mcp"\nversion = "{current}"',
-                'name = "windows-mcp"\nversion = "0.8.2"',
+                f'name = "desktop-mcp"\nversion = "{current}"',
+                'name = "desktop-mcp"\nversion = "0.8.2"',
             ),
             encoding="utf-8",
         )

@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from typing import Protocol, TypeVar
 
@@ -15,6 +16,9 @@ from desktop_mcp.contracts import ControlSnapshot, Point
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
+_request_ticket: ContextVar[tuple[object, int] | None] = ContextVar(
+    "desktop_mcp_request_ticket", default=None
+)
 
 
 class DesktopStopped(RuntimeError):
@@ -66,7 +70,9 @@ class Controller:
         self._stopped.set()
         self._keys: set[int] = set()
         self._buttons: set[Button] = set()
-        self._stopping = False
+        self._stopping = 0
+        self._deferred_stops = 0
+        self._release_thread: threading.Thread | None = None
 
     def snapshot(self) -> ControlSnapshot:
         """Read status without waiting for a running desktop sequence."""
@@ -91,33 +97,50 @@ class Controller:
 
     def arm_local(self) -> None:
         """Local UI only; this method is deliberately not an MCP tool."""
-        with self._input_lock:
+        if not self._input_lock.acquire(blocking=False):
+            raise DesktopStopped("Input is still finishing. Wait before resuming locally.")
+        try:
+            with self._state_lock:
+                if not self._state.interface_ready or self._state.state == "closed":
+                    raise DesktopStopped("The control window and stop hotkey must be available.")
+                if self._stopping:
+                    raise DesktopStopped("A stop is still releasing input; wait before resuming.")
+                if self._state.armed:
+                    return
+                generation = self._state.generation
             errors = self._release_inputs()
             if errors:
                 self._record_release_error(errors)
                 raise DesktopStopped("Owned input could not be released; control cannot resume.")
-        with self._input_lock, self._state_lock:
-            if not self._state.interface_ready:
-                raise DesktopStopped("The control window and stop hotkey must be available.")
-            if self._state.state == "closed":
-                raise DesktopStopped("This controller has been closed.")
-            if self._stopping or self._keys or self._buttons:
-                raise DesktopStopped("Owned input is still being released; control cannot resume.")
-            self._state = replace(
-                self._state,
-                state="ready",
-                reason="Desktop control allowed. Ctrl+Shift+H stops immediately.",
-                action=None,
-                generation=self._state.generation + 1,
-                input_revision=self._state.input_revision + 1,
-                last_error=None,
-            )
-            self._stopped.clear()
+            with self._state_lock:
+                if (
+                    self._state.generation != generation
+                    or not self._state.interface_ready
+                    or self._state.state == "closed"
+                    or self._stopping
+                    or self._keys
+                    or self._buttons
+                ):
+                    raise DesktopStopped(
+                        "Control was stopped while resuming. Resume again locally."
+                    )
+                self._state = replace(
+                    self._state,
+                    state="ready",
+                    reason="Desktop control allowed. Ctrl+Shift+H stops immediately.",
+                    action=None,
+                    generation=self._state.generation + 1,
+                    input_revision=self._state.input_revision + 1,
+                    last_error=None,
+                )
+                self._stopped.clear()
+        finally:
+            self._input_lock.release()
 
     def stop(self, reason: str = "Stopped locally") -> None:
         """Revoke first, then release only inputs owned by this controller."""
         with self._state_lock:
-            self._stopping = True
+            self._stopping += 1
             self._state = replace(
                 self._state,
                 state="closed" if self._state.state == "closed" else "stopped",
@@ -127,18 +150,52 @@ class Controller:
                 input_revision=self._state.input_revision + 1,
             )
             self._stopped.set()
+        # SendInput can wait for the UI thread's low-level hook. Never make that
+        # same UI thread wait for an emitter's lock while handling the stop hotkey.
+        if self._input_lock.acquire(blocking=False):
+            try:
+                self._finish_stop_release(1)
+            finally:
+                self._input_lock.release()
+        else:
+            with self._state_lock:
+                self._deferred_stops += 1
+                if self._release_thread is None:
+                    self._release_thread = threading.Thread(
+                        target=self._drain_stop_releases,
+                        name="Desktop-MCP input release",
+                        daemon=True,
+                    )
+                    self._release_thread.start()
+
+    def _finish_stop_release(self, count: int) -> None:
         try:
             errors = self._release_inputs()
             if errors:
                 self._record_release_error(errors)
         finally:
             with self._state_lock:
-                self._stopping = False
+                self._stopping -= count
+
+    def _drain_stop_releases(self) -> None:
+        while True:
+            with self._state_lock:
+                count = self._deferred_stops
+                self._deferred_stops = 0
+                if not count:
+                    self._release_thread = None
+                    return
+            self._finish_stop_release(count)
 
     def close(self) -> None:
         self.stop("Desktop-MCP has shut down.")
         with self._state_lock:
             self._state = replace(self._state, state="closed", interface_ready=False)
+            release_thread = self._release_thread
+        if release_thread is not None and release_thread is not threading.current_thread():
+            release_thread.join(timeout=2.0)
+            if release_thread.is_alive():
+                raise RuntimeError("Input release did not finish during shutdown.")
 
     def set_human_takeover(self, enabled: bool) -> None:
         with self._state_lock:
@@ -164,6 +221,17 @@ class Controller:
             raise RuntimeError("Desktop access requires an active controller operation.")
         self._check_generation(generation)
 
+    @contextmanager
+    def request(self) -> Iterator[None]:
+        """Stamp an RPC before it can wait in the tool runner's worker queue."""
+        generation = self.snapshot().generation
+        self._check_generation(generation)
+        token = _request_ticket.set((self, generation))
+        try:
+            yield
+        finally:
+            _request_ticket.reset(token)
+
     def wait(self, duration: float) -> None:
         """Wait in short, interruptible slices without throttling text."""
         deadline = self._clock() + duration
@@ -179,7 +247,10 @@ class Controller:
             self.checkpoint()
             yield
             return
-        generation = self.snapshot().generation
+        ticket = _request_ticket.get()
+        generation = (
+            ticket[1] if ticket is not None and ticket[0] is self else self.snapshot().generation
+        )
         self._check_generation(generation)
         while not self._sequence_lock.acquire(timeout=0.02):
             self._check_generation(generation)
@@ -278,6 +349,7 @@ class Controller:
         with self._input_lock:
             if down:
                 self.checkpoint()
+                self.backend.ensure_target(self.backend.position())
                 if button in self._buttons:
                     raise ValueError(f"The {button} button is already held in this batch.")
                 self._buttons.add(button)
@@ -445,6 +517,7 @@ class Controller:
         elif action.kind == "text":
             text_window = window_id if window_id is not None else self.backend.foreground()
             if action.clear:
+                self.backend.ensure_target(window_id=text_window)
                 with self._modifiers(["ctrl", "a"]):
                     self.checkpoint()
                 with self._modifiers(["backspace"]):
@@ -455,6 +528,7 @@ class Controller:
                 chunk = text[offset : offset + 64]
                 self.emit(lambda: self.backend.text(chunk))
             if action.submit:
+                self.backend.ensure_target(window_id=text_window)
                 with self._modifiers(["enter"]):
                     self.checkpoint()
         elif action.kind in {"key_down", "key_up"}:

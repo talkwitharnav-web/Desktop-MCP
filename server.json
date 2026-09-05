@@ -1,18 +1,18 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
-  "name": "io.github.CursorTouch/Windows-MCP",
-  "description": "An MCP Server for computer-use in Windows OS",
+  "name": "io.github.talkwitharnav-web/Desktop-MCP",
+  "description": "Supervised Windows desktop control with local stop and adaptive observations",
   "status": "active",
   "repository": {
-    "url": "https://github.com/CursorTouch/Windows-MCP",
+    "url": "https://github.com/talkwitharnav-web/Desktop-MCP",
     "source": "github"
   },
-  "version": "1.0.1",
+  "version": "0.1.0",
   "packages": [
     {
       "registryType": "pypi",
-      "identifier": "windows-mcp",
-      "version": "0.8.5",
+      "identifier": "desktop-mcp",
+      "version": "0.1.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"

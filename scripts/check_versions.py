@@ -32,17 +32,11 @@ it.
 from __future__ import annotations
 
 import json
-import re
 import sys
 import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-
-_UV_LOCK_WINDOWS_MCP = re.compile(
-    r'^\[\[package\]\]\nname = "windows-mcp"\nversion = "([^"]+)"',
-    re.MULTILINE,
-)
 
 
 def collect_versions(root: Path = REPO_ROOT) -> dict[str, str]:
@@ -56,15 +50,18 @@ def collect_versions(root: Path = REPO_ROOT) -> dict[str, str]:
 
     pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     try:
+        package_name = pyproject["project"]["name"]
         versions["pyproject.toml:project.version"] = pyproject["project"]["version"]
     except KeyError as exc:
-        raise ValueError("pyproject.toml is missing [project] version") from exc
+        raise ValueError("pyproject.toml is missing [project] name or version") from exc
 
-    lock_text = (root / "uv.lock").read_text(encoding="utf-8")
-    match = _UV_LOCK_WINDOWS_MCP.search(lock_text)
-    if match is None:
-        raise ValueError("uv.lock has no [[package]] entry for windows-mcp")
-    versions["uv.lock:windows-mcp"] = match.group(1)
+    lock = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
+    matches = [
+        package for package in lock.get("package", []) if package.get("name") == package_name
+    ]
+    if len(matches) != 1 or "version" not in matches[0]:
+        raise ValueError(f"uv.lock must have exactly one versioned entry for {package_name}")
+    versions[f"uv.lock:{package_name}"] = matches[0]["version"]
 
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     if "version" not in manifest:

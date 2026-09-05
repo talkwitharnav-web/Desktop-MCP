@@ -7,13 +7,9 @@ on:
 
 jobs:
   build-and-publish:
-    name: Build and publish to PyPI
+    name: Build GitHub release artifacts
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/windows-mcp
     permissions:
-      id-token: write
       contents: write
       
     steps:
@@ -38,11 +34,6 @@ jobs:
       
       - name: Build package
         run: uv build
-      
-      - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          skip-existing: true
       
       - name: Create GitHub Release
         env:

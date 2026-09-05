@@ -44,3 +44,12 @@ Use local stdio, an Alt-Tab-visible control window, and an explicitly selected
 GUI tool surface. No remote listener, autorun task, registry editor, arbitrary
 shell tool, or auto-arming default is necessary for this project.
 Screen contents and typed text must not be logged or committed.
+
+## D-007: GitHub sync is not package publication
+
+Commit and sync to the requested GitHub repository. Release tags may build
+GitHub artifacts, but automatic PyPI publication is disabled. `server.json`
+is a release metadata template, not proof that this package name is owned or
+published on PyPI or registered with the MCP registry. Run the local checkout
+through its virtual environment rather than downloading an unrelated package
+with the same name.

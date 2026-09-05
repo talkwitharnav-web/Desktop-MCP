@@ -324,3 +324,53 @@ def test_empty_clear_actually_removes_selected_text(armed):
     with controller.operation("clear"):
         controller.execute([Action(kind="text", text="", clear=True)])
     assert ("key", key_code("backspace"), True) in backend.events
+
+
+def test_redundant_local_arm_does_not_interrupt_an_active_operation(armed):
+    controller, backend = armed
+    generation = controller.snapshot().generation
+    with controller.operation("running"):
+        controller._key(key_code("shift"), True)
+        controller.arm_local()
+        controller.checkpoint()
+        assert ("key", key_code("shift"), False) not in backend.events
+    assert controller.snapshot().generation == generation
+    assert ("key", key_code("shift"), False) in backend.events
+
+
+def test_stop_does_not_deadlock_the_ui_thread_behind_a_sendinput_hook(armed):
+    controller, backend = armed
+    awaiting_ui = threading.Event()
+    ui_returned = threading.Event()
+    finished = threading.Event()
+
+    def simulate_sendinput(event):
+        if event[0] == "move":
+            awaiting_ui.set()
+            assert ui_returned.wait(2), "Stop blocked the UI thread needed by SendInput"
+
+    backend.on_event = simulate_sendinput
+
+    def worker():
+        try:
+            with controller.operation("native hook simulation"):
+                controller.execute([Action(kind="drag", loc=(500, 500), button="middle")])
+        except BatchInterrupted:
+            finished.set()
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert awaiting_ui.wait(2)
+    try:
+        started = time.monotonic()
+        controller.stop("hotkey")
+        assert time.monotonic() - started < 0.2
+        assert not controller.snapshot().armed
+        with pytest.raises(DesktopStopped):
+            controller.arm_local()
+    finally:
+        ui_returned.set()
+        thread.join(2)
+        controller.close()
+    assert finished.is_set()
+    assert ("button", "middle", False) in backend.events

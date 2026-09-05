@@ -26,11 +26,13 @@ class WindowsCapture:
     ) -> None:
         import windows_mcp.uia as uia
         from windows_mcp.desktop import screenshot
+        from windows_mcp.desktop.utils import repair_surrogates
 
         self._uia = uia
         self._capture_backend = screenshot
         self._capture_guard = capture_guard
         self._control_windows = control_windows
+        self._repair_text = repair_surrogates
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
         self._user32.GetForegroundWindow.restype = wintypes.HWND
         self._user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
@@ -54,7 +56,7 @@ class WindowsCapture:
             length = self._user32.GetWindowTextLengthW(handle)
             buffer = ctypes.create_unicode_buffer(length + 1)
             self._user32.GetWindowTextW(handle, buffer, len(buffer))
-            title = buffer.value
+            title = self._repair_text(buffer.value)
         bounds = desktop
         if scope == "active":
             if not handle:
