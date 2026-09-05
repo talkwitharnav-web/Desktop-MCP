@@ -231,11 +231,11 @@ class Controller:
         if position is not None:
             with self._state_lock:
                 self._state = replace(self._state, user_cursor=position)
-        if status.armed and status.mode == "teach":
-            if kind != "move":
+        if status.armed:
+            if status.mode == "control" and status.human_takeover:
+                self.stop("Paused because you used the mouse or keyboard.")
+            elif kind != "move":
                 self._bump_revision()
-        elif status.armed and status.human_takeover:
-            self.stop("Paused because you used the mouse or keyboard.")
 
     def _check_generation(self, generation: int) -> None:
         status = self.snapshot()
@@ -372,8 +372,12 @@ class Controller:
                 if 0x48 in chord and chord & {0x10, 0xA0, 0xA1} and chord & {0x11, 0xA2, 0xA3}:
                     self.stop("Ctrl+Shift+H emergency stop.")
                     raise DesktopStopped("Ctrl+Shift+H emergency stop.")
-                self._keys.add(code)
-                self.emit(lambda: self.backend.key(code, True))
+
+                def press_key() -> None:
+                    self._keys.add(code)
+                    self.backend.key(code, True)
+
+                self.emit(press_key)
             elif code in self._keys:
                 self.backend.key(code, False)
                 self._keys.remove(code)
@@ -391,8 +395,12 @@ class Controller:
                 )
                 if button in self._buttons:
                     raise ValueError(f"The {button} button is already held in this batch.")
-                self._buttons.add(button)
-                self.emit(lambda: self.backend.button(button, True))
+
+                def press_button() -> None:
+                    self._buttons.add(button)
+                    self.backend.button(button, True)
+
+                self.emit(press_button)
             elif button in self._buttons:
                 self.backend.button(button, False)
                 self._buttons.remove(button)

@@ -118,6 +118,7 @@ Closing the panel stops control rather than leaving an invisible active agent.
 
 In Control mode, human mouse/keyboard input pauses automation by default. The
 local window can change that preference; the emergency hotkey remains enabled.
+Physical clicks/keys still invalidate prior frames when auto-pausing is disabled.
 In Teach mode, the learner can freely move the mouse without takeover pauses.
 Physical clicks/keys invalidate observations, and all injected mouse/keyboard
 input and app launching/focusing are blocked. Local revocation is enforced by the

@@ -71,11 +71,10 @@ class FakeController:
                 self.value = replace(self.value, user_cursor=position)
             if not self.value.armed:
                 return
-            if self.value.mode == "teach":
-                if kind != "move":
-                    self.value = replace(self.value, input_revision=self.value.input_revision + 1)
-            elif self.value.human_takeover:
+            if self.value.mode == "control" and self.value.human_takeover:
                 self.stop("Human input")
+            elif kind != "move":
+                self.value = replace(self.value, input_revision=self.value.input_revision + 1)
 
 
 class FakeWin32:

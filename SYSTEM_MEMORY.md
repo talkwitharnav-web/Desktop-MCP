@@ -29,6 +29,9 @@ implementation lives under `src/desktop_mcp`.
 - The UI thread never waits on a long-running action lock. A stop sets revocation
   before releasing input; a backend emission rechecks revocation under its
   short input lock so no new key-down can race after the release.
+  Key/button ownership begins inside that permitted emission callback immediately
+  before the native down attempt. A rejected emission owns nothing; an attempted
+  native send still receives cleanup if the backend reports partial failure.
 - `SendInput` can wait for the UI thread's low-level hook. Therefore local Stop
   and Arm must not block acquiring the input lock on that UI thread. Contended
   stop cleanup is coalesced onto one release worker; re-arming waits until release
@@ -67,6 +70,8 @@ implementation lives under `src/desktop_mcp`.
 - Control/Teach is a local-only selector. Teach permits observation/presentation
   but blocks native emission and app launch/focus. Learner motion does not revoke
   the session; clicks/keys invalidate frames and context-sensitive guidance.
+  Physical clicks/keys also invalidate Control-mode frames when local human
+  takeover is disabled; that preference changes auto-pausing, not frame freshness.
   Teaching point mapping preserves an input-revision ticket through the model's
   initial authorization, rather than taking a new baseline after frame resolution.
 - Teaching model commits validate the combined mark/wait canvas before publishing.

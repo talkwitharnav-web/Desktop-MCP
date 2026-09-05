@@ -210,6 +210,102 @@ def test_human_takeover_latches_stop_and_never_auto_resumes(armed):
     assert controller.snapshot().armed
 
 
+@pytest.mark.parametrize("kind", ["key", "button"])
+def test_stop_during_target_check_never_releases_an_unattempted_down(armed, kind):
+    controller, backend = armed
+    backend.ensure_target = lambda *args, **kwargs: controller.stop("Fixture target-check stop")
+    with pytest.raises(DesktopStopped), controller.operation("Fixture rejected down"):
+        if kind == "key":
+            controller._key(key_code("ctrl"), True)
+        else:
+            controller._button("left", True)
+    assert backend.events == []
+    assert not controller._keys and not controller._buttons
+
+
+@pytest.mark.parametrize("kind", ["key", "button"])
+def test_teaching_mode_rejection_cannot_emit_an_unowned_release(armed, kind):
+    controller, backend = armed
+    controller.set_mode_local("teach")
+    controller.arm_local()
+    with pytest.raises(InputNotAllowed), controller.operation("Fixture teaching gate"):
+        if kind == "key":
+            controller._key(key_code("ctrl"), True)
+        else:
+            controller._button("left", True)
+    assert backend.events == []
+    assert not controller._keys and not controller._buttons
+
+
+@pytest.mark.parametrize("kind", ["key", "button"])
+def test_attempted_native_down_failure_still_releases_owned_input(armed, kind):
+    controller, backend = armed
+
+    def fail_after_attempt(event):
+        if event[0] == kind and event[2]:
+            raise OSError("Fixture partial native down")
+
+    backend.on_event = fail_after_attempt
+    with pytest.raises(OSError, match="partial native down"), controller.operation("Fixture down"):
+        if kind == "key":
+            controller._key(key_code("ctrl"), True)
+        else:
+            controller._button("left", True)
+    value = key_code("ctrl") if kind == "key" else "left"
+    assert backend.events == [(kind, value, True), (kind, value, False)]
+    assert not controller._keys and not controller._buttons
+
+
+@pytest.mark.parametrize("kind", ["button", "key"])
+def test_physical_input_invalidates_real_frames_without_forcing_takeover(armed, kind):
+    from PIL import Image
+    from desktop_mcp.vision import StaleFrameError, VisionService
+    from tests.test_desktop_vision import Clock, Provider
+
+    controller, backend = armed
+    controller.set_human_takeover(False)
+    clock = Clock()
+    provider = Provider(clock)
+    vision = VisionService(
+        provider,
+        revision=lambda: controller.input_revision,
+        checkpoint=controller.checkpoint,
+        wait=clock.wait,
+        clock=clock,
+    )
+    with controller.operation("Fixture observation"):
+        frame = vision.observe(settle=0)
+    generation = controller.snapshot().generation
+    provider.render = lambda bounds, count: Image.new(
+        "RGB", (bounds[2] - bounds[0], bounds[3] - bounds[1]), (90, 100, 110)
+    )
+    controller.notify_human_input(kind=kind)
+    with (
+        controller.operation("Fixture stale frame"),
+        pytest.raises(StaleFrameError, match="Input changed"),
+    ):
+        vision.resolve(frame.frame_id, (1, 1))
+    assert controller.snapshot().armed
+    assert controller.snapshot().generation == generation
+    assert controller.input_revision == frame.metadata["input_revision"] + 1
+    assert backend.events == []
+
+
+@pytest.mark.parametrize("mode", ["control", "teach"])
+def test_motion_without_takeover_keeps_the_revision_and_session(armed, mode):
+    controller, _ = armed
+    controller.set_mode_local(mode)
+    controller.arm_local()
+    controller.set_human_takeover(False)
+    before = controller.snapshot()
+    controller.notify_human_input(kind="move", position=(55, 66))
+    after = controller.snapshot()
+    assert after.armed
+    assert after.generation == before.generation
+    assert after.input_revision == before.input_revision
+    assert after.user_cursor == (55, 66)
+
+
 def test_validate_entire_batch_before_any_input(armed):
     controller, backend = armed
     with controller.operation("batch"), pytest.raises(ValueError):
