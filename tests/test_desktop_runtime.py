@@ -1,6 +1,7 @@
 import threading
 import time
 import ctypes
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -35,6 +36,12 @@ class FakeInput:
     def ensure_target(self, point=None, window_id=None):
         if window_id is not None and self.window != window_id:
             raise RuntimeError("Foreground changed")
+
+    def protected_windows(self):
+        return []
+
+    def ensure_observable_foreground(self):
+        return self.foreground()
 
     def move(self, point):
         self.point = point
@@ -672,7 +679,8 @@ def test_stop_does_not_deadlock_the_ui_thread_behind_a_sendinput_hook(armed):
 
 def test_keyboard_location_cannot_bypass_own_foreground_window_guard(armed):
     from ctypes import wintypes
-    from desktop_mcp.native import WindowsInput
+    from desktop_mcp.native import TargetDenied, WindowsInput
+    from desktop_mcp.window_targets import WindowTargets
 
     controller, backend = armed
     backend.window = 99
@@ -683,14 +691,26 @@ def test_keyboard_location_cannot_bypass_own_foreground_window_guard(armed):
         value.left, value.top, value.right, value.bottom = 0, 0, 100, 100
         return True
 
+    def identity(handle, pointer):
+        ctypes.cast(pointer, ctypes.POINTER(wintypes.DWORD)).contents.value = os.getpid()
+        return 1
+
     backend._user32 = SimpleNamespace(
+        GetForegroundWindow=lambda: 99,
+        IsWindow=lambda handle: handle == 99,
+        GetWindowThreadProcessId=identity,
+        GetAncestor=lambda handle, flags: 99,
+        GetWindowDisplayAffinity=lambda handle, pointer: False,
         IsWindowVisible=lambda handle: True,
         IsIconic=lambda handle: False,
         GetWindowLongW=lambda handle, index: 0,
         GetWindowRect=rectangle,
     )
+    backend._targets = lambda: WindowTargets(
+        backend._user32, None, (99,), {99: "main-control"}, process_id=os.getpid()
+    )
     backend.ensure_target = WindowsInput.ensure_target.__get__(backend)
-    with pytest.raises(BatchInterrupted, match="own control window"):
+    with pytest.raises(TargetDenied, match="main-control"):
         with controller.operation("keyboard location"):
             controller.execute([Action(kind="key", keys=["enter"], loc=(200, 200))])
     assert not any(event[0] == "key" for event in backend.events)

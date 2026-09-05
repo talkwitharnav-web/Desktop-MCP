@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import ctypes
 from collections.abc import Callable, Sequence
+from copy import deepcopy
 from ctypes import wintypes
+import os
 from pathlib import Path
 import subprocess
 
 from desktop_mcp.actions import Button
 from desktop_mcp.contracts import INJECTED_INPUT_TAG, Point, Rect
+from desktop_mcp.window_targets import TargetDenied, WindowTargets, configure_window_queries
 
 _BUTTON_FLAGS: dict[Button, tuple[int, int, int]] = {
     "left": (0x0002, 0x0004, 0),
@@ -58,15 +61,23 @@ def normalize_absolute(point: Point, bounds: Rect) -> Point:
 class WindowsInput:
     """Fast native input with checked return values and injected-event tagging."""
 
-    def __init__(self, *, control_windows: Callable[[], tuple[int, ...]] = lambda: ()) -> None:
+    def __init__(
+        self,
+        *,
+        control_windows: Callable[[], tuple[int, ...]] = lambda: (),
+        window_roles: Callable[[], dict[int, str]] | None = None,
+    ) -> None:
         import windows_mcp.uia as uia
         from windows_mcp.uia.enums import INPUT
 
         self._uia = uia
         self._input_type = INPUT
         self._control_windows = control_windows
+        self._window_roles = window_roles
+        self._last_denial: dict[str, object] | None = None
         self._pending_releases = []
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
+        self._gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
         self._user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
         self._user32.SendInput.restype = wintypes.UINT
         self._user32.GetForegroundWindow.restype = wintypes.HWND
@@ -84,9 +95,39 @@ class WindowsInput:
         self._user32.ShowWindow.restype = wintypes.BOOL
         self._user32.IsWindow.argtypes = [wintypes.HWND]
         self._user32.IsWindow.restype = wintypes.BOOL
+        configure_window_queries(self._user32, self._gdi32)
 
     def set_control_windows(self, getter: Callable[[], tuple[int, ...]]) -> None:
         self._control_windows = getter
+
+    def set_window_roles(self, getter: Callable[[], dict[int, str]] | None) -> None:
+        self._window_roles = getter
+
+    def _targets(self) -> WindowTargets:
+        return WindowTargets(
+            self._user32,
+            self._gdi32,
+            self._control_windows(),
+            {} if self._window_roles is None else self._window_roles(),
+            process_id=os.getpid(),
+        )
+
+    @property
+    def last_denial(self) -> dict[str, object] | None:
+        """Return an independent copy, retained until another target denial."""
+        return deepcopy(self._last_denial)
+
+    def protected_windows(self) -> list[dict[str, object]]:
+        """Read geometry/status only; no armed operation or private text is needed."""
+        return self._targets().protected_windows()
+
+    def ensure_observable_foreground(self) -> int:
+        """Reject owned capture targets; the caller still gates capture permission."""
+        try:
+            return self._targets().ensure_observable_foreground()
+        except TargetDenied as error:
+            self._last_denial = deepcopy(error.details)
+            raise
 
     def bounds(self) -> Rect:
         left, top, width, height = self._uia.GetVirtualScreenRect()
@@ -115,22 +156,11 @@ class WindowsInput:
             )
 
     def ensure_target(self, point: Point | None = None, window_id: int | None = None) -> None:
-        foreground = self.foreground()
-        if window_id is not None and foreground != window_id:
-            raise RuntimeError("The foreground window changed. Obtain a fresh screenshot.")
-        for handle in self._control_windows():
-            if not self._user32.IsWindowVisible(handle) or self._user32.IsIconic(handle):
-                continue
-            if self._user32.GetWindowLongW(handle, -20) & 0x20:
-                continue  # The no-activate, click-through cursor is not an input target.
-            if point is None and foreground == handle:
-                raise RuntimeError("Desktop-MCP cannot type into its own control window.")
-            if point is not None:
-                rect = wintypes.RECT()
-                if not self._user32.GetWindowRect(handle, ctypes.byref(rect)):
-                    raise ctypes.WinError(ctypes.get_last_error())
-                if contains((rect.left, rect.top, rect.right, rect.bottom), point):
-                    raise RuntimeError("Minimize the control window before clicking underneath it.")
+        try:
+            self._targets().ensure_target(point, window_id)
+        except TargetDenied as error:
+            self._last_denial = deepcopy(error.details)
+            raise
 
     def _stamp(self, event, *, keyboard: bool = False):
         payload = event.union.ki if keyboard else event.union.mi
@@ -220,10 +250,13 @@ class WindowsInput:
         self._send(events)
 
     def focus(self, window_id: int) -> None:
-        if window_id in self._control_windows():
-            raise ValueError("The agent cannot target its own control interface.")
         if not self._user32.IsWindow(window_id):
             raise ValueError("The requested window no longer exists.")
+        try:
+            self._targets().ensure_focus(window_id)
+        except TargetDenied as error:
+            self._last_denial = deepcopy(error.details)
+            raise
         if self._user32.IsIconic(window_id):
             self._user32.ShowWindow(window_id, 9)
         if not self._user32.SetForegroundWindow(window_id):

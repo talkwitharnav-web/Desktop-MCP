@@ -75,3 +75,32 @@ def test_partial_text_send_releases_the_unmatched_key_down(packets):
     assert len(calls) == 2
     assert calls[1][0].union.ki.dwFlags & 0x0002
     assert backend._pending_releases == []
+
+
+def test_native_target_query_setup_accepts_roles_without_querying_windows(packets, monkeypatch):
+    class Query:
+        def __call__(self, *arguments):
+            pytest.fail("Constructing the backend must not inspect or change native windows.")
+
+    class Library:
+        def __getattr__(self, name):
+            query = Query()
+            setattr(self, name, query)
+            return query
+
+    libraries = {"user32": Library(), "gdi32": Library()}
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **options: libraries[name])
+
+    def handles():
+        return (123,)
+
+    def roles():
+        return {123: "main-control"}
+
+    backend = WindowsInput(control_windows=handles, window_roles=roles)
+    assert backend._control_windows is handles
+    assert backend._window_roles is roles
+    assert backend.last_denial is None
+    assert libraries["user32"].GetAncestor.restype == ctypes.wintypes.HWND
+    assert libraries["user32"].WindowFromPoint.argtypes == [ctypes.wintypes.POINT]
+    assert libraries["gdi32"].CreateRectRgn.restype == ctypes.wintypes.HRGN
