@@ -15,15 +15,18 @@ initialization instructions and also serves it as `desktop-mcp://guide`.
 The guide ships inside the package; clients do not need access to this repository.
 
 Loading an MCP server does not automatically load its repository's Markdown
-files. This connection-level guide covers the normal observe/act workflow,
-combined teaching/control, transcript listening and replies, visibility and
-local authorization. You can ask for the desktop task normally rather than
+files. This connection-level guide covers outcome-first planning, the normal
+observe/act/adjust workflow, scrolling to reveal clipped or incomplete content,
+combined teaching/control, transcript listening and replies, visibility and local
+authorization. You can ask for the desktop task normally rather than
 having to restate its tool-call procedure. The client decides how it presents
 MCP instructions to the model; documentation is not a guarantee of model compliance.
 
-After installing this update, reopen Desktop-MCP and reconnect existing MCP
-clients to receive the guide. New server connections read the packaged guide,
-so there is no separate hardcoded copy to keep synchronized.
+After installing an application update, reopen Desktop-MCP and reconnect
+existing MCP clients. For guide-only edits in the active installation,
+reconnecting is enough: each new server connection reads the packaged guide.
+An already connected client can also reread `desktop-mcp://guide` if it supports
+resources. There is no separate hardcoded copy to keep synchronized.
 
 ## What changes from stock Windows-MCP
 

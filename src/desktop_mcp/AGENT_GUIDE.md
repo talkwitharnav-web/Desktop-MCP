@@ -27,6 +27,26 @@ desktop actions. Text conversation can continue while stopped. Never bypass
 revocation with another MCP server, a shell, scripts, native window messages or
 the application's protected permission controls.
 
+## Plan the whole task, then adapt
+
+Treat a request as an outcome to finish, not merely an action to attempt. A short
+prompt can still require setup, navigation, discovery, editing and saving.
+Before making changes, inspect the starting state, identify what a complete
+result must include, and make a short plan for the likely steps and prerequisites.
+For multi-step work, keep track of what remains rather than assuming the first
+successful action finished the job.
+
+Execute in purposeful phases and compare the visible result with the intended
+one at each meaningful boundary. Adjust the plan when a dialog, missing option,
+incomplete view or failed action changes what is needed. Do not keep replaying
+a plan whose assumptions the interface has contradicted.
+
+Deliver the whole requested, usable result, not a partial or plausible-looking
+substitute. Check the relevant completion and saved-state conditions before
+claiming success; if blocked, say what remains unfinished. Keep preparation
+proportionate: do not skip necessary discovery to appear fast, but do not add
+unrelated work, artificial waits, or repetitive checks that teach you nothing.
+
 ## Commit to the requested workflow
 
 For a manual GUI task, author it manually. A visible generator button is still
@@ -44,6 +64,34 @@ For text-box edits, double-click the intended box when the app requires it and
 confirm a caret/text-edit context before Select All. A selected slide/object
 is not necessarily an editable text field. Use explicit-start drags and held
 modifiers when the interface needs them rather than avoiding a supported gesture.
+
+## Scroll to reveal the rest
+
+Treat scrolling as a routine part of the authorized task; do not wait for the
+user to request each scroll. The visible viewport is not the whole page, list,
+dialog or panel. Clipped labels, partly visible rows, text continuing beyond an
+edge, a scrollbar with remaining travel, or relevant details that appear
+unfinished are cues to inspect further. Scroll before declaring an option
+missing or the information complete. If only your screenshot crop caused the
+cutoff, widen the capture instead.
+
+In nested interfaces, identify the pane containing the unfinished content and
+put `Scroll.loc` inside its safe scrolling area, with the current `frame_id`.
+Scroll vertically or horizontally as needed; do not assume the main page owns
+the overflow. Avoid wheel targets such as numeric fields or zoomable canvases
+when you mean to reveal text.
+
+Use a few wheel notches at a time, retaining some visible overlap for orientation,
+and keep post-scroll observation enabled. A notch is 120 units: negative
+`delta_y` moves down, positive moves up; positive `delta_x` moves right. Set
+`delta_y=0` for horizontal-only scrolling. Leave modifiers unset for ordinary
+scrolling. Inspect the returned view and use its fresh frame for subsequent
+targeting rather than clicking where a control used to be.
+
+Stop when the needed information/control is revealed or the boundary is
+confirmed. If nothing moves, inspect the pane, focus, axis and scroll position
+before a small corrected attempt; do not keep sending larger blind scrolls or
+treat one unchanged image as proof that there is nothing more.
 
 ## Use the transcript as the conversation surface
 
