@@ -23,6 +23,12 @@ versions must fail over until their one-shot recovery boundary is verified.
 
 Core input/revocation checks are in `test_desktop_runtime.py` and
 `test_desktop_native.py`; observation checks are in `test_desktop_vision.py`.
+Those observation cases also cover bounded final-sample tile hashing,
+`spatial_change` geometry/crop hints, tiny changes lost by image downscaling,
+unchanged reuse, incompatible/expired references and cancellation during local
+preprocessing. Tool-response cases retain complete metadata and image blocks
+while making the optional detail-crop hint explicit about physical coordinates.
+These synthetic comparisons do not measure model accuracy or native capture latency.
 `test_desktop_window_targets.py` uses a strict fake Win32 query port for receiver
 ordering, minimized roots/children, click-through overlays, modal routing and
 content-free metadata. `test_desktop_diagnostics.py` carries those native fakes

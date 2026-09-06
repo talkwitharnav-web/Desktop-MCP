@@ -33,6 +33,10 @@ _MIN_POLL = 0.02
 _MAX_POLL = 0.25
 _MAX_CAPTURES = 256
 _MAX_ENCODING_ATTEMPTS = 12
+_MIN_TILE_EDGE = 64
+_MAX_TILE_AXIS = 16
+_TILE_DIGEST_BYTES = 16
+_INSPECTION_MARGIN = 32
 
 
 class StaleFrameError(RuntimeError):
@@ -60,6 +64,14 @@ class _Fingerprint:
     size: Point
     mode: str
     digest: bytes
+
+
+@dataclass(frozen=True)
+class _TileFingerprint:
+    tile_size: Point
+    grid_size: Point
+    format_digest: bytes
+    digests: bytes
 
 
 @dataclass
@@ -90,6 +102,7 @@ class _Frame:
     options: _Options
     context: CaptureContext
     fingerprint: _Fingerprint
+    tiles: _TileFingerprint
     captured_at: float
     input_revision: int
     image_details: _ImageDetails
@@ -102,9 +115,11 @@ class _Stats:
     context_check_count: int = 0
     changed_samples: int = 0
     encoding_attempts: int = 0
+    spatial_tiles_hashed: int = 0
     capture_seconds: float = 0.0
     context_seconds: float = 0.0
     comparison_seconds: float = 0.0
+    spatial_seconds: float = 0.0
     encoding_seconds: float = 0.0
     wait_seconds: float = 0.0
 
@@ -244,12 +259,111 @@ def _fingerprint(image: Image.Image, bounds: Rect, context: CaptureContext) -> _
     return _Fingerprint(bounds, _context_key(context), image.size, image.mode, digest.digest())
 
 
+def _tile_fingerprint(image: Image.Image, checkpoint: Callable[[], None]) -> _TileFingerprint:
+    width, height = image.size
+    tile_width = max(_MIN_TILE_EDGE, (width + _MAX_TILE_AXIS - 1) // _MAX_TILE_AXIS)
+    tile_height = max(_MIN_TILE_EDGE, (height + _MAX_TILE_AXIS - 1) // _MAX_TILE_AXIS)
+    columns = (width + tile_width - 1) // tile_width
+    rows = (height + tile_height - 1) // tile_height
+    checkpoint()
+    with _image_errors("The captured image could not be spatially compared."):
+        pixel_format = sha256(image.mode.encode("ascii"))
+        if image.palette is not None:
+            mode, palette = image.palette.getdata()
+            palette = bytes(palette)
+            pixel_format.update(mode.encode("ascii"))
+            pixel_format.update(len(palette).to_bytes(8, "big"))
+            pixel_format.update(palette)
+        if "transparency" in image.info:
+            pixel_format.update(repr(image.info["transparency"]).encode("utf-8"))
+    digests = bytearray()
+    for top in range(0, height, tile_height):
+        for left in range(0, width, tile_width):
+            checkpoint()
+            with (
+                _image_errors("The captured image could not be spatially compared."),
+                image.crop(
+                    (left, top, min(left + tile_width, width), min(top + tile_height, height))
+                ) as tile,
+            ):
+                digests.extend(sha256(tile.tobytes()).digest()[:_TILE_DIGEST_BYTES])
+    checkpoint()
+    return _TileFingerprint(
+        (tile_width, tile_height), (columns, rows), pixel_format.digest(), bytes(digests)
+    )
+
+
+def _spatial_change(
+    since: str | None,
+    status: str,
+    prior: _Frame | None,
+    options: _Options,
+    sample: _Sample,
+    tiles: _TileFingerprint,
+) -> dict[str, object]:
+    result: dict[str, object] = {"status": "unavailable", "reference_frame_id": since}
+    if status != "valid" or prior is None:
+        return {**result, "reason": status}
+    if prior.options.scope != options.scope:
+        return {**result, "reason": "scope_changed"}
+    if prior.options.region != options.region:
+        return {**result, "reason": "region_changed"}
+    if prior.fingerprint.bounds != sample.fingerprint.bounds:
+        return {**result, "reason": "capture_bounds_changed"}
+    if prior.fingerprint == sample.fingerprint:
+        return {"status": "unchanged", "reference_frame_id": since}
+    if prior.tiles.format_digest != tiles.format_digest:
+        return {**result, "reason": "pixel_format_changed"}
+    if prior.tiles.tile_size != tiles.tile_size or prior.tiles.grid_size != tiles.grid_size:
+        return {**result, "reason": "tile_grid_changed"}
+
+    columns, rows = tiles.grid_size
+    first_column, first_row, last_column, last_row = columns, rows, -1, -1
+    changed_tiles = 0
+    for index in range(columns * rows):
+        offset = index * _TILE_DIGEST_BYTES
+        end = offset + _TILE_DIGEST_BYTES
+        if prior.tiles.digests[offset:end] != tiles.digests[offset:end]:
+            column, row = index % columns, index // columns
+            first_column, last_column = min(first_column, column), max(last_column, column)
+            first_row, last_row = min(first_row, row), max(last_row, row)
+            changed_tiles += 1
+    if not changed_tiles:
+        # Tile digests guide inspection; only the full-resolution digest decides equality.
+        return {**result, "reason": "unlocalized_change"}
+    left, top, right, bottom = sample.fingerprint.bounds
+    tile_width, tile_height = tiles.tile_size
+    bounds = (
+        left + first_column * tile_width,
+        top + first_row * tile_height,
+        min(right, left + (last_column + 1) * tile_width),
+        min(bottom, top + (last_row + 1) * tile_height),
+    )
+    inspection = (
+        max(left, bounds[0] - _INSPECTION_MARGIN),
+        max(top, bounds[1] - _INSPECTION_MARGIN),
+        min(right, bounds[2] + _INSPECTION_MARGIN),
+        min(bottom, bounds[3] + _INSPECTION_MARGIN),
+    )
+    return {
+        "status": "available",
+        "reference_frame_id": since,
+        "coordinate_space": "physical_desktop_pixels",
+        "rect_format": "left_top_right_bottom_exclusive",
+        "tile_size": list(tiles.tile_size),
+        "changed_tiles": changed_tiles,
+        "total_tiles": columns * rows,
+        "approximate_bounds": list(bounds),
+        "inspection_region": list(inspection),
+    }
+
+
 class VisionService:
     """Capture, encode, and resolve bounded-lifetime observations.
 
     The caller serializes this service with input operations. Checkpoints and
     revision checks also reject revocation or input races during expensive work.
-    Only full-resolution fingerprints and geometry are cached, never images.
+    Only full-resolution/tile fingerprints and geometry are cached, never images.
 
     ``since`` is an image-reuse hint, not an action authorization. Input revision
     changes invalidate actions but retain image fingerprints until expiry,
@@ -316,6 +430,11 @@ class VisionService:
         Images fit ``max_dimension`` (1..4096), then a 750,000-byte budget.
         Budget-driven JPEG quality reductions and resizing are explicit in the
         returned metadata; coordinate conversion always uses the actual output.
+
+        ``spatial_change`` compares only the final sample to a compatible ``since``.
+        At most 16x16 full-resolution tile hashes suggest one approximate physical
+        bounding box and a crop padded by 32 pixels within the capture. It does
+        not identify controls, application outcomes, or intermediate changes.
         """
         if not isinstance(scope, str) or scope not in ("active", "desktop"):
             raise ValueError("scope must be 'active' or 'desktop'.")
@@ -415,6 +534,13 @@ class VisionService:
 
             polling_finished = self._now()
             status = self._since_status(since, prior, options, sample)
+            spatial_started = self._now()
+            if prior is not None and status == "valid" and prior.fingerprint == sample.fingerprint:
+                tiles = prior.tiles
+            else:
+                tiles = _tile_fingerprint(sample.image, lambda: self._guard(revision, epoch))
+                stats.spatial_tiles_hashed = tiles.grid_size[0] * tiles.grid_size[1]
+            stats.spatial_seconds += self._now() - spatial_started
             reusable = (
                 prior is not None
                 and status == "valid"
@@ -433,12 +559,16 @@ class VisionService:
                 self._validate_sample(sample, scope, revision, epoch, stats)
                 status = self._since_status(since, prior, options, sample)
 
+            spatial_started = self._now()
+            spatial_change = _spatial_change(since, status, prior, options, sample, tiles)
+            stats.spatial_seconds += self._now() - spatial_started
             identifier = uuid4().hex
             image_frame_id = prior.image_frame_id if payload is None and prior else identifier
             frame = _Frame(
                 options,
                 sample.context,
                 sample.fingerprint,
+                tiles,
                 sample.captured_at,
                 revision,
                 details,
@@ -494,6 +624,7 @@ class VisionService:
                 "image_frame_id": image_frame_id,
                 "reused_from": since if payload is None else None,
                 "since_status": status,
+                "spatial_change": spatial_change,
                 "since_input_revision": prior.input_revision if prior is not None else None,
                 "encoding": details.encoding,
                 "requested_encoding": encoding,
@@ -517,6 +648,7 @@ class VisionService:
                 "context_check_count": stats.context_check_count,
                 "changed_samples": stats.changed_samples,
                 "encoding_attempts": stats.encoding_attempts,
+                "spatial_tiles_hashed": stats.spatial_tiles_hashed,
                 "poll_deadline_overrun_seconds": (
                     max(0.0, polling_finished - active_deadline) if settle > 0 else 0.0
                 ),
@@ -524,6 +656,7 @@ class VisionService:
                     "capture_seconds": stats.capture_seconds,
                     "context_seconds": stats.context_seconds,
                     "comparison_seconds": stats.comparison_seconds,
+                    "spatial_seconds": stats.spatial_seconds,
                     "encoding_seconds": stats.encoding_seconds,
                     "wait_seconds": stats.wait_seconds,
                     "polling_seconds": polling_finished - started,

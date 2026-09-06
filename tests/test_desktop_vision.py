@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from io import BytesIO
+import json
 import math
 from random import Random
 from types import SimpleNamespace
@@ -468,8 +469,296 @@ def test_full_resolution_single_pixel_change_cannot_hide_in_a_thumbnail(
     assert second.image is not None
     assert second.metadata["image_changed"] is True
     assert second.metadata["pixels_changed"] is True
+    assert second.metadata["spatial_change"]["approximate_bounds"] == [384, 64, 448, 128]
     assert source.getpixel((400, 90)) == (0, 0, 0)
     source.close()
+
+
+@pytest.mark.parametrize("max_dimension", [16, 128])
+@pytest.mark.parametrize(
+    ("points", "expected", "changed_tiles"),
+    [
+        ([(0, 0)], [-301, -99, -237, -35], 1),
+        ([(400, 90)], [83, -35, 147, 29], 1),
+        ([(500, 298)], [147, 157, 200, 200], 1),
+        ([(63, 63), (64, 64)], [-301, -99, -173, 29], 2),
+        ([(0, 0), (500, 298)], [-301, -99, 200, 200], 2),
+    ],
+)
+def test_spatial_change_uses_exact_tile_geometry_not_encoded_image_coordinates(
+    rig: Rig,
+    max_dimension: int,
+    points: list[tuple[int, int]],
+    expected: list[int],
+    changed_tiles: int,
+) -> None:
+    crop = (-301, -99, 200, 200)
+    with Image.new("RGB", (501, 299), "white") as source:
+        rig.provider.render = lambda bounds, count: source
+        first = rig.vision.observe(region=crop, max_dimension=max_dimension, settle=0)
+        for point in points:
+            source.putpixel(point, (0, 0, 0))
+        rig.revision += 1
+        current = rig.vision.observe(
+            region=crop, max_dimension=max_dimension, since=first.frame_id, settle=0
+        )
+    guidance = current.metadata["spatial_change"]
+    assert guidance == {
+        "status": "available",
+        "reference_frame_id": first.frame_id,
+        "coordinate_space": "physical_desktop_pixels",
+        "rect_format": "left_top_right_bottom_exclusive",
+        "tile_size": [64, 64],
+        "changed_tiles": changed_tiles,
+        "total_tiles": 40,
+        "approximate_bounds": expected,
+        "inspection_region": [
+            max(crop[0], expected[0] - 32),
+            max(crop[1], expected[1] - 32),
+            min(crop[2], expected[2] + 32),
+            min(crop[3], expected[3] + 32),
+        ],
+    }
+    assert current.metadata["pixels_changed"] is True
+    assert current.metadata["capture_count"] == current.metadata["encoding_attempts"] == 1
+    assert len(rig.provider.calls) == 2
+    assert rig.vision.resolve(current.frame_id, (0, 0)) == crop[:2]
+    with pytest.raises(StaleFrameError, match="Input changed"):
+        rig.vision.resolve(first.frame_id, (0, 0))
+    assert len(json.dumps(guidance, separators=(",", ":")).encode()) <= 512
+
+
+def test_spatial_inspection_crop_can_return_a_tiny_change_at_native_resolution(rig: Rig) -> None:
+    crop = (-301, -99, 200, 200)
+    with Image.new("RGB", (501, 299), "white") as source:
+        rig.provider.render = lambda bounds, count: source.crop(
+            (
+                bounds[0] - crop[0],
+                bounds[1] - crop[1],
+                bounds[2] - crop[0],
+                bounds[3] - crop[1],
+            )
+        )
+        first = rig.vision.observe(region=crop, max_dimension=16, settle=0)
+        source.putpixel((400, 90), (0, 0, 0))
+        current = rig.vision.observe(region=crop, max_dimension=16, since=first.frame_id, settle=0)
+        assert current.metadata["image_dimensions"] == [16, 10]
+        inspection = current.metadata["spatial_change"]["inspection_region"]
+        assert inspection == [51, -67, 179, 61]
+        inspected = rig.vision.observe(region=inspection, settle=0)
+    assert inspected.metadata["image_dimensions"] == [128, 128]
+    with decoded(inspected) as image:
+        assert image.getpixel((48, 58)) == (0, 0, 0)
+    assert rig.vision.resolve(inspected.frame_id, (48, 58)) == (99, -9)
+    assert rig.provider.calls == [("active", crop), ("active", crop), ("active", tuple(inspection))]
+
+
+@pytest.mark.parametrize("scope", ["active", "desktop"])
+@pytest.mark.parametrize("shape", [(1, 1), (1, 129), (129, 1), (1031, 1031)])
+def test_spatial_tiles_bound_hash_storage_and_cover_every_source_pixel_once(
+    rig: Rig, monkeypatch, scope: str, shape: tuple[int, int]
+) -> None:
+    bounds = (-37, -19, shape[0] - 37, shape[1] - 19)
+    rig.provider.current = CaptureContext(17, bounds, bounds, display_bounds=(bounds,))
+    rig.vision = rig.service(max_frames=2)
+    with Image.new("RGB", shape, "white") as source:
+        original = Image.Image.tobytes
+        hashed_sizes = []
+
+        def tobytes(image, *args, **kwargs):
+            result = original(image, *args, **kwargs)
+            hashed_sizes.append(len(result))
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Image.Image, "tobytes", tobytes)
+            tiles = vision._tile_fingerprint(source, lambda: None)
+        assert len(hashed_sizes) == tiles.grid_size[0] * tiles.grid_size[1] <= 256
+        assert sum(hashed_sizes) == shape[0] * shape[1] * 3
+        assert max(hashed_sizes) <= tiles.tile_size[0] * tiles.tile_size[1] * 3
+        assert len(tiles.digests) == len(hashed_sizes) * 16 <= 4096
+        assert len(tiles.format_digest) == 32
+        rig.provider.render = lambda bounds, count: source
+        first = current = rig.vision.observe(scope=scope, max_dimension=16, settle=0)
+        first_tiles = rig.vision._frames[first.frame_id].tiles
+        alias = rig.vision.observe(scope=scope, max_dimension=16, since=first.frame_id, settle=0)
+        assert rig.vision._frames[alias.frame_id].tiles is first_tiles
+        assert alias.metadata["spatial_tiles_hashed"] == 0
+        for value in (1, 2, 3):
+            source.putpixel((shape[0] - 1, shape[1] - 1), (value, 0, 0))
+            current = rig.vision.observe(
+                scope=scope, max_dimension=16, since=alias.frame_id, settle=0
+            )
+            alias = current
+            assert len(rig.vision._frames) == 2
+            for frame in rig.vision._frames.values():
+                assert len(frame.tiles.digests) <= 4096
+                assert not any(isinstance(item, Image.Image) for item in vars(frame).values())
+                assert not any(isinstance(item, Image.Image) for item in vars(frame.tiles).values())
+    assert first.frame_id not in rig.vision._frames
+    assert current.metadata["spatial_change"]["approximate_bounds"][2:] == list(bounds[2:])
+    rig.vision.invalidate()
+    assert not rig.vision._frames
+
+
+def test_spatial_hashing_runs_only_on_final_samples_and_skips_unchanged_reuse(
+    rig: Rig, monkeypatch
+) -> None:
+    original = vision._tile_fingerprint
+    hashed_at = []
+
+    def fingerprint(image, checkpoint):
+        hashed_at.append(rig.clock.value)
+        return original(image, checkpoint)
+
+    monkeypatch.setattr(vision, "_tile_fingerprint", fingerprint)
+    first = rig.vision.observe(wait_for_change=0.2)
+    assert first.metadata["capture_count"] > 3
+    assert hashed_at == [rig.clock.value]
+    assert first.metadata["spatial_change"]["reason"] == "not_provided"
+    hashed_at.clear()
+    unchanged = rig.vision.observe(since=first.frame_id, wait_for_change=0.2)
+    assert unchanged.metadata["capture_count"] > 3
+    assert (
+        unchanged.metadata["spatial_tiles_hashed"] == unchanged.metadata["encoding_attempts"] == 0
+    )
+    assert unchanged.image is None
+    assert not hashed_at
+    change_at = rig.clock.value + 0.12
+
+    def render(bounds, count):
+        image = Image.new("RGB", (200, 120), (36, 40, 44))
+        if rig.clock.value >= change_at:
+            image.putpixel((70, 80), (255, 255, 255))
+        return image
+
+    rig.provider.render = render
+    changed = rig.vision.observe(since=unchanged.frame_id, wait_for_change=0.5)
+    assert changed.metadata["capture_count"] > 3
+    assert changed.metadata["spatial_tiles_hashed"] == 8
+    assert changed.metadata["encoding_attempts"] == 1
+    assert hashed_at == [rig.clock.value]
+    assert changed.metadata["spatial_change"]["approximate_bounds"] == [74, 84, 138, 140]
+
+
+def test_spatial_hash_cost_is_reported_without_changing_capture_timing(
+    rig: Rig, monkeypatch
+) -> None:
+    original = vision._tile_fingerprint
+
+    def fingerprint(image, checkpoint):
+        result = original(image, checkpoint)
+        rig.clock.value += 0.125
+        return result
+
+    monkeypatch.setattr(vision, "_tile_fingerprint", fingerprint)
+    observation = rig.vision.observe(settle=0)
+    assert observation.metadata["capture_count"] == observation.metadata["encoding_attempts"] == 1
+    assert observation.metadata["timings"]["capture_seconds"] == 0
+    assert observation.metadata["timings"]["comparison_seconds"] == 0
+    assert observation.metadata["timings"]["spatial_seconds"] == 0.125
+    assert observation.metadata["timings"]["total_seconds"] == 0.125
+
+
+@pytest.mark.parametrize(
+    ("settings", "reason"),
+    [
+        ({"scope": "desktop"}, "scope_changed"),
+        ({"region": (10, 20, 210, 140)}, "region_changed"),
+        ({"region": (20, 30, 200, 130)}, "region_changed"),
+    ],
+)
+def test_spatial_guidance_is_explicitly_unavailable_for_a_different_capture(
+    rig: Rig, settings: dict[str, object], reason: str
+) -> None:
+    first = rig.vision.observe(settle=0)
+    current = rig.vision.observe(since=first.frame_id, settle=0, **settings)
+    assert current.metadata["spatial_change"] == {
+        "status": "unavailable",
+        "reference_frame_id": first.frame_id,
+        "reason": reason,
+    }
+    assert current.image is not None
+
+
+def test_spatial_guidance_rejects_actual_bounds_mismatch_even_when_request_is_equal(
+    rig: Rig, monkeypatch
+) -> None:
+    first = rig.vision.observe(settle=0)
+    context = rig.provider.current
+    monkeypatch.setattr(
+        rig.provider,
+        "capture",
+        lambda **kwargs: RawCapture(
+            Image.new("RGB", (100, 80)), (0, 0, 100, 80), context, rig.clock()
+        ),
+    )
+    current = rig.vision.observe(since=first.frame_id, settle=0)
+    assert current.metadata["spatial_change"] == {
+        "status": "unavailable",
+        "reference_frame_id": first.frame_id,
+        "reason": "capture_bounds_changed",
+    }
+
+
+def test_spatial_guidance_maps_actual_bounds_instead_of_the_requested_crop(
+    rig: Rig, monkeypatch
+) -> None:
+    context = rig.provider.current
+    requested = (-70, -60, 70, 60)
+    actual = (-50, -40, 50, 40)
+    with Image.new("RGB", (100, 80), "white") as source:
+        monkeypatch.setattr(
+            rig.provider,
+            "capture",
+            lambda **kwargs: RawCapture(source, actual, context, rig.clock()),
+        )
+        first = rig.vision.observe(region=requested, max_dimension=50, settle=0)
+        source.putpixel((80, 70), (0, 0, 0))
+        current = rig.vision.observe(
+            region=requested, max_dimension=50, since=first.frame_id, settle=0
+        )
+    assert current.metadata["requested_region"] == list(requested)
+    assert current.metadata["capture_bounds"] == list(actual)
+    assert current.metadata["spatial_change"]["approximate_bounds"] == [14, 24, 50, 40]
+    assert current.metadata["spatial_change"]["inspection_region"] == [-18, -8, 50, 40]
+
+
+@pytest.mark.parametrize("settings", [{"quality": 50}, {"encoding": "jpeg"}, {"max_dimension": 16}])
+def test_encoding_changes_do_not_invent_spatial_changes_or_rehash_pixels(
+    rig: Rig, monkeypatch, settings: dict[str, object]
+) -> None:
+    first = rig.vision.observe(settle=0)
+    monkeypatch.setattr(
+        vision, "_tile_fingerprint", lambda *args: pytest.fail("Equal pixels need no tile hashing.")
+    )
+    current = rig.vision.observe(since=first.frame_id, settle=0, **settings)
+    assert current.metadata["spatial_change"] == {
+        "status": "unchanged",
+        "reference_frame_id": first.frame_id,
+    }
+    assert current.image is not None
+    assert current.metadata["pixels_changed"] is False
+    assert current.metadata["spatial_tiles_hashed"] == 0
+    assert current.metadata["capture_count"] == current.metadata["encoding_attempts"] == 1
+
+
+def test_full_resolution_change_remains_true_even_if_tile_hashes_cannot_localize(
+    rig: Rig, monkeypatch
+) -> None:
+    first = rig.vision.observe(settle=0)
+    original_tiles = rig.vision._frames[first.frame_id].tiles
+    monkeypatch.setattr(vision, "_tile_fingerprint", lambda image, checkpoint: original_tiles)
+    rig.provider.render = lambda bounds, count: Image.new("RGB", (200, 120), "white")
+    current = rig.vision.observe(since=first.frame_id, settle=0)
+    assert current.metadata["spatial_change"] == {
+        "status": "unavailable",
+        "reference_frame_id": first.frame_id,
+        "reason": "unlocalized_change",
+    }
+    assert current.metadata["pixels_changed"] is True
+    assert current.metadata["change_detected"] is True
+    assert current.image is not None
 
 
 @pytest.mark.parametrize("change", ["palette", "transparency", "mode"])
@@ -489,6 +778,11 @@ def test_pixel_comparison_includes_palette_transparency_and_mode(rig: Rig, chang
     second = rig.vision.observe(since=first.frame_id, settle=0)
     assert second.image is not None
     assert second.metadata["pixels_changed"] is True
+    assert second.metadata["spatial_change"] == {
+        "status": "unavailable",
+        "reference_frame_id": first.frame_id,
+        "reason": "pixel_format_changed",
+    }
     source.close()
 
 
@@ -536,6 +830,7 @@ def test_input_revision_invalidates_action_references(rig: Rig, method: str) -> 
         ("ttl", "expired"),
         ("context", "context_changed"),
         ("eviction", "unknown_or_evicted"),
+        ("invalidation", "unknown_or_evicted"),
         ("unknown", "unknown_or_evicted"),
     ],
 )
@@ -553,6 +848,8 @@ def test_stale_since_is_a_fresh_capture_not_a_success_shaped_fallback(
         rig.provider.current = replace(rig.provider.current, window_id=29)
     elif change == "eviction":
         rig.vision.observe(settle=0)
+    elif change == "invalidation":
+        rig.vision.invalidate()
     else:
         since = "not-a-cached-frame"
     current = rig.vision.observe(since=since, settle=0)
@@ -560,6 +857,11 @@ def test_stale_since_is_a_fresh_capture_not_a_success_shaped_fallback(
     assert current.metadata["since_status"] == status
     assert current.metadata["image_frame_id"] == current.frame_id
     assert current.metadata["input_revision"] == rig.revision
+    assert current.metadata["spatial_change"] == {
+        "status": "unavailable",
+        "reference_frame_id": since,
+        "reason": status,
+    }
     with decoded(current) as image:
         assert image.size == (200, 120)
 
@@ -644,6 +946,7 @@ def test_expiring_since_during_wait_requires_fresh_bytes(rig: Rig) -> None:
     assert observation.image is not None
     assert observation.metadata["since_status"] == "expired"
     assert observation.metadata["timed_out"] is True
+    assert observation.metadata["spatial_change"]["reason"] == "expired"
     assert rig.vision.resolve(observation.frame_id, (0, 0)) == (10, 20)
 
 
@@ -665,7 +968,34 @@ def test_since_expiring_during_delivery_is_reencoded_before_returning(rig: Rig) 
     assert observation.metadata["since_status"] == "expired"
     assert observation.metadata["encoding_attempts"] == 1
     assert observation.metadata["capture_count"] == 1
+    assert observation.metadata["spatial_change"]["reason"] == "expired"
     assert rig.vision.resolve(observation.frame_id, (0, 0)) == (10, 20)
+
+
+def test_reference_expiring_during_tile_hashing_never_receives_change_bounds(
+    rig: Rig, monkeypatch
+) -> None:
+    rig.vision = rig.service(max_age=1.0)
+    first = rig.vision.observe(settle=0)
+    rig.clock.value += 0.9
+    original = vision._tile_fingerprint
+
+    def fingerprint(image, checkpoint):
+        result = original(image, checkpoint)
+        rig.clock.value += 0.2
+        return result
+
+    monkeypatch.setattr(vision, "_tile_fingerprint", fingerprint)
+    rig.provider.render = lambda bounds, count: Image.new("RGB", (200, 120), "white")
+    current = rig.vision.observe(since=first.frame_id, settle=0)
+    assert current.metadata["spatial_change"] == {
+        "status": "unavailable",
+        "reference_frame_id": first.frame_id,
+        "reason": "expired",
+    }
+    assert current.image is not None
+    assert current.metadata["capture_count"] == current.metadata["encoding_attempts"] == 1
+    assert rig.vision.resolve(current.frame_id, (0, 0)) == (10, 20)
 
 
 def test_invalidate_clears_all_references_without_provider_or_checkpoint_calls(rig: Rig) -> None:
@@ -731,7 +1061,7 @@ def test_races_during_encoding_are_rejected(rig: Rig, monkeypatch, race: str) ->
     assert not rig.vision._frames
 
 
-@pytest.mark.parametrize("stage", ["fingerprint", "encoding"])
+@pytest.mark.parametrize("stage", ["fingerprint", "spatial", "encoding"])
 @pytest.mark.parametrize("error_type", [ValueError, OSError])
 def test_checkpoint_exceptions_are_not_wrapped_as_image_failures(
     rig: Rig, monkeypatch, stage: str, error_type: type[Exception]
@@ -754,6 +1084,16 @@ def test_checkpoint_exceptions_are_not_wrapped_as_image_failures(
             return result
 
         monkeypatch.setattr(vision, "_fingerprint", fingerprint)
+    elif stage == "spatial":
+        original_crop = Image.Image.crop
+
+        def crop(*args: object, **kwargs: object) -> Image.Image:
+            nonlocal cancelled
+            result = original_crop(*args, **kwargs)
+            cancelled = True
+            return result
+
+        monkeypatch.setattr(Image.Image, "crop", crop)
     else:
         original_save = Image.Image.save
 
@@ -766,6 +1106,44 @@ def test_checkpoint_exceptions_are_not_wrapped_as_image_failures(
     with pytest.raises(error_type) as result:
         rig.vision.observe(settle=0)
     assert result.value is error
+    assert not rig.vision._frames
+
+
+@pytest.mark.parametrize("race", ["revision", "invalidation", "window", "ttl", "stop"])
+def test_races_during_tile_hashing_cannot_deliver_or_cache_a_frame(
+    rig: Rig, monkeypatch, race: str
+) -> None:
+    original = vision._tile_fingerprint
+
+    def fingerprint(image, checkpoint):
+        result = original(image, checkpoint)
+        if race == "revision":
+            rig.revision += 1
+        elif race == "invalidation":
+            rig.vision.invalidate()
+        elif race == "window":
+            rig.provider.current = replace(rig.provider.current, window_id=41)
+        elif race == "ttl":
+            rig.clock.value += 60.0
+        else:
+            rig.stopped = True
+        return result
+
+    monkeypatch.setattr(vision, "_tile_fingerprint", fingerprint)
+    with pytest.raises(Stopped if race == "stop" else StaleFrameError):
+        rig.vision.observe(settle=0)
+    assert not rig.vision._frames
+    assert len(rig.provider.calls) == 1
+
+
+def test_tile_hash_image_errors_are_explicit_capture_failures(rig: Rig, monkeypatch) -> None:
+    def fail(*args, **kwargs):
+        raise OSError("Synthetic tile read failure")
+
+    monkeypatch.setattr(Image.Image, "crop", fail)
+    with pytest.raises(CaptureError, match="spatially compared") as error:
+        rig.vision.observe(settle=0)
+    assert isinstance(error.value.__cause__, OSError)
     assert not rig.vision._frames
 
 
@@ -990,6 +1368,11 @@ def test_transient_change_can_finish_with_the_original_image_reused(rig: Rig) ->
     assert observation.metadata["image_changed"] is False
     assert observation.metadata["pixels_changed"] is False
     assert observation.metadata["wait_status"] == "change_detected"
+    assert observation.metadata["spatial_tiles_hashed"] == 0
+    assert observation.metadata["spatial_change"] == {
+        "status": "unchanged",
+        "reference_frame_id": first.frame_id,
+    }
 
 
 @pytest.mark.parametrize("wait_for_change", [0.0, 1.0])

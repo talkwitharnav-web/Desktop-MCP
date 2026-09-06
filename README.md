@@ -46,6 +46,9 @@ resources. There is no separate hardcoded copy to keep synchronized.
 - Cropped, resized, efficiently encoded observations with frame IDs and
   server-side coordinate conversion. Bounded adaptive waits detect changes
   without continuously sending redundant screenshots.
+- Lightweight local image comparisons can point out an approximate changed
+  area and suggest a closer crop for small details. This adds no local AI model
+  and does not pretend to identify controls or understand application outcomes.
 - Optional local image files for clients whose native image reader works but
   whose MCP image-result forwarding does not.
 - Teaching and control in **one armed session**: explain, circle a control,

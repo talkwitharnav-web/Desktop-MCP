@@ -97,6 +97,13 @@ implementation lives under `src/desktop_mcp`.
   already waiting for the controller's sequence lock.
 - A screenshot stores image dimensions, capture bounds, context and input
   revision. Image coordinates include both scale and crop origin when mapped.
+  `vision._tile_fingerprint` adds at most 16x16 tile digests to a frame, not cached
+  screenshots. Only the final sample is spatially hashed; unchanged references
+  reuse those hashes. The full-resolution digest remains the equality authority.
+  `spatial_change` compares compatible final/reference images and reports
+  approximate changed-tile bounds plus a padded inspection crop in physical,
+  half-open LTRB coordinates. It never identifies controls, intermediate events
+  or successful application outcomes; incompatible references carry a reason.
 - A request's shape is validated before emitting input. Failure after partial
   execution reports completed actions and does not replay them.
   Zero duration is rejected for every action that moves to a coordinate, not

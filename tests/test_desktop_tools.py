@@ -16,6 +16,7 @@ from desktop_mcp.runtime import Controller
 from desktop_mcp.image_files import ImageFiles
 from desktop_mcp.teaching import TeachingSession
 from desktop_mcp.interaction import Interaction, host_identity
+from desktop_mcp.tools import observation_result
 from tests.test_desktop_runtime import FakeInput
 
 
@@ -269,6 +270,83 @@ async def test_batch_returns_one_image_after_multiple_actions():
         assert decoded.getpixel((7, 9)) == (10, 20, 30)
         assert len(result.structured_content["actions"]) == 3
         assert application.vision.calls == 1
+
+
+@pytest.mark.parametrize("scope", ["active", "desktop"])
+@pytest.mark.parametrize("detail", ["compact", "full"])
+def test_spatial_hint_preserves_coordinates_metadata_and_image(scope, detail):
+    output = io.BytesIO()
+    with Image.new("RGB", (40, 30), "#727272") as image:
+        image.save(output, format="PNG")
+    guidance = {
+        "status": "available",
+        "reference_frame_id": "earlier-frame",
+        "coordinate_space": "physical_desktop_pixels",
+        "rect_format": "left_top_right_bottom_exclusive",
+        "approximate_bounds": [-150, 100, -86, 164],
+        "inspection_region": [-182, 68, -54, 196],
+    }
+    metadata = {
+        "scope": scope,
+        "image_dimensions": [40, 30],
+        "capture_bounds": [-300, 0, 100, 300],
+        "spatial_change": guidance,
+    }
+    observation = Observation("current-frame", metadata, output.getvalue(), "image/png")
+    result = observation_result(observation, detail=detail)
+    assert result.structured_content["observation"]["spatial_change"] == guidance
+    assert result.structured_content["frame_id"] == "current-frame"
+    assert base64.b64decode(result.content[1].data) == output.getvalue()
+    text = result.content[0].text
+    if detail == "compact":
+        assert "Approximate pixel-change area: [-150, 100, -86, 164]" in text
+        assert "physical desktop pixels" in text
+        assert f"Screenshot(scope={scope!r}, region=[-182, 68, -54, 196])" in text
+        assert "not a detected control" in text
+    else:
+        assert text.startswith("{")
+        assert '"spatial_change"' in text
+        assert "If detail is unclear" not in text
+
+
+@pytest.mark.parametrize(
+    "guidance",
+    [
+        {"status": "unavailable", "reason": "not_provided"},
+        {"status": "unchanged", "reference_frame_id": "earlier-frame"},
+        {
+            "status": "available",
+            "approximate_bounds": [0, 0, 40, 30],
+            "inspection_region": [0, 0, 40, 30],
+        },
+    ],
+)
+def test_compact_guidance_does_not_request_a_redundant_full_capture(guidance):
+    observation = Observation(
+        "current-frame",
+        {
+            "capture_bounds": [0, 0, 40, 30],
+            "spatial_change": guidance,
+            "image_frame_id": "earlier-frame",
+        },
+        None,
+        "image/png",
+    )
+    result = observation_result(observation)
+    assert "Screenshot(" not in result.content[0].text
+    assert "Image unchanged; reuse earlier-frame" in result.content[0].text
+    assert len(result.content) == 1
+
+
+def test_budget_reduction_explains_how_to_inspect_small_text():
+    output = io.BytesIO()
+    with Image.new("RGB", (40, 30)) as image:
+        image.save(output, format="PNG")
+    observation = Observation(
+        "current-frame", {"budget_downscaled": True}, output.getvalue(), "image/png"
+    )
+    text = observation_result(observation).content[0].text
+    assert "crop the relevant area for small text" in text
 
 
 async def test_stop_latches_across_subsequent_mcp_calls():

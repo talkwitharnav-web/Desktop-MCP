@@ -75,6 +75,23 @@ def observation_result(
                 if observation.image is None
                 else "Inspect the image before choosing the next action; use frame_id for its coordinates."
             )
+            change = frame.get("spatial_change")
+            if (
+                isinstance(change, dict)
+                and change.get("status") == "available"
+                and change["inspection_region"] != frame.get("capture_bounds")
+            ):
+                lines.append(
+                    f"Approximate pixel-change area: {change['approximate_bounds']} "
+                    "(physical desktop pixels). If detail is unclear, use "
+                    f"Screenshot(scope={frame.get('scope', 'active')!r}, "
+                    f"region={change['inspection_region']}). This is not a detected control."
+                )
+            elif observation.image is not None and frame.get("budget_downscaled"):
+                lines.append(
+                    "Image reduced to fit its byte budget; crop the relevant area "
+                    "for small text instead of guessing."
+                )
         if metadata.get("observation_due"):
             lines.append(
                 "Observation due: check the last action before a long wait or completion claim."

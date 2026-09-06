@@ -166,6 +166,19 @@ visual check until after a long narration, research handoff or transcript wait.
 region for loading/saving indicators instead of waiting for a whole animated
 screen to become still. A settlement timeout does not prove the app is stuck.
 
+`observation.spatial_change` adds lightweight local pixel-comparison guidance.
+When its status is `available`, `approximate_bounds` identifies the changed
+tiles and `inspection_region` suggests a padded detail crop. Both are physical
+desktop `[left, top, right, bottom]` coordinates with exclusive right/bottom
+edges, not coordinates in the resized image. Inspect the returned image first;
+if relevant detail is unclear, use `Screenshot` with that region and the same
+scope, then use the crop's new frame id for targeting. Do not take another image
+automatically when the current one already answers the question.
+These bounds are not detected controls or semantic understanding. They compare
+the final image with a compatible reference, not every intermediate state.
+`unchanged` does not prove that nothing happened between images; `unavailable`
+has an explicit reason and is not itself a failed screenshot.
+
 Input delivery, returned pixels and the application's outcome are different.
 Check that the dialog really closed, the expected text is visible, or the actual
 saved-state indicator completed. `Saving...`, a search match count, an input
