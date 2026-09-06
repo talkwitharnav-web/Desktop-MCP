@@ -60,6 +60,24 @@ def test_drag_uses_the_grab_offset_instead_of_jumping_the_thumb_center(fraction)
     assert thumb.grab_fraction(pointer) == pytest.approx(fraction)
 
 
+@pytest.mark.parametrize("position", [1, 1000, 2991])
+@pytest.mark.parametrize("fraction", [0.0, 0.5, 0.95])
+def test_anchored_drag_preserves_exact_positions_and_still_reaches_edges(position, fraction):
+    state = ScrollState(3001, 9, position)
+    thumb = thumb_geometry(state, 206, 1)
+    pointer = thumb.top + min(thumb.length - 1, round(fraction * thumb.length))
+    grab = thumb.grab_fraction(pointer)
+    origin = pointer, position
+    assert dragged_position(state, thumb, pointer, grab, origin=origin) == position
+    assert dragged_position(state, thumb, -100, grab, origin=origin) == 0
+    assert dragged_position(state, thumb, 1000, grab, origin=origin) == state.maximum
+    moved = dragged_position(state, thumb, pointer + 8, grab, origin=origin)
+    assert moved >= position
+    moved_state = ScrollState(state.lines, state.page, moved)
+    moved_thumb = thumb_geometry(moved_state, 206, 1)
+    assert dragged_position(moved_state, moved_thumb, pointer, grab, origin=origin) == position
+
+
 def test_partial_wheel_events_accumulate_and_opposite_motion_cancels():
     assert wheel_movement(0, 30, 3, 10) == (0, 30)
     assert wheel_movement(30, 30, 3, 10) == (0, 60)

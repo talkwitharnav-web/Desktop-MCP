@@ -854,6 +854,24 @@ def test_inner_thumb_grab_does_not_jump_and_reaches_both_ends_with_signed_client
     assert y >= 0
 
 
+@pytest.mark.parametrize("fraction", [0.0, 0.5, 0.95])
+@pytest.mark.parametrize("gesture", ["release", "stationary-move", "away-and-back"])
+def test_inner_thumb_preserves_unrounded_position_at_its_grab_origin(chat, fraction, gesture):
+    history, native, _, _ = chat
+    history.set_entries(entries(1, text="line\n" * 3000), animate=False)
+    bubble = history._bubbles[1]
+    history._scroll_text_to(bubble, 1000)
+    y = grab_thumb(history, native, bubble, fraction)
+    if gesture == "away-and-back":
+        native.SendMessage(bubble.scrollbar, con.WM_MOUSEMOVE, con.MK_LBUTTON, point(3, y + 8))
+        assert history._text_scroll_state(bubble).position > 1000
+    if gesture != "release":
+        native.SendMessage(bubble.scrollbar, con.WM_MOUSEMOVE, con.MK_LBUTTON, point(3, y))
+    native.SendMessage(bubble.scrollbar, con.WM_LBUTTONUP, 0, point(3, y))
+    assert history._text_scroll_state(bubble).position == 1000
+    assert native.GetCapture() == 0
+
+
 def test_inner_track_pages_once_without_turning_the_click_into_a_thumb_jump(chat):
     history, native, _, _ = chat
     history.set_entries(entries(1, text="line\n" * 500), animate=False)

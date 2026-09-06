@@ -78,10 +78,27 @@ def thumb_geometry(state: ScrollState, height: int, scale: float) -> Thumb:
     return Thumb(inset, track, top, length)
 
 
-def dragged_position(state: ScrollState, thumb: Thumb, y: int, grab_fraction: float) -> int:
+def dragged_position(
+    state: ScrollState,
+    thumb: Thumb,
+    y: int,
+    grab_fraction: float,
+    *,
+    origin: tuple[int, int] | None = None,
+) -> int:
     if not thumb.travel or not state.maximum:
         return state.clamp(state.position)
     top = y - max(0.0, min(1.0, grab_fraction)) * thumb.length
+    if origin is not None:
+        start_y, start_position = origin
+        if y == start_y:
+            return state.clamp(start_position)
+        if top <= thumb.track_top:
+            return 0
+        if top >= thumb.track_top + thumb.travel:
+            return state.maximum
+        # Preserve the exact reading offset instead of inverting a rounded thumb position.
+        return state.clamp(start_position + round((y - start_y) * state.maximum / thumb.travel))
     return state.clamp(round((top - thumb.track_top) * state.maximum / thumb.travel))
 
 

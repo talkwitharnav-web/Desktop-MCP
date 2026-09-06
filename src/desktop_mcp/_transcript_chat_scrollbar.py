@@ -18,6 +18,7 @@ class InnerScrollbars:
         self.owner = owner
         self.held = 0
         self._grab: float | None = None
+        self._origin: tuple[int, int] | None = None
 
     def sync(self, bubble: _Bubble) -> None:
         state = self.owner._text_scroll_state(bubble)
@@ -31,7 +32,7 @@ class InnerScrollbars:
         if not self.held or (handle is not None and handle != self.held):
             return
         owner, held = self.owner, self.held
-        self.held, self._grab = 0, None
+        self.held, self._grab, self._origin = 0, None, None
         if owner._gui.GetCapture() == held:
             owner._gui.ReleaseCapture()
         if repaint and not owner._closing and owner._gui.IsWindow(held):
@@ -61,7 +62,9 @@ class InnerScrollbars:
         state = owner._text_scroll_state(bubble)
         height = owner._gui.GetClientRect(bubble.scrollbar)[3]
         thumb = thumb_geometry(state, height, owner._scale)
-        owner._scroll_text_to(bubble, dragged_position(state, thumb, y, self._grab))
+        owner._scroll_text_to(
+            bubble, dragged_position(state, thumb, y, self._grab, origin=self._origin)
+        )
 
     def procedure(self, handle: int, message: int, wparam: int, lparam: int) -> int:
         owner = self.owner
@@ -149,9 +152,11 @@ class InnerScrollbars:
             thumb = thumb_geometry(state, gui.GetClientRect(handle)[3], owner._scale)
             if thumb.top <= y < thumb.bottom:
                 self._grab = thumb.grab_fraction(y)
+                self._origin = y, state.position
                 owner._notify()
             else:
                 self._grab = None
+                self._origin = None
                 self._command(bubble, 2 if y < thumb.top else 3)
             gui.InvalidateRect(handle, None, False)
             return 0
