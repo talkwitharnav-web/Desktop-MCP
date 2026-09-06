@@ -1,6 +1,7 @@
 import base64
 import asyncio
 import io
+import json
 import sys
 from dataclasses import replace
 from types import SimpleNamespace
@@ -347,6 +348,99 @@ def test_budget_reduction_explains_how_to_inspect_small_text():
     )
     text = observation_result(observation).content[0].text
     assert "crop the relevant area for small text" in text
+
+
+def test_observations_summarize_only_known_hidden_chat_children():
+    surfaces = [
+        {
+            "window_id": 100,
+            "root_id": 100,
+            "role": "transcript",
+            "status": "ok",
+            "effective_visible": False,
+        },
+        *(
+            {
+                "window_id": identifier,
+                "root_id": 100,
+                "role": role,
+                "status": "ok",
+                "effective_visible": False,
+            }
+            for identifier, role in enumerate(
+                (
+                    "transcript-history-bubble",
+                    "transcript-history-label",
+                    "transcript-history-text",
+                ),
+                101,
+            )
+        ),
+        {
+            "window_id": 104,
+            "root_id": 100,
+            "role": "transcript-history-text",
+            "status": "ok",
+            "effective_visible": True,
+        },
+        {
+            "window_id": 105,
+            "root_id": 100,
+            "role": "transcript-history-text",
+            "status": "unavailable",
+            "effective_visible": False,
+        },
+        {
+            "window_id": 106,
+            "root_id": None,
+            "role": "transcript-history-text",
+            "status": "ok",
+            "effective_visible": False,
+        },
+        {
+            "window_id": 107,
+            "root_id": 100,
+            "role": "transcript-composer",
+            "status": "ok",
+            "effective_visible": False,
+        },
+    ]
+    observation = Observation("current-frame", {}, None, "image/png")
+    result = observation_result(observation, protected_windows=surfaces)
+    reported = result.structured_content["observation"]
+    assert reported["hidden_chat_controls_omitted"] == 3
+    assert [row["window_id"] for row in reported["protected_windows"]] == [100, 104, 105, 106, 107]
+    assert len(surfaces) == 8
+    assert "hidden_chat_controls_omitted" not in observation.metadata
+
+
+async def test_hidden_chat_compaction_keeps_full_status_and_reduces_repeated_payload():
+    application = FixtureApplication(armed=True)
+    surfaces = [
+        {
+            "window_id": identifier,
+            "root_id": 100,
+            "role": "transcript" if identifier == 100 else "transcript-history-text",
+            "bounds": [0, 0, 800, 120],
+            "status": "ok",
+            "effective_visible": identifier in (100, 132),
+        }
+        for identifier in range(100, 133)
+    ]
+    application.backend.protected_windows = lambda: surfaces
+    async with Client(create_server(application)) as client:
+        status = await client.call_tool("DesktopStatus")
+        assert status.data["protected_windows"] == surfaces
+        image = await client.call_tool("Screenshot")
+        metadata = image.structured_content["observation"]
+        assert metadata["hidden_chat_controls_omitted"] == 31
+        assert [row["window_id"] for row in metadata["protected_windows"]] == [100, 132]
+        compact = {
+            "protected_windows": metadata["protected_windows"],
+            "hidden_chat_controls_omitted": metadata["hidden_chat_controls_omitted"],
+        }
+        assert len(json.dumps(compact)) < len(json.dumps(surfaces)) / 5
+        assert application.backend.protected_windows() is surfaces
 
 
 async def test_stop_latches_across_subsequent_mcp_calls():

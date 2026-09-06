@@ -253,7 +253,10 @@ never disable protection or use native/shell input to click through permission U
 
 `DesktopStatus.protected_windows` and each returned image's
 `observation.protected_windows` describe capture-excluded surfaces without
-their text. They are current diagnostic snapshots, not permission to replay an
+their text. Images omit known hidden per-message chat controls and report their
+count in `hidden_chat_controls_omitted`; `DesktopStatus` retains the full inventory.
+Roots, visible controls and uncertain/error records are not summarized away.
+They are current diagnostic snapshots, not permission to replay an
 old click. `DesktopStatus.interaction.last_denial` retains the last attributed
 denial; check its caller/generation rather than treating it as a new failure.
 An armed controller can correctly deny a protected target.

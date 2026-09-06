@@ -64,6 +64,10 @@ implementation lives under `src/desktop_mcp`.
   text and unsent drafts are not diagnostic fields. Status and observations also
   expose content-free `protected_windows` snapshots after capture guards restore
   the local surfaces; these snapshots are not historical replay authorizations.
+  Image responses summarize known hidden per-message chat descendants with
+  `hidden_chat_controls_omitted`, retaining roots, visible controls and uncertain
+  records. Full status and actual target-denial diagnostics remain unfiltered;
+  presentation compaction never changes native protection or HWND registration.
 - After successful focus, only a temporary no-foreground condition is retried
   for at most 0.5 seconds. A different selected window aborts recovery; focus,
   launch and input are never replayed to obtain an image.

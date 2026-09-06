@@ -44,9 +44,28 @@ def observation_result(
     """Keep actual image blocks separate from their structured/text metadata."""
     metadata = dict(extra or {})
     if observation is not None:
+        surfaces = protected_windows or []
+        reported_surfaces = [
+            surface
+            for surface in surfaces
+            if not (
+                surface.get("role")
+                in {
+                    "transcript-history-bubble",
+                    "transcript-history-label",
+                    "transcript-history-text",
+                }
+                and surface.get("status") == "ok"
+                and surface.get("effective_visible") is False
+                and type(surface.get("root_id")) is int
+                and surface["root_id"] > 0
+                and surface["root_id"] != surface.get("window_id")
+            )
+        ]
         metadata["observation"] = {
             **observation.metadata,
-            "protected_windows": protected_windows or [],
+            "protected_windows": reported_surfaces,
+            "hidden_chat_controls_omitted": len(surfaces) - len(reported_surfaces),
         }
         metadata["frame_id"] = observation.frame_id
     if detail == "full":
