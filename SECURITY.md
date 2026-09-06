@@ -22,8 +22,39 @@ This is still real desktop control, not a sandbox or an undo mechanism.
   controls cannot revoke unrelated tools or protect against other software
   already running with the same Windows account's privileges.
 
-Current usage and recovery instructions are in [README.md](README.md). The
-remaining sections below are **retained Windows-MCP engine guidance**, not a
+## Local setup and configuration preservation
+
+`Setup.cmd` and `scripts/setup.ps1` operate on the source folder that contains
+them, not a hardcoded username or drive. They use a compatible existing uv or a
+SHA256-pinned official Windows release, bound downloads/extraction and write only
+the chosen environment/cache and requested per-user integrations. Tree checks
+reject reparse points before traversal, with one narrow exception for uv's
+validated minor-version junction to its plain owned Python patch directory.
+The alias is not traversed; the target is inspected separately. Setup does not
+repair trees by deleting them. It does not elevate, alter machine-wide security policy, start
+desktop control, install a model, or close another application.
+
+`scripts/configure_copilot.py` merges one matching supervised registration.
+Invalid JSON, duplicate keys, conflicting commands and detected concurrent
+changes are errors, not permission to replace the file with an empty config.
+Other servers, environment values and tool restrictions survive the merge.
+
+Configuration may contain credentials. Pending data and original backups receive
+protected Windows permissions at file creation, before any payload is written.
+An independent `.original` copy and a durable `.recovery` record precede a native
+replacement; successful completion is recorded separately. Failed or interrupted
+replacement blocks subsequent setup rather than mistaking a missing file for a
+new configuration, including when a caller changes the filename's capitalization.
+Completion is published only after its protected write and flush succeed.
+There is no automatic rollback over a concurrent writer.
+
+If setup reports recovery required, keep the protected `.original`, `.pending`
+and recovery records private. Reconcile them with any current configuration, then
+follow the reported `.recovery`-to-`.resolved` step. Do not blindly remove recovery
+records or publish these files. Normal successful reruns are idempotent.
+
+Current usage instructions are in [README.md](README.md). The remaining sections
+below are **retained Windows-MCP engine guidance**, not a
 description of Desktop-MCP's currently registered tools or transport.
 
 ## Overview

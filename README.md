@@ -62,8 +62,49 @@ resources. There is no separate hardcoded copy to keep synchronized.
 
 ## Requirements and installation
 
-Use an interactive Windows 10/11 desktop and Python **3.14+**. The package
-metadata, not old upstream installation guides, is authoritative.
+Use an interactive **Windows 10/11 x64 (Intel/AMD)** desktop. The package requires
+Python **3.14+**; the setup script provisions the tested, standard Python 3.14
+runtime for you. Internet access and a writable local installation folder are
+needed for the first setup.
+
+### One-step setup
+
+Extract the complete source ZIP or clone this repository, then double-click
+**`Setup.cmd`**. It prepares this folder's `.venv`, installs the **Desktop-MCP**
+Start-menu shortcut, and registers the supervised server with Copilot CLI.
+Python and uv do not need to be installed beforehand.
+
+Keep the installation folder in place. Use a fresh source download on another
+laptop rather than copying an existing `.venv`. Paths are resolved from the
+script's location; the shortcut and client receive that laptop's computed
+absolute paths so launching works from any working directory.
+
+Setup does not install Copilot, sign in, start the desktop application, or Arm
+control. Open **Desktop-MCP** from Start, then use a new Copilot session or
+reconnect it in `/mcp`. Only you choose **Arm / Resume** locally.
+
+The installer preserves other MCP servers, environment settings, tool
+restrictions and valid longer timeouts. Conflicting installations or invalid
+configuration stop setup rather than being reset. Quit Desktop-MCP normally
+before updating an existing installation; setup never force-closes it.
+
+For a read-only plan or to omit an integration:
+
+```powershell
+.\Setup.cmd -WhatIf
+.\Setup.cmd -SkipCopilot
+.\Setup.cmd -SkipShortcut
+```
+
+`-CopilotConfig` selects another configuration file. Managed downloads and
+Python/cache files stay under the ignored `.desktop-mcp-setup-cache` folder.
+Setup does not add global PATH entries, services, startup tasks or compilers.
+Arbitrary linked/junction installation trees are refused; uv's own managed
+Python alias is accepted only when its plain target is validated inside this
+installation's cache. Configuration recovery behavior is documented in
+[SECURITY.md](SECURITY.md).
+
+### Manual development setup
 
 In PowerShell, inside this checkout:
 

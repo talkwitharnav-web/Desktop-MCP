@@ -177,6 +177,27 @@ resource return the packaged Markdown, even outside the repository directory.
 Distribution inspection must confirm the guide is included in the wheel/source
 archive, not merely present in an editable checkout.
 
+## Portable setup checks
+
+`tests\test_desktop_setup.py` uses owned fixture folders and mocked bootstrap
+processes/network responses; it does not install uv/Python, register a real
+shortcut, or read/write the user's Copilot configuration. Cases cover invocation
+from another working directory, spaces and Unicode, bounded checksum-verified
+downloads, incompatible uv fallback, nested reparse rejection and the narrowly
+validated owned uv Python alias.
+
+Configuration cases cover protected permissions before payload writes, original
+backups and incomplete-commit blocking, case-insensitive Windows recovery names,
+actual `pywintypes.error` handling, completed-marker publication, longer timeouts
+and preservation of other server/settings data. Partial native replacement
+failures are modeled on owned data; never provoke them against live configuration
+or use cleanup/path-selection mutation testing.
+
+Run these with the existing pytest environment. `Setup.cmd -WhatIf` provides a
+read-only installation plan. These checks do not claim a clean-machine bootstrap
+or support for ARM/32-bit Windows. Source-distribution inspection must also find
+`Setup.cmd`, `scripts/setup.ps1` and `scripts/configure_copilot.py`.
+
 ## Safety
 
 Most tests must use injected fake input/capture providers and synthetic images.
