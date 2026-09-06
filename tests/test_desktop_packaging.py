@@ -48,6 +48,13 @@ def test_agent_guide_is_shipped_package_data_and_not_relative_to_cwd(tmp_path, m
     assert read_agent_guide() == expected
 
 
+def test_source_distribution_includes_the_one_step_windows_setup():
+    manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    for name in ("Setup.cmd", "scripts/setup.ps1", "scripts/configure_copilot.py"):
+        assert (ROOT / name).is_file()
+        assert f"include {name}" in manifest.splitlines()
+
+
 async def test_initialization_and_resource_deliver_the_same_agent_guide():
     expected = read_agent_guide()
     async with Client(create_server(FixtureApplication())) as client:

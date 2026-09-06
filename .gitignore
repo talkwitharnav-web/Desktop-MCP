@@ -124,6 +124,7 @@ celerybeat.pid
 # Environments
 .env
 .venv
+/.desktop-mcp-setup-cache/
 env/
 venv/
 ENV/
