@@ -23,6 +23,7 @@ import ctypes.wintypes
 from dataclasses import dataclass
 import comtypes
 import comtypes.client
+import win32api
 from _ctypes import COMError
 from typing import Any, Callable, Dict, Generator, List, Tuple
 
@@ -1258,7 +1259,7 @@ def IsDesktopLocked() -> bool:
 
 
 def PlayWaveFile(
-    filePath: str = r"C:\Windows\Media\notify.wav",
+    filePath: str = os.path.join(win32api.GetWindowsDirectory(), "Media", "notify.wav"),
     isAsync: bool = False,
     isLoop: bool = False,
 ) -> bool:

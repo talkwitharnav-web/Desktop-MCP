@@ -375,17 +375,12 @@ class Desktop:
     def _get_apps_from_shortcuts(self) -> dict[str, str]:
         """Scan Start Menu folders for .lnk shortcuts as a fallback for Get-StartApps."""
         import glob
+        from win32com.shell import shell, shellcon
 
         apps = {}
         start_menu_paths = [
-            os.path.join(
-                os.environ.get("PROGRAMDATA", r"C:\ProgramData"),
-                r"Microsoft\Windows\Start Menu\Programs",
-            ),
-            os.path.join(
-                os.environ.get("APPDATA", ""),
-                r"Microsoft\Windows\Start Menu\Programs",
-            ),
+            shell.SHGetFolderPath(0, shellcon.CSIDL_COMMON_PROGRAMS, None, 0),
+            shell.SHGetFolderPath(0, shellcon.CSIDL_PROGRAMS, None, 0),
         ]
         for base_path in start_menu_paths:
             if not os.path.isdir(base_path):
