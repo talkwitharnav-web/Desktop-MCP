@@ -36,7 +36,7 @@ class ChatEntry:
 
 @dataclass(frozen=True)
 class MessageView:
-    """Native text offsets are UTF-16 code units, local to one stable sequence."""
+    """Local UTF-16 offsets; selection holds the fixed anchor then the active end."""
 
     sequence: int
     anchor: int = 0

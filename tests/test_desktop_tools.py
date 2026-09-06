@@ -372,33 +372,34 @@ def test_observations_summarize_only_known_hidden_chat_children():
                     "transcript-history-bubble",
                     "transcript-history-label",
                     "transcript-history-text",
+                    "transcript-history-message-scrollbar",
                 ),
                 101,
             )
         ),
         {
-            "window_id": 104,
+            "window_id": 105,
             "root_id": 100,
             "role": "transcript-history-text",
             "status": "ok",
             "effective_visible": True,
         },
         {
-            "window_id": 105,
+            "window_id": 106,
             "root_id": 100,
             "role": "transcript-history-text",
             "status": "unavailable",
             "effective_visible": False,
         },
         {
-            "window_id": 106,
+            "window_id": 107,
             "root_id": None,
             "role": "transcript-history-text",
             "status": "ok",
             "effective_visible": False,
         },
         {
-            "window_id": 107,
+            "window_id": 108,
             "root_id": 100,
             "role": "transcript-composer",
             "status": "ok",
@@ -408,9 +409,9 @@ def test_observations_summarize_only_known_hidden_chat_children():
     observation = Observation("current-frame", {}, None, "image/png")
     result = observation_result(observation, protected_windows=surfaces)
     reported = result.structured_content["observation"]
-    assert reported["hidden_chat_controls_omitted"] == 3
-    assert [row["window_id"] for row in reported["protected_windows"]] == [100, 104, 105, 106, 107]
-    assert len(surfaces) == 8
+    assert reported["hidden_chat_controls_omitted"] == 4
+    assert [row["window_id"] for row in reported["protected_windows"]] == [100, 105, 106, 107, 108]
+    assert len(surfaces) == 9
     assert "hidden_chat_controls_omitted" not in observation.metadata
 
 

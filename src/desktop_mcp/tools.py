@@ -54,6 +54,7 @@ def observation_result(
                     "transcript-history-bubble",
                     "transcript-history-label",
                     "transcript-history-text",
+                    "transcript-history-message-scrollbar",
                 }
                 and surface.get("status") == "ok"
                 and surface.get("effective_visible") is False

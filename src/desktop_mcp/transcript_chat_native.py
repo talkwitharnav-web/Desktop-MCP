@@ -2,8 +2,8 @@
 
 All methods run on the owning UI thread. The caller owns the top-level window,
 external history scrollbar, borrowed font and timer. ScrollState uses pixels for
-the outer history, not EDIT line numbers. Each long message has an independent
-native text scrollbar; Ctrl+PageUp/PageDown visits adjacent messages. Native
+the outer history, not EDIT line numbers. Long messages have owned slim dark
+scrollbars; Ctrl+PageUp/PageDown visits adjacent messages. Native
 selection/copy is per message, never a painted imitation of selectable text.
 """
 
@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import math
 import time
 
+from desktop_mcp._transcript_chat_scrollbar import InnerScrollbars
 from desktop_mcp.transcript_chat import (
     ARRIVAL_SECONDS,
     ASSISTANT_BACKGROUND,
@@ -41,7 +42,12 @@ from desktop_mcp.transcript_chat import (
     utf16_length,
     validate_entries,
 )
-from desktop_mcp.transcript_scroll import ScrollState, WHEEL_PAGESCROLL, wheel_movement
+from desktop_mcp.transcript_scroll import (
+    SCROLLBAR_DIP,
+    ScrollState,
+    WHEEL_PAGESCROLL,
+    wheel_movement,
+)
 
 _SUBCLASS_ID = 0x43484154
 _EMPTY_TEXT = "Your messages and replies appear here.\r\nAsk Copilot to listen with TranscriptRead."
@@ -53,12 +59,16 @@ class _Bubble:
     window: int
     label: int
     editor: int
+    scrollbar: int
     body_height: int = 1
     measured: tuple | None = None
     desired: MessageView | None = None
     observed: MessageView | None = None
+    selection_endpoints: tuple[int, int] | None = None
     position: tuple[int, int, int, int] | None = None
     visible: bool = False
+    scroll_visible: bool = False
+    scroll_state: ScrollState | None = None
     wheel_remainder: int = 0
 
 
@@ -84,6 +94,8 @@ class NativeChatHistory:
         self._bubbles: dict[int, _Bubble] = {}
         self._by_window: dict[int, _Bubble] = {}
         self._by_editor: dict[int, _Bubble] = {}
+        self._by_scrollbar: dict[int, _Bubble] = {}
+        self._inner_scroll = InnerScrollbars(self)
         self._roles: dict[int, str] = {}
         self._entries: tuple[EntryTuple, ...] | None = None
         self._boxes: tuple[BubbleBox, ...] = ()
@@ -112,7 +124,12 @@ class NativeChatHistory:
 
     @property
     def following(self) -> bool:
-        return self._following and not self._pointer_down and not self._interacting
+        return (
+            self._following
+            and not self._pointer_down
+            and not self._interacting
+            and not self._inner_scroll.held
+        )
 
     @property
     def unread(self) -> bool:
@@ -168,12 +185,10 @@ class NativeChatHistory:
             wintypes.LPARAM,
         ]
         self._comctl.DefSubclassProc.restype = ctypes.c_ssize_t
-        self._theme = ctypes.WinDLL("uxtheme", use_last_error=True)
-        self._theme.SetWindowTheme.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
-        self._theme.SetWindowTheme.restype = ctypes.c_long
 
     def create(self, parent: int, instance: int, control_id: int) -> int:
         """Create one child host. Supply its readable borrowed font with set_font."""
+        self._raise_error()
         if self.hwnd:
             raise RuntimeError("The chat control has already been created.")
         self._load_native()
@@ -185,6 +200,9 @@ class NativeChatHistory:
                 ("host", BACKGROUND),
                 ("assistant", ASSISTANT_BACKGROUND),
                 ("user", USER_BACKGROUND),
+                ("scroll-track", (48, 55, 66)),
+                ("scroll-thumb", (105, 120, 139)),
+                ("scroll-active", FOCUS_COLOR),
             ):
                 self._brushes[name] = gui.CreateSolidBrush(self._api.RGB(*color))
             for name, color in (("border", BORDER_COLOR), ("focus", FOCUS_COLOR)):
@@ -244,6 +262,7 @@ class NativeChatHistory:
             self._bubbles.clear()
             self._by_window.clear()
             self._by_editor.clear()
+            self._by_scrollbar.clear()
             self._roles = {}
             self._boxes = ()
             self._entries = None
@@ -253,7 +272,7 @@ class NativeChatHistory:
             self._width = self._height = 1
             self._line_height, self._scale = 22, 1.0
             self._wheel_remainder = 0
-            self._following, self._unread = True, False
+            self._following, self._unread = self._error is None, False
             self._highest_sequence = -1
             if self._registered:
                 self._gui.UnregisterClass(self._class_name, self._instance)
@@ -275,6 +294,7 @@ class NativeChatHistory:
             roles[bubble.window] = "transcript-history-bubble"
             roles[bubble.label] = "transcript-history-label"
             roles[bubble.editor] = "transcript-history-text"
+            roles[bubble.scrollbar] = "transcript-history-message-scrollbar"
         self._roles = roles
 
     def _raise_error(self) -> None:
@@ -345,15 +365,30 @@ class NativeChatHistory:
             )
             if not self._comctl.SetWindowSubclass(editor, self._text_callback, _SUBCLASS_ID, 0):
                 raise ctypes.WinError(ctypes.get_last_error())
-            bubble = _Bubble(entry, window, label, editor)
+            scrollbar = gui.CreateWindowEx(
+                0,
+                self._class_name,
+                "Message scroll",
+                con.WS_CHILD | con.WS_TABSTOP | con.WS_CLIPSIBLINGS,
+                0,
+                0,
+                1,
+                1,
+                window,
+                3,
+                self._instance,
+                None,
+            )
+            bubble = _Bubble(entry, window, label, editor, scrollbar)
             self._by_window[window] = bubble
             self._by_editor[editor] = bubble
+            self._by_scrollbar[scrollbar] = bubble
+            self._roles = {**self._roles, scrollbar: "transcript-history-message-scrollbar"}
             gui.SendMessage(editor, con.EM_SETLIMITTEXT, 0x7FFFFFFE, 0)
             gui.SendMessage(editor, con.EM_SETMARGINS, 3, 0)
             for handle in (label, editor):
                 if self._font:
                     gui.SendMessage(handle, con.WM_SETFONT, self._font, False)
-            self._theme.SetWindowTheme(editor, "DarkMode_Explorer", None)
             if not gui.SendMessage(editor, con.WM_SETTEXT, 0, entry.text):
                 raise RuntimeError("The native message control could not retain its text.")
             return bubble
@@ -382,7 +417,8 @@ class NativeChatHistory:
         previous = self._entries
         new_ids = {entry.sequence for entry in validated if entry.sequence > self._highest_sequence}
         was_visible = self._gui.IsWindowVisible(self.hwnd)
-        focused = self._by_editor.get(self._gui.GetFocus())
+        focused_handle = self._gui.GetFocus()
+        focused = self._by_editor.get(focused_handle) or self._by_scrollbar.get(focused_handle)
         self._updating += 1
         try:
             keep = {entry.sequence for entry in validated}
@@ -392,6 +428,7 @@ class NativeChatHistory:
                     self._gui.DestroyWindow(bubble.window)
                     self._by_window.pop(bubble.window, None)
                     self._by_editor.pop(bubble.editor, None)
+                    self._by_scrollbar.pop(bubble.scrollbar, None)
             changed = False
             for entry in validated:
                 bubble = self._bubbles.get(entry.sequence)
@@ -435,6 +472,14 @@ class NativeChatHistory:
                     (bubble for bubble in self._bubbles.values() if bubble.visible), None
                 )
                 self._gui.SetFocus(visible_bubble.editor if visible_bubble else self.hwnd)
+        except Exception as error:
+            # A partially replaced HWND tree cannot remain a usable history control.
+            self._error = error
+            try:
+                self.close()
+            finally:
+                self._following = False
+            raise
         finally:
             self._updating -= 1
         self._notify()
@@ -448,6 +493,7 @@ class NativeChatHistory:
         view = self.capture_view()
         self._updating += 1
         try:
+            self._inner_scroll.cancel()
             self.cancel_animation()
             self._font, self._line_height, self._scale = font, line_height, scale
             handles = [self._empty]
@@ -471,6 +517,7 @@ class NativeChatHistory:
         view = self.capture_view()
         self._updating += 1
         try:
+            self._inner_scroll.cancel()
             self.cancel_animation()
             self._width, self._height = width, height
             self._measure()
@@ -508,17 +555,31 @@ class NativeChatHistory:
                 False,
             )
             state = self._text_scroll_state(bubble)
-            self._user32.ShowScrollBar(bubble.editor, con.SB_VERT, bool(state.maximum))
-            if state.maximum:
+            gutter = min(max(1, round(SCROLLBAR_DIP * self._scale)), size.body_width - 1)
+            scroll_visible = bool(state.maximum and gutter)
+            if scroll_visible:
                 body_height = size.body_cap
                 gui.MoveWindow(
                     bubble.editor,
                     size.padding,
                     size.padding + size.label_height,
-                    size.body_width,
+                    size.body_width - gutter,
                     body_height,
                     False,
                 )
+                gui.MoveWindow(
+                    bubble.scrollbar,
+                    size.padding + size.body_width - gutter,
+                    size.padding + size.label_height,
+                    gutter,
+                    body_height,
+                    False,
+                )
+            if scroll_visible != bubble.scroll_visible:
+                if not scroll_visible:
+                    self._inner_scroll.cancel(bubble.scrollbar)
+                gui.ShowWindow(bubble.scrollbar, con.SW_SHOWNA if scroll_visible else con.SW_HIDE)
+                bubble.scroll_visible = scroll_visible
             gui.MoveWindow(
                 bubble.label,
                 size.padding,
@@ -529,7 +590,8 @@ class NativeChatHistory:
             )
             bubble.body_height = body_height
             bubble.measured = key
-            for handle in (bubble.window, bubble.label, bubble.editor):
+            self._inner_scroll.sync(bubble)
+            for handle in (bubble.window, bubble.label, bubble.editor, bubble.scrollbar):
                 gui.InvalidateRect(handle, None, False)
         entries = tuple(bubble.entry for bubble in self._bubbles.values())
         self._boxes = layout_bubbles(
@@ -563,15 +625,31 @@ class NativeChatHistory:
             self._line_height,
         )
 
-    def _sample_message(self, bubble: _Bubble) -> MessageView:
+    def _read_selection(self, bubble: _Bubble, *, backward: bool | None = None) -> tuple[int, int]:
         gui, con = self._gui, self._con
         start, end = wintypes.DWORD(), wintypes.DWORD()
         gui.SendMessage(
             bubble.editor, con.EM_GETSEL, ctypes.addressof(start), ctypes.addressof(end)
         )
+        bounds = start.value, end.value
+        previous = bubble.selection_endpoints
+        if backward is not None:
+            bounds = bounds[::-1] if backward else bounds
+        elif previous is not None and bounds[0] != bounds[1]:
+            # GETSEL orders the bounds; Shift/drag keeps the unchanged endpoint fixed.
+            if bounds == (min(previous), max(previous)):
+                return previous
+            if bounds[1] == max(previous) or previous[0] == bounds[1]:
+                bounds = bounds[1], bounds[0]
+        bubble.selection_endpoints = bounds
+        return bounds
+
+    def _sample_message(self, bubble: _Bubble) -> MessageView:
+        gui, con = self._gui, self._con
+        selection = self._read_selection(bubble)
         line = gui.SendMessage(bubble.editor, con.EM_GETFIRSTVISIBLELINE, 0, 0)
         anchor = max(0, gui.SendMessage(bubble.editor, con.EM_LINEINDEX, line, 0))
-        return MessageView(bubble.entry.sequence, anchor, (start.value, end.value))
+        return MessageView(bubble.entry.sequence, anchor, selection)
 
     def capture_view(self) -> ChatView:
         """Capture semantic message positions, not packed 16-bit document offsets."""
@@ -605,7 +683,8 @@ class NativeChatHistory:
                     min(max(0, item.anchor), limit),
                     tuple(min(max(0, offset), limit) for offset in item.selection),
                 )
-                self._gui.SendMessage(bubble.editor, self._con.EM_SETSEL, *desired.selection)
+                if self._read_selection(bubble) != desired.selection:
+                    self._gui.SendMessage(bubble.editor, self._con.EM_SETSEL, *desired.selection)
                 target = self._gui.SendMessage(
                     bubble.editor, self._con.EM_LINEFROMCHAR, desired.anchor, 0
                 )
@@ -614,6 +693,7 @@ class NativeChatHistory:
                 )
                 self._gui.SendMessage(bubble.editor, self._con.EM_LINESCROLL, 0, target - current)
                 bubble.desired, bubble.observed = desired, self._sample_message(bubble)
+                self._inner_scroll.sync(bubble)
             self._following = view.following
             if view.following:
                 self._latest(clear_selection=False)
@@ -637,6 +717,7 @@ class NativeChatHistory:
             return
         if bubble is not None:
             bubble.desired = bubble.observed = self._sample_message(bubble)
+            self._inner_scroll.sync(bubble)
         self._desired_anchor = anchor_at(self._boxes, self._position)
         selected = any(
             item.desired is not None and item.desired.selection[0] != item.desired.selection[1]
@@ -690,8 +771,9 @@ class NativeChatHistory:
 
     def _wheel_text(self, bubble: _Bubble, delta: int) -> None:
         state = self._text_scroll_state(bubble)
+        wheel_lines = self._wheel_lines()
         movement, bubble.wheel_remainder = wheel_movement(
-            bubble.wheel_remainder, delta, self._wheel_lines(), state.page
+            bubble.wheel_remainder, delta, wheel_lines, state.page
         )
         if not movement:
             return
@@ -706,10 +788,27 @@ class NativeChatHistory:
             self._updating -= 1
         remaining = movement - (target - state.position)
         if remaining:
-            self._position = self.scroll_state().clamp(
-                self._position + remaining * self._line_height
-            )
+            outer = self.scroll_state()
+            pixels = remaining * self._line_height
+            if wheel_lines == WHEEL_PAGESCROLL:
+                pixels = round(remaining / state.page_step * max(1, outer.page - self._line_height))
+            self._position = outer.clamp(self._position + pixels)
             self._render()
+        self._record_user(bubble)
+
+    def _scroll_text_to(self, bubble: _Bubble, position: int) -> None:
+        self.cancel_animation()
+        state = self._text_scroll_state(bubble)
+        self._updating += 1
+        try:
+            self._gui.SendMessage(
+                bubble.editor,
+                self._con.EM_LINESCROLL,
+                0,
+                state.clamp(position) - state.position,
+            )
+        finally:
+            self._updating -= 1
         self._record_user(bubble)
 
     def _latest(self, *, clear_selection: bool) -> None:
@@ -724,13 +823,16 @@ class NativeChatHistory:
                             bubble.editor, con.EM_SETSEL, actual.selection[1], actual.selection[1]
                         )
                     bubble.desired = bubble.observed = self._sample_message(bubble)
+                    self._inner_scroll.sync(bubble)
             if self._boxes:
                 bubble = self._bubbles[self._boxes[-1].sequence]
                 end = utf16_length(bubble.entry.text)
-                gui.SendMessage(bubble.editor, con.EM_SETSEL, end, end)
+                if self._read_selection(bubble) != (end, end):
+                    gui.SendMessage(bubble.editor, con.EM_SETSEL, end, end)
                 state = self._text_scroll_state(bubble)
                 gui.SendMessage(bubble.editor, con.EM_LINESCROLL, 0, state.maximum - state.position)
                 bubble.desired = bubble.observed = self._sample_message(bubble)
+                self._inner_scroll.sync(bubble)
             self._position = self.scroll_state().maximum
             self._desired_anchor = anchor_at(self._boxes, self._position)
             self._following, self._unread = True, False
@@ -758,6 +860,7 @@ class NativeChatHistory:
             self._render()
 
     def cancel_interaction(self) -> None:
+        self._inner_scroll.cancel()
         self._pointer_down = self._interacting = False
         self._pointer_window = 0
         self.cancel_animation()
@@ -811,6 +914,8 @@ class NativeChatHistory:
                     )
                     bubble.position = position
             if visible != bubble.visible:
+                if not visible:
+                    self._inner_scroll.cancel(bubble.scrollbar)
                 gui.ShowWindow(bubble.window, con.SW_SHOWNA if visible else con.SW_HIDE)
                 bubble.visible = visible
         gui.InvalidateRect(self.hwnd, None, False)
@@ -872,6 +977,19 @@ class NativeChatHistory:
                 self._pointer_down = False
                 self._pointer_window = 0
             result = self._comctl.DefSubclassProc(handle, message, wparam, lparam)
+            if message == con.EM_SETSEL:
+                limit = utf16_length(bubble.entry.text)
+                anchor, active = ctypes.c_int(wparam).value, ctypes.c_int(lparam).value
+                if anchor >= 0:
+                    self._read_selection(
+                        bubble, backward=anchor > (limit if active < 0 else active)
+                    )
+                else:
+                    bubble.selection_endpoints = None
+            elif message == con.WM_SETTEXT or (
+                message in (con.WM_LBUTTONDOWN, con.WM_LBUTTONDBLCLK) and not wparam & con.MK_SHIFT
+            ):
+                bubble.selection_endpoints = None
             navigation = message in (
                 con.WM_LBUTTONDOWN,
                 con.WM_LBUTTONDBLCLK,
@@ -902,7 +1020,7 @@ class NativeChatHistory:
             gui.FillRect(dc, rect, self._brushes["host"])
             bubble = self._by_window.get(handle)
             if bubble is not None:
-                focus = gui.GetFocus() == bubble.editor
+                focus = gui.GetFocus() in (bubble.editor, bubble.scrollbar)
                 brush = gui.SelectObject(dc, self._brushes[bubble.entry.role])
                 pen = gui.SelectObject(dc, self._pens["focus" if focus else "border"])
                 try:
@@ -917,6 +1035,8 @@ class NativeChatHistory:
     def _procedure(self, handle, message, wparam, lparam):
         gui, con = self._gui, self._con
         try:
+            if handle in self._by_scrollbar:
+                return self._inner_scroll.procedure(handle, message, wparam, lparam)
             if message == con.WM_NCDESTROY:
                 self._by_window.pop(handle, None)
                 self._roles = {key: role for key, role in self._roles.items() if key != handle}
