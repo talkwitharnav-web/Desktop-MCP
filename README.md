@@ -268,9 +268,12 @@ agent reads and acknowledges them. Observations and chat remain available, so
 it can inspect the current state and answer before continuing. This does not
 disarm the session or turn a check-in into a request to abandon the task.
 
-The transcript opens as a **1120 × 164 logical-pixel outer ribbon**, including
+The transcript opens as a **1120 × 184 logical-pixel outer ribbon**, including
 window chrome, where the monitor permits. Its compact view places recent history
-beside the composer and Send button, using DPI-scaled **14-DIP Segoe UI** text.
+beside the composer and Send button. Assistant and user messages have separate,
+rounded, role-labelled boxes with contrasting slate backgrounds and alignment.
+Readable Segoe UI Variable Text is preferred when available, with Segoe UI as
+the native fallback.
 Narrow displays stack/wrap the controls and increase height to remain readable,
 with geometry always bounded by the selected monitor.
 **Expand** provides a preferred 440-DIP-tall history view; **Compact** returns to
@@ -278,10 +281,23 @@ the ribbon. Both retain your draft, selection, reading position and per-mode
 window size during the session. **Latest** returns to the newest message and
 marks unread replies when you are deliberately reading older history.
 
-Both native text panes use slim dark scrollbars: an **8-DIP gutter** with a
-roughly 6-DIP thumb, rather than the stock white scrollbar. Drag the thumb, click
-the track, use the wheel, or Tab to a bar and use arrows, Page Up/Down, Home/End.
-Selection, reading position and follow-latest behavior remain intact. Reflow
+While the transcript is focused, **Ctrl++ / Ctrl+=** increases text size and
+**Ctrl+-** decreases it; keypad plus/minus work too. There are exactly three
+sizes: **Small (12 DIP), Medium (14 DIP, default), and Large (16 DIP)**, scaled
+normally for the display. The choice stays with the open window through docking,
+resizing, expansion and hiding; these shortcuts do not change other apps' zoom.
+
+New visible messages use a short eased arrival transition only when you are
+already following the conversation. Text is available immediately, not slowly
+typed out. Reading or selecting an older message does not move your view, and
+the Windows reduced-motion preference is respected.
+
+The history, composer and long-message text use slim dark scrollbars: an
+**8-DIP gutter** with a roughly 6-DIP thumb, rather than stock white scrollbars.
+Drag the thumb, click the track, use the wheel, or Tab to a bar and use arrows,
+Page Up/Down, Home/End. Long messages keep their complete native text in a bounded
+inner scrolling area. Selection and Ctrl+A/C work within each message;
+Ctrl+Page Up/Down moves between messages. Reflow
 batches child positioning and completes background/control repainting after
 font and geometry changes, avoiding leftover borders or text during resizing.
 
@@ -298,8 +314,9 @@ messages or changing desktop permissions. The model can use
 click protected application controls. `DesktopStatus.transcript` reports
 `enabled`, actual `visible`, pending-message count and listener status.
 Its `layout` record reports `compact`, `dock`, physical outer `bounds`, actual
-`dpi`, physical `font_height`, `scrollbar_width` and `split` once laid out. Bounds describe the last
-completed layout, not a live drag sample.
+`dpi`, `text_size`, logical `font_dip`, actual `font_face`, physical `font_height`,
+`scrollbar_width` and `split` once laid out. Bounds describe the last completed
+layout, not a live drag sample.
 
 Closing either main window quits the application. Minimize the instruction window
 instead when you just want it out of the way.

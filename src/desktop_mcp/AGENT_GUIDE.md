@@ -106,13 +106,18 @@ click protected application controls to do this. Local pinning overrides
 `Transcript(action="back")`; programmatic front/show does not take keyboard focus.
 
 The default transcript is a short, wide ribbon with history beside the composer,
-not a tall chat panel. The human can use **Expand/Compact** for longer history
+not a tall chat panel. User and assistant messages appear in separate labelled
+boxes; new replies animate briefly without withholding text or moving an older
+reading selection. The human can use **Expand/Compact** for longer history
 and **Latest** to return to new replies without losing a draft or reading position.
+While the transcript is focused, **Ctrl++ / Ctrl+=** and **Ctrl+-** step through
+Small, Medium and Large text (12, 14 and 16 DIP; Medium by default).
 Top/Bottom dock inside the work area; the explicit **Taskbar edge** choice can
 need **Pin first** to remain above the taskbar. These are local layout choices,
 not input grants. `DesktopStatus.transcript.layout` reports content-free layout
 state and the last completed physical bounds.
-The human can scroll either text pane with its slim dark bar, wheel or keyboard;
+The human can scroll history, the composer and long messages with slim dark bars,
+the wheel or keyboard. Text selection/copy is per message;
 do not use desktop input tools to operate these protected conversation controls.
 
 Use this loop while a transcript conversation is active:

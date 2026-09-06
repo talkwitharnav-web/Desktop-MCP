@@ -17,6 +17,7 @@ implementation lives under `src/desktop_mcp`.
 | Teaching state/rendering | `teaching.py`, `teaching_render.py`; bounded ink, context expiry and learner dwell state without OS input. |
 | Conversation state | `conversation.py`; canonical user/assistant history, pending messages, bounded async reads, per-MCP-session delivery/acknowledgement and listener lease. |
 | Teaching windows/tools | `teaching_ui.py`, `teaching_tools.py`; native two-way transcript, visibility toggle, separate ink/laser layer and seven presentation/conversation/cursor tools. |
+| Chat history | `transcript_chat.py`, `transcript_chat_native.py`, `_transcript_chat_scrollbar.py`; role-separated native message controls, bounded inner/outer scrolling, selection/reading anchors and short arrival motion. |
 | Capture/Windows engine | Reuse `windows_mcp.desktop.screenshot` and `windows_mcp.uia`; do not copy the UIA implementation. |
 | MCP entry point | `app.py`, `tools.py`, `policy.py`, `__main__.py`; explicit supervised registration and dispatch-time request tickets. Stdout is reserved for MCP. |
 | Agent operating instructions | Packaged `AGENT_GUIDE.md`, read by `app.read_agent_guide` for initialization and `desktop-mcp://guide`; no client filesystem dependency. |
@@ -197,6 +198,11 @@ implementation lives under `src/desktop_mcp`.
   `transcript_layout.py` shares responsive physical geometry across native sizing,
   minimum tracking and tests. The default compact ribbon places history beside
   the composer; narrow clients wrap/stack rather than overflowing fixed minima.
+  `FONT_SIZES` contains exactly 12/14/16 DIP, with Medium14 as the host default.
+  `_text_size_key` handles Ctrl+plus/equals/minus and keypad variants only within
+  focused transcript controls, preserving IME and suppressing duplicate events.
+  Logical text size remains separate from monitor/layout scale and persists
+  across local reflow/show operations, not as an OS-wide zoom setting.
   Expand/Compact retains per-mode sizes and UTF-16 selection/reading anchors.
   Incoming replies follow only an already-following history view; Latest exposes
   unread replies without forcibly scrolling a reader. Layout changes do not
@@ -209,19 +215,34 @@ implementation lives under `src/desktop_mcp`.
   newly widened ribbon outside its work area. Native fakes model pywin32's
   six-field scroll-info result, and maximized-state queries use the actual
   `user32.IsZoomed` export rather than an invented pywin32 method.
-  The barless native EDITs now use owned, slim dark scrollbar children and
-  `transcript_scroll.py` line/track math. Their range comes from actual EDIT
+  History control 301 is `NativeChatHistory`, not an EDIT compatibility shim.
+  It owns labelled assistant/user bubbles containing real read-only native text;
+  per-message selection stores UTF-16 anchor and active endpoints, not merely
+  sorted selection bounds. Unchanged selections must not be reset on arrival.
+  Long text stays complete in bounded inner viewports rather than huge HWNDs.
+  Outer history scroll uses pixels; composer/message scroll uses native lines.
+  Their owned slim bars share `transcript_scroll.py` range/track math.
+  Native text range comes from actual EDIT
   line/formatting APIs and GDI text metrics; `GetScrollInfo` is invalid without
   a native scroll style. Per-owned-EDIT comctl32 subclasses retain native text,
   IME and accessibility handling while synchronizing wheel/navigation changes.
+  The history borrows its font: supply a replacement before deleting the old
+  HFONT and close history before releasing the final font. Failed partial
+  message replacement closes/clears the owned history instead of leaving stale
+  layout entries or HWND roles. All dynamic message/bar handles stay protected.
   Thumb capture is cancelled on up, cancel, hide, reflow, deactivation and
   destruction; scrollbars remain in content-free role/target protection.
+  Inner and outer thumb holds suspend following even at the bottom. Page-wheel
+  spillover converts its remaining fraction to an outer page, not one text line.
+  Thumb drags retain the grab's exact position and pointer coordinate; mapping
+  back through a rounded thumb must not shift a stationary reader.
+  Brief arrival motion applies only to genuinely new, visible, following
+  messages; reduced motion, reading, selection, reflow and hiding cancel it.
+  Text is never withheld for animation and timer frames do not rebuild history.
   Reflow batches child positioning without copied pixels or intermediate paints,
-  suppresses redraw only on eligible EDITs (never root visibility or active IME),
+  suppresses redraw only on the eligible composer (never the history host,
+  root visibility or active IME),
   and finishes with background erasure and a full root/children repaint.
-  Follow-latest uses explicit line scrolling inside redraw-suppressed updates;
-  native caret scrolling can leave the newly replaced history at the top while
-  EDIT redraw/visibility is suppressed.
   Send reads a bounded complete `WM_GETTEXT` buffer; window-caption helpers can
   truncate long messages and must not serve as the draft reader.
   Docking and minimum sizes share the current monitor's work-area/DPI constraints;

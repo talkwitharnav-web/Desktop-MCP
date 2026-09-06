@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from bisect import bisect_right
+from dataclasses import replace
 import ctypes
 
 from PIL import Image, ImageFont
@@ -15,6 +16,9 @@ from desktop_mcp.teaching_ui import (
     _TextMetric,
     _TrackMouseEvent,
     _REFLOW,
+    _CLIENT_AREA_ANIMATION,
+    _ANIMATION_TIMER_MS,
+    _IDLE_TIMER_MS,
 )
 from desktop_mcp.teaching import Mark, TeachingSnapshot, WaitTarget
 from desktop_mcp.transcript_layout import (
@@ -55,6 +59,8 @@ class Gui:
         self.first_lines = {}
         self.created = {}
         self.font_height = 14
+        self.font_face = "Segoe UI Variable Text"
+        self.client_animations = True
         self.foreground = 999
         self.focused = 0
         self.capture = 0
@@ -168,7 +174,7 @@ class Gui:
         if message == win32con.WM_GETTEXTLENGTH:
             return len(self.texts.get(handle, "").encode("utf-16-le")) // 2
         if message == win32con.WM_GETTEXT:
-            encoded = self.texts.get(handle, "").encode("utf-16-le")[:max(0, wparam - 1) * 2]
+            encoded = self.texts.get(handle, "").encode("utf-16-le")[: max(0, wparam - 1) * 2]
             ctypes.memmove(lparam, encoded + b"\0\0", len(encoded) + 2)
             return len(encoded) // 2
         if message == win32con.EM_GETSEL:
@@ -229,6 +235,7 @@ class Gui:
 
     def CreateFontIndirect(self, description):
         self.font_height = -description.lfHeight
+        self.font_face = description.lfFaceName
         return 60
 
     def DeleteObject(self, handle):
@@ -264,6 +271,10 @@ class Gui:
         metrics = ctypes.cast(pointer, ctypes.POINTER(_TextMetric)).contents
         metrics.height = self.font_height + 2
         return True
+
+    def get_text_face(self, dc, count, buffer):
+        buffer.value = self.font_face[: count - 1]
+        return len(buffer.value)
 
     def begin_defer(self, count):
         self.events.append(("begin-defer", count))
@@ -312,8 +323,16 @@ class Gui:
             self.on_capture_changed(old, 0x0215, 0, 0)
 
     def system_parameters(self, action, unused, pointer, flags):
-        assert action == 0x0068 and not flags
-        ctypes.cast(pointer, ctypes.POINTER(ctypes.wintypes.UINT)).contents.value = self.wheel_lines
+        assert not flags
+        if action == _CLIENT_AREA_ANIMATION:
+            ctypes.cast(
+                pointer, ctypes.POINTER(ctypes.wintypes.BOOL)
+            ).contents.value = self.client_animations
+        else:
+            assert action == 0x0068
+            ctypes.cast(
+                pointer, ctypes.POINTER(ctypes.wintypes.UINT)
+            ).contents.value = self.wheel_lines
         return True
 
     def track_mouse(self, pointer):
@@ -364,6 +383,110 @@ class Gui:
         return 47
 
 
+class History:
+    """Recording component port; rendering and native selection belong to its own tests."""
+
+    def __init__(self, gui, *, on_change=None, on_error=None, hwnd=0):
+        self.gui = gui
+        self.hwnd = hwnd
+        self.on_change = on_change
+        self.on_error = on_error
+        self.calls = []
+        self.entries = ()
+        self.view = object()
+        self.state = ScrollState(1200, 120, 0)
+        self.following = True
+        self.unread = False
+        self.animation_active = False
+        self.interacting = False
+        self.roles = {}
+
+    def create(self, parent, instance, control_id):
+        self.calls.append(("create", parent, instance, control_id))
+        self.hwnd = self.gui.CreateWindowEx(
+            win32con.WS_EX_CONTROLPARENT,
+            "FixtureChatHistory",
+            "",
+            win32con.WS_CHILD | win32con.WS_VISIBLE | win32con.WS_TABSTOP,
+            0,
+            0,
+            1,
+            1,
+            parent,
+            control_id,
+            instance,
+            None,
+        )
+        return self.hwnd
+
+    def close(self):
+        self.calls.append(("close",))
+        self.hwnd = 0
+        self.roles = {}
+
+    def set_entries(self, entries, *, now=None, animate=True):
+        self.calls.append(("entries", entries, now, animate))
+        changed = entries != self.entries
+        self.entries = entries
+        return changed
+
+    def set_font(self, font, *, line_height, scale=1.0):
+        self.calls.append(("font", font, line_height, scale))
+
+    def reflow(self, width, height):
+        self.calls.append(("reflow", width, height))
+
+    def capture_view(self):
+        self.calls.append(("capture-view",))
+        return self.view
+
+    def restore_view(self, view):
+        self.calls.append(("restore-view", view))
+        assert view is self.view
+
+    def latest(self):
+        self.calls.append(("latest",))
+        self.following, self.unread = True, False
+        self.state = ScrollState(self.state.lines, self.state.page, self.state.maximum)
+
+    def scroll_state(self):
+        return self.state
+
+    def scroll_to(self, position):
+        self.calls.append(("scroll-to", position))
+        self.state = ScrollState(self.state.lines, self.state.page, self.state.clamp(position))
+
+    def scroll_command(self, command):
+        self.calls.append(("scroll-command", command))
+        return True
+
+    def wheel(self, delta, lines_per_notch=3):
+        self.calls.append(("wheel", delta, lines_per_notch))
+
+    def tick(self, now):
+        self.calls.append(("tick", now))
+        return self.animation_active
+
+    def set_interacting(self, active):
+        self.calls.append(("interacting", active))
+        self.interacting = active
+
+    def cancel_animation(self):
+        self.calls.append(("cancel-animation",))
+        self.animation_active = False
+
+    def cancel_interaction(self):
+        self.calls.append(("cancel-interaction",))
+        self.interacting = False
+        self.animation_active = False
+
+    def window_handles(self):
+        return tuple(self.window_roles())
+
+    def window_roles(self):
+        return ({self.hwnd: "transcript-history"} if self.hwnd else {}) | self.roles
+
+
 @pytest.fixture
 def surface():
     application = FixtureApplication(armed=True)
@@ -384,8 +507,14 @@ def surface():
         EndDeferWindowPos=surface._gui.end_defer,
         SystemParametersInfoW=surface._gui.system_parameters,
         TrackMouseEvent=surface._gui.track_mouse,
+        SetTimer=lambda window, identifier, interval, callback: (
+            surface._gui.events.append(("timer", window, identifier, interval)) or 1
+        ),
     )
-    surface._gdi32 = SimpleNamespace(GetTextMetricsW=surface._gui.get_text_metrics)
+    surface._gdi32 = SimpleNamespace(
+        GetTextMetricsW=surface._gui.get_text_metrics,
+        GetTextFaceW=surface._gui.get_text_face,
+    )
     surface._comctl = SimpleNamespace(
         SetWindowSubclass=surface._gui.set_subclass,
         RemoveWindowSubclass=surface._gui.remove_subclass,
@@ -397,12 +526,22 @@ def surface():
     surface._dwm = SimpleNamespace(DwmFlush=lambda: 0)
     surface._composition_active = lambda: False
     surface._text_width = lambda text: len(text) * surface._font_height / 2
+    surface._new_history = lambda: History(
+        surface._gui, on_change=surface._history_changed, on_error=surface._history_failed
+    )
     yield surface
     application.close()
 
 
 def prepare_layout(surface, *, scale=1.0, work=(0, 0, 1920, 1040), monitor=None, chrome=None):
-    surface._editor, surface._status = 3, 4
+    surface._history_window, surface._status = 3, 4
+    surface._history = History(
+        surface._gui,
+        on_change=surface._history_changed,
+        on_error=surface._history_failed,
+        hwnd=3,
+    )
+    surface._history_font_dirty = True
     surface._history_label, surface._composer_label = 9, 10
     surface._buttons = {
         identifier: identifier + 100
@@ -414,7 +553,7 @@ def prepare_layout(surface, *, scale=1.0, work=(0, 0, 1920, 1040), monitor=None,
     surface._work_area = lambda: work
     surface._monitor_area = lambda: monitor or work
     surface._gui.chrome = chrome or (round(16 * scale), round(39 * scale))
-    surface._gui.rect = (80, 80, 80 + round(1120 * scale), 80 + round(164 * scale))
+    surface._gui.rect = (80, 80, 80 + round(1120 * scale), 80 + round(184 * scale))
 
 
 def dispatch(surface, command, *, argument="", generation=None):
@@ -426,7 +565,7 @@ def dispatch(surface, command, *, argument="", generation=None):
 
 
 def test_every_guidance_child_is_protected_from_input_targeting(surface):
-    surface._editor, surface._status = 3, 4
+    surface._history_window, surface._status = 3, 4
     surface._buttons = {201: 5, 202: 6}
     assert surface.window_handles() == (1, 2, 3, 7, 8, 4, 5, 6)
 
@@ -445,7 +584,7 @@ def test_transcript_x_requests_whole_application_exit_not_minimize(surface):
 def test_transcript_font_uses_logfont_and_updates_every_child(surface):
     descriptions = []
     events = surface._gui.events
-    surface._editor, surface._status, surface._font = 3, 4, 50
+    surface._history_window, surface._status, surface._font = 3, 4, 50
     surface._buttons = {201: 5}
     surface._user32 = SimpleNamespace(GetDpiForWindow=lambda window: 144)
     surface._con.WM_SETFONT = 0x30
@@ -461,12 +600,11 @@ def test_transcript_font_uses_logfont_and_updates_every_child(surface):
     surface._gui.SendMessage = lambda *args: events.append(("font", *args))
     surface._gui.DeleteObject = lambda handle: events.append(("delete", handle))
     surface._set_font()
-    assert descriptions[0].lfFaceName == "Segoe UI"
+    assert descriptions[0].lfFaceName == "Segoe UI Variable Text"
     assert descriptions[0].lfHeight == -21
     assert descriptions[0].lfWeight == 400
     assert descriptions[0].lfQuality == 5
-    assert events == [
-        ("font", 3, 0x30, 60, False),
+    assert [event for event in events if event[0] in {"font", "delete"}] == [
         ("font", 4, 0x30, 60, False),
         ("font", 7, 0x30, 60, False),
         ("font", 8, 0x30, 60, False),
@@ -474,6 +612,136 @@ def test_transcript_font_uses_logfont_and_updates_every_child(surface):
         ("delete", 50),
     ]
     assert surface._font == 60
+
+
+def test_unavailable_variable_font_falls_back_to_an_actual_native_font_face(surface):
+    created = []
+    original = surface._gui.CreateFontIndirect
+
+    def create(description):
+        created.append(description.lfFaceName)
+        return original(description)
+
+    def actual_face(dc, count, buffer):
+        buffer.value = "Arial" if "Variable" in surface._gui.font_face else "Segoe UI"
+        return len(buffer.value)
+
+    surface._gui.CreateFontIndirect = create
+    surface._gdi32.GetTextFaceW = actual_face
+    surface._set_font()
+    assert created == ["Segoe UI Variable Text", "Segoe UI"]
+    assert surface._font_face == "Segoe UI" and surface._font_face_verified
+    assert ("delete", 60) in surface._gui.events
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_client_animation_preference_is_read_without_mutating_windows_settings(surface, enabled):
+    surface._gui.client_animations = enabled
+    assert surface._client_animations_enabled() is enabled
+    surface._user32.SystemParametersInfoW = lambda *args: False
+    assert surface._client_animations_enabled() is False
+
+
+def test_active_scene_ticks_do_not_refresh_the_whole_ui_at_sixty_hz(surface, monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr("desktop_mcp.teaching_ui.time.monotonic", lambda: clock[0])
+    calls = []
+    surface.session.snapshot = lambda: (
+        calls.append("snapshot") or TeachingSnapshot(1, (), (), None, None)
+    )
+    surface._update_history = lambda entries, **kwargs: calls.append("history")
+    surface._refresh_status = lambda *args: calls.append("status")
+    surface._sync_scrollbars = lambda: calls.append("scrollbars")
+
+    def animate(control, snapshot, now, **kwargs):
+        calls.append(("scene", now))
+        surface._scene_animating = True
+
+    surface._refresh_scene = animate
+    surface._timer_running = True
+    surface._timer_interval = _IDLE_TIMER_MS
+    surface._on_timer()
+    clock[0] += 0.016
+    surface._on_timer()
+    assert calls.count("snapshot") == 2
+    assert calls.count("history") == calls.count("status") == 1
+    assert len([call for call in calls if isinstance(call, tuple)]) == 2
+    assert [event for event in surface._gui.events if event[0] == "timer"] == [
+        ("timer", 1, 1, _ANIMATION_TIMER_MS)
+    ]
+    clock[0] += 0.018
+    surface._on_timer()
+    assert calls.count("snapshot") == 3
+    assert calls.count("history") == 2
+
+
+@pytest.mark.parametrize("capture_hidden,chat_visible", [(True, True), (False, False)])
+def test_hidden_surfaces_do_not_keep_the_fast_animation_timer(
+    surface, capture_hidden, chat_visible
+):
+    surface._timer_running = True
+    surface._timer_interval = _ANIMATION_TIMER_MS
+    surface._hide_count = int(capture_hidden)
+    surface._shown = chat_visible
+    surface._scene_animating = False
+    surface._chat_animating = True
+    surface._schedule_timer()
+    assert surface._timer_interval == _IDLE_TIMER_MS
+    assert surface._gui.events[-1] == ("timer", 1, 1, _IDLE_TIMER_MS)
+
+
+def test_hidden_chat_does_not_throttle_a_separately_visible_guidance_animation(surface):
+    surface._timer_running = True
+    surface._timer_interval = _IDLE_TIMER_MS
+    surface._shown = False
+    surface._scene_animating = True
+    surface._schedule_timer()
+    assert surface._timer_interval == _ANIMATION_TIMER_MS
+
+
+@pytest.mark.parametrize("animated", [True, False])
+def test_active_scene_uses_every_admitted_wake_without_a_time_bucket(
+    surface, monkeypatch, animated
+):
+    rendered = []
+    closed = []
+
+    def render(snapshot, bounds, *, now):
+        rendered.append(now)
+        return SimpleNamespace(close=lambda: closed.append(now))
+
+    monkeypatch.setattr("desktop_mcp.teaching_render.render_marks", render)
+    monkeypatch.setattr("desktop_mcp.layers.upload_rgba", lambda *args: None)
+    surface._scene_bounds = lambda *args, **kwargs: (0, 0, 12, 12)
+    surface._api.GetSystemMetrics = lambda index: {76: 0, 77: 0, 78: 1920, 79: 1080}[index]
+    mark = Mark(
+        "fixture", "laser" if animated else "path", ((5, 5),), "#ffb454", 3, 1.0, None, None
+    )
+    snapshot = TeachingSnapshot(1, (), (mark,), None, None)
+    surface.session.snapshot = lambda: snapshot
+    control = surface.controller.snapshot()
+    surface._refresh_scene(control, snapshot, 1.020)
+    surface._refresh_scene(control, snapshot, 1.021)
+    assert len(rendered) == (2 if animated else 1)
+    assert closed == rendered
+    assert surface._scene_animating is animated
+
+
+def test_stop_between_animation_ticks_revokes_cached_scene_before_rendering(surface, monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr("desktop_mcp.teaching_ui.time.monotonic", lambda: clock[0])
+    surface.session.snapshot = lambda: TeachingSnapshot(1, (), (), None, None)
+    surface._update_history = lambda entries, **kwargs: None
+    surface._refresh_status = lambda *args: None
+    surface._sync_scrollbars = lambda: None
+    surface._api.GetSystemMetrics = lambda index: {76: 0, 77: 0, 78: 1920, 79: 1080}[index]
+    surface._refresh(now=10.0)
+    surface._scene_animating = True
+    surface.controller.stop()
+    clock[0] = 10.016
+    surface._on_timer()
+    assert not surface._scene_animating
+    assert not surface._gui.IsWindowVisible(2)
 
 
 @pytest.mark.parametrize("work", [(0, 0, 2560, 1528), (0, 0, 640, 360)])
@@ -527,7 +795,7 @@ def test_clamped_work_area_keeps_readable_editor_status_and_stop(surface, scale,
     assert positions[3][3] >= font_height
     assert positions[surface._buttons[STOP]][3] >= font_height
     assert positions[7][3] >= font_height and positions[8][3] >= font_height
-    assert font_height >= 14
+    assert font_height >= 12
     for x, y, width, height in positions.values():
         assert 0 <= x < x + width <= client[0]
         assert 0 <= y < y + height <= client[1]
@@ -572,13 +840,14 @@ def test_native_child_creation_preserves_ids_wrapping_and_content_free_roles(sur
         arguments = surface._gui.created[handle]
         assert arguments[8:11] == (1, identifier, 42)
         assert arguments[3] & win32con.WS_CHILD
-    for identifier in (HISTORY, COMPOSER):
+    for identifier in (COMPOSER,):
         style = surface._gui.created[children[identifier]][3]
         assert style & win32con.ES_MULTILINE
         assert not style & win32con.WS_VSCROLL
         assert not style & (win32con.WS_HSCROLL | win32con.ES_AUTOHSCROLL)
     assert surface._gui.created[children[COMPOSER]][3] & win32con.ES_WANTRETURN
-    assert surface._gui.created[children[HISTORY]][3] & win32con.ES_READONLY
+    assert surface._gui.created[children[HISTORY]][1] == "FixtureChatHistory"
+    assert children[HISTORY] not in surface._gui.subclasses
     assert (
         "message",
         children[COMPOSER],
@@ -607,7 +876,9 @@ def test_native_child_creation_preserves_ids_wrapping_and_content_free_roles(sur
         for event in surface._gui.events
         if event[0] == "message" and event[2] == win32con.WM_SETFONT
     }
-    assert font_targets == set(children.values())
+    assert font_targets == set(children.values()) - {children[HISTORY]}
+    surface._style_history()
+    assert surface._history.calls[-1][0] == "font"
 
 
 @pytest.mark.parametrize("scale", [1.0, 1.5, 2.0, 3.0])
@@ -616,7 +887,7 @@ def test_default_native_placement_uses_outer_logical_size_without_activation(sur
     surface._set_font()
     surface._resize_mode(initial=True)
     left, top, right, bottom = surface._gui.rect
-    assert (right - left, bottom - top) == (round(1120 * scale), round(164 * scale))
+    assert (right - left, bottom - top) == (round(1120 * scale), round(184 * scale))
     assert bottom == round(1040 * scale) - round(8 * scale)
     assert left == round(400 * scale)
     client = surface._gui.GetClientRect(1)[2:]
@@ -632,6 +903,9 @@ def test_default_native_placement_uses_outer_logical_size_without_activation(sur
         "bounds": (left, top, right, bottom),
         "dpi": round(96 * scale),
         "font_height": round(14 * scale),
+        "font_face": "Segoe UI Variable Text",
+        "text_size": "Medium",
+        "font_dip": 14,
         "split": True,
         "scrollbar_width": round(8 * scale),
     }
@@ -668,7 +942,7 @@ def test_native_minimum_query_during_placement_uses_the_proposed_width(surface, 
     surface._set_font()
     surface._resize_mode(initial=True)
     left, top, right, bottom = surface._gui.rect
-    assert (right - left, bottom - top) == (round(1120 * scale), round(164 * scale))
+    assert (right - left, bottom - top) == (round(1120 * scale), round(184 * scale))
     assert bottom == work[3] - round(8 * scale)
     assert surface._placement_width is None
     assert surface._error is None
@@ -885,14 +1159,13 @@ def test_barless_edit_uses_actual_lines_and_formatting_rect_not_scrollinfo(
 ):
     prepare_layout(surface)
     surface._resize_mode(initial=True)
-    surface._last_text = history_entries(1)
-    surface._gui.positions[3] = (0, 0, 400, 64)
-    surface._gui.texts[3] = "\r\n".join("line" for _ in range(21))
-    surface._gui.first_lines[3] = position
+    surface._gui.positions[7] = (0, 0, 400, 68)
+    surface._gui.texts[7] = "\r\n".join("line" for _ in range(21))
+    surface._gui.first_lines[7] = position
     with pytest.raises(OSError) as error:
-        surface._gui.GetScrollInfo(3, win32con.SB_VERT, 7)
+        surface._gui.GetScrollInfo(7, win32con.SB_VERT, 7)
     assert error.value.errno == 1447
-    assert surface._sample_view(surface._editor, history=True).following is following
+    assert surface._scroll_state(7).at_end is following
 
 
 @pytest.mark.parametrize("action", ["expand", "dock", "fit"])
@@ -920,20 +1193,16 @@ def test_maximized_layout_queries_user32_not_a_nonexistent_pywin32_export(surfac
     assert not hasattr(surface._gui, "IsZoomed")
 
 
-def test_new_replies_follow_only_when_the_history_was_already_at_the_end(surface):
+def test_history_unread_and_following_are_owned_by_the_component(surface):
     prepare_layout(surface)
     surface._resize_mode(initial=True)
     entries = history_entries()
     surface._update_history(entries)
-    assert surface._gui.selections[3] == (surface._history_length, surface._history_length)
-    assert surface._sample_view(3, history=True).following
-    surface._gui.first_lines[3] = 2
-    surface._gui.selections[3] = (40, 40)
-    before = surface._sample_view(3, history=True)
+    surface._history.following = False
+    surface._history.unread = True
     surface._gui.events.clear()
     surface._update_history((*entries, *history_entries(1, start=13)))
-    after = surface._sample_view(3, history=True)
-    assert after.anchor == before.anchor and after.selection == before.selection
+    assert surface._history.following is False
     assert surface._history_unread
     assert surface._gui.texts[surface._buttons[LATEST]] == "Latest *"
     assert not any(
@@ -943,108 +1212,107 @@ def test_new_replies_follow_only_when_the_history_was_already_at_the_end(surface
     assert not any(event[0] in {"focus", "show", "position"} for event in surface._gui.events)
     surface._button(LATEST)
     assert not surface._history_unread
-    assert surface._sample_view(3, history=True).following
-    surface._update_history((*entries, *history_entries(2, start=13)))
-    assert surface._sample_view(3, history=True).following
+    assert surface._history.following
+    assert ("latest",) in surface._history.calls
 
 
-def test_new_history_reaches_latest_while_native_edit_redraw_is_suppressed(surface):
+def test_history_host_never_receives_native_edit_or_redraw_suppression_messages(surface):
     prepare_layout(surface)
     surface._resize_mode(initial=True)
     entries = history_entries(30)
     surface._update_history(entries)
-    state = surface._scroll_state(surface._editor)
-    assert state.maximum > 0 and state.at_end
+    surface._gui.events.clear()
     surface._update_history((*entries, *history_entries(1, start=31)))
-    assert surface._scroll_state(surface._editor).at_end
-    assert surface._gui.IsWindowVisible(surface._editor)
-    assert not surface._history_unread
+    surface._layout()
+    surface._scroll_latest()
+    edit_messages = {
+        win32con.EM_GETSEL,
+        win32con.EM_SETSEL,
+        win32con.EM_GETLINECOUNT,
+        win32con.EM_GETFIRSTVISIBLELINE,
+        win32con.EM_LINEFROMCHAR,
+        win32con.EM_LINEINDEX,
+        win32con.EM_GETRECT,
+        win32con.EM_SETMARGINS,
+        win32con.EM_LINESCROLL,
+        win32con.WM_SETREDRAW,
+        win32con.WM_SETTEXT,
+        win32con.WM_SETFONT,
+    }
+    assert not any(
+        event[0] == "message" and event[1] == 3 and event[2] in edit_messages
+        for event in surface._gui.events
+    )
+    assert surface._history.entries[-1][0] == 31
 
 
-def test_selection_at_the_bottom_is_not_destroyed_by_an_incoming_reply(surface):
+def test_incoming_entries_do_not_manipulate_the_components_opaque_selection(surface):
     prepare_layout(surface)
     surface._resize_mode(initial=True)
     entries = history_entries()
     surface._update_history(entries)
-    surface._gui.selections[3] = (surface._history_length - 12, surface._history_length - 2)
-    selection = surface._gui.selections[3]
+    view = surface._history.view
+    surface._history.calls.clear()
     surface._update_history((*entries, *history_entries(1, start=13)))
-    assert surface._gui.selections[3] == selection
-    assert surface._history_unread
+    assert surface._history.view is view
+    assert not any(
+        call[0] in {"capture-view", "restore-view", "latest"} for call in surface._history.calls
+    )
 
 
-def test_expand_clamping_the_scroll_range_does_not_erase_the_reading_anchor(surface):
+def test_expand_and_compact_restore_the_component_view_without_interpreting_it(surface):
     prepare_layout(surface)
     surface._resize_mode(initial=True)
     entries = history_entries(6, text="A short message.")
     surface._update_history(entries)
-    surface._gui.first_lines[3] = 3
-    surface._gui.selections[3] = (15, 15)
-    before = surface._sample_view(3, history=True)
-    assert not before.following
+    view = surface._history.view
+    surface._history.calls.clear()
     surface._button(EXPAND)
-    assert surface._gui.first_lines[3] == 0
     surface._button(EXPAND)
-    after = surface._sample_view(3, history=True)
-    assert after.anchor == before.anchor
-    assert after.selection == before.selection
-    assert not after.following
+    restored = [call[1] for call in surface._history.calls if call[0] == "restore-view"]
+    assert len(restored) == 2 and all(item is view for item in restored)
     assert surface._last_text == entries
 
 
-def test_resizing_rewraps_history_without_replacing_text_selection_or_draft(surface):
+def test_resizing_delegates_history_reflow_and_preserves_native_composer_selection(surface):
     prepare_layout(surface)
     surface._resize_mode(initial=True)
     surface._update_history(history_entries())
-    surface._gui.first_lines[3] = 3
-    surface._gui.selections[3] = (90, 110)
-    original = surface._sample_view(3, history=True)
+    history_view = surface._history.view
     surface._gui.SetWindowText(7, "Draft\r\nin progress")
     surface._gui.selections[7] = (7, 10)
     surface._gui.events.clear()
     surface._gui.rect = (100, 100, 760, 360)
     surface._layout()
-    after = surface._sample_view(3, history=True)
-    assert after.selection == original.selection
-    expected_line = surface._gui.SendMessage(3, win32con.EM_LINEFROMCHAR, original.anchor, 0)
-    assert surface._gui.first_lines[3] == expected_line
+    width, height = surface._gui.GetClientRect(3)[2:]
+    assert ("reflow", width, height) in surface._history.calls
+    assert ("restore-view", history_view) in surface._history.calls
     assert surface._gui.selections[7] == (7, 10)
     assert surface._gui.texts[7] == "Draft\r\nin progress"
     assert not any(event[0] == "text" and event[1] in {3, 7} for event in surface._gui.events)
 
 
-def test_history_pruning_and_utf16_offsets_preserve_surviving_text_above_64k(surface):
+def test_history_receives_complete_unflattened_unicode_entries_above_64k(surface):
     prepare_layout(surface)
     surface._resize_mode(initial=True)
     entries = history_entries(8, text="😀" * 3000 + "\n" + "Long fixture text " * 300)
     surface._update_history(entries)
-    start = surface._history_offsets[7][0] + 400
-    assert start > 65535
-    surface._gui.selections[3] = (start, start + 20)
-    surface._gui.first_lines[3] = surface._gui.SendMessage(3, win32con.EM_LINEFROMCHAR, start, 0)
-    original = surface._sample_view(3, history=True)
-    removed = surface._history_offsets[4][0]
-    surface._update_history((*entries[3:], *history_entries(1, start=9)))
-    assert surface._gui.selections[3] == (start - removed, start + 20 - removed)
-    assert surface._read_view(3, history=True).anchor == original.anchor - removed
-    assert "\r\n" in surface._gui.texts[3]
-    assert surface._history_length == len(surface._gui.texts[3].encode("utf-16-le")) // 2
+    assert sum(len(entry[2].encode("utf-16-le")) // 2 for entry in entries) > 65535
+    assert surface._history.entries is entries
+    assert not any(event[0] == "text" and event[1] == 3 for event in surface._gui.events)
 
 
-def test_pruning_the_selected_entry_clamps_safely_without_resending_any_message(surface):
+def test_pruning_and_clear_delegate_exact_entries_without_mutating_the_message_queue(surface):
     prepare_layout(surface)
     surface._resize_mode(initial=True)
     entries = history_entries()
     surface._update_history(entries)
-    surface._gui.first_lines[3] = 0
-    surface._gui.selections[3] = (1, 8)
     surface._update_history(entries[2:])
-    assert surface._gui.selections[3] == (0, 0)
-    assert surface._read_view(3, history=True).anchor == 0
+    assert surface._history.entries == entries[2:]
     assert surface.session.conversation.entries() == ()
     surface._update_history(())
     assert not surface._history_unread
-    assert surface._history_length == 0
+    assert surface._history.entries == ()
 
 
 @pytest.mark.parametrize("armed", [True, False])
@@ -1099,7 +1367,7 @@ def test_send_failure_has_concise_status_and_preserves_the_entire_draft(surface)
     surface._send_user()
     assert surface._gui.texts[7] == " "
     assert "not sent" in surface._gui.texts[4].lower()
-    assert "draft kept" in surface._gui.texts[4]
+    assert "kept" in surface._gui.texts[4]
     assert "Ctrl+Shift+H" in surface._gui.texts[4]
     assert not surface.controller.snapshot().armed
 
@@ -1459,7 +1727,7 @@ def test_layer_upload_uses_premultiplied_pixels_without_a_native_window(monkeypa
 
 def prepare_scrolling(surface, *, scale=1.0):
     prepare_layout(surface, scale=scale, work=(0, 0, round(1920 * scale), round(1040 * scale)))
-    for editor in (3, 7):
+    for editor in (7,):
         surface._comctl.SetWindowSubclass(editor, surface._edit_callback, 1, 0)
     surface._set_font()
     surface._resize_mode(initial=True)
@@ -1514,7 +1782,7 @@ def test_layout_batches_geometry_and_restores_redraw_before_one_complete_erase(s
             assert event[-1] is False
     end = next(index for index, event in enumerate(events) if event[0] == "end-defer")
     redraw = next(index for index, event in enumerate(events) if event[0] == "redraw")
-    for editor in (3, 7):
+    for editor in (7,):
         disable = events.index(("message", editor, win32con.WM_SETREDRAW, False, 0))
         enable = events.index(("message", editor, win32con.WM_SETREDRAW, True, 0))
         assert disable < end < enable < redraw
@@ -1628,32 +1896,67 @@ def test_dark_thumb_drag_pages_and_reaches_both_ends_without_changing_selection(
         surface._scroll_state(editor).position == maximum - surface._scroll_state(editor).page_step
     )
     surface._procedure(scrollbar, win32con.WM_KEYDOWN, win32con.VK_HOME, 0)
-    assert surface._scroll_state(editor).position == 0
+    if identifier == HISTORY_SCROLL:
+        assert ("scroll-command", win32con.SB_TOP) in surface._history.calls
+    else:
+        assert surface._scroll_state(editor).position == 0
     surface._procedure(scrollbar, win32con.WM_KEYDOWN, win32con.VK_END, 0)
-    assert surface._scroll_state(editor).position == maximum
+    if identifier == HISTORY_SCROLL:
+        assert ("scroll-command", win32con.SB_BOTTOM) in surface._history.calls
+    else:
+        assert surface._scroll_state(editor).position == maximum
     assert surface._gui.texts[7] == draft
     assert surface.controller.snapshot().generation == generation
     assert not surface.controller.snapshot().armed
     assert surface.controller.snapshot().completed_actions == 0
 
 
+@pytest.mark.parametrize("identifier", [HISTORY_SCROLL, COMPOSER_SCROLL])
+@pytest.mark.parametrize("move_away", [False, True])
+def test_outer_thumb_grab_preserves_exact_origin_in_pixel_and_line_ranges(
+    surface, identifier, move_away
+):
+    prepare_scrolling(surface)
+    if identifier == HISTORY_SCROLL:
+        surface._history.state = ScrollState(3001, 9, 1000)
+    else:
+        surface._gui.SetWindowText(7, "line\r\n" * 3000)
+        surface._scroll_to(7, 1000)
+    bar = surface._scrollbars[identifier]
+    editor = surface._scroll_target(bar)
+    _, _, width, height = surface._gui.GetClientRect(bar)
+    state = surface._scroll_state(editor)
+    thumb = thumb_geometry(state, height, surface._scale)
+    y = thumb.top + thumb.length // 2
+    grab_thumb(surface, identifier)
+    if move_away:
+        surface._procedure(
+            bar, win32con.WM_MOUSEMOVE, win32con.MK_LBUTTON, mouse_point(width // 2, y + 8)
+        )
+        assert surface._scroll_state(editor).position > 1000
+    surface._procedure(bar, win32con.WM_MOUSEMOVE, win32con.MK_LBUTTON, mouse_point(width // 2, y))
+    surface._procedure(bar, win32con.WM_LBUTTONUP, 0, mouse_point(width // 2, y))
+    assert surface._scroll_state(editor).position == 1000
+    assert surface._scroll_drag is None and not surface._gui.capture
+
+
 def test_scroll_adapter_keeps_full_native_line_deltas_above_65535(surface):
     prepare_scrolling(surface)
     original = surface._gui._lines
-    surface._gui._lines = lambda handle: range(100000) if handle == 3 else original(handle)
-    surface._scroll_to(3, 0)
-    scrollbar = grab_thumb(surface)
+    surface._gui._lines = lambda handle: range(100000) if handle == 7 else original(handle)
+    surface._scroll_to(7, 0)
+    scrollbar = grab_thumb(surface, COMPOSER_SCROLL)
     surface._gui.events.clear()
     surface._procedure(scrollbar, win32con.WM_LBUTTONUP, 0, mouse_point(4, 30000))
-    assert surface._scroll_state(3).position == surface._scroll_state(3).maximum
+    assert surface._scroll_state(7).position == surface._scroll_state(7).maximum
     assert any(
-        event[0] == "message" and event[1:3] == (3, win32con.EM_LINESCROLL) and event[-1] > 65535
+        event[0] == "message" and event[1:3] == (7, win32con.EM_LINESCROLL) and event[-1] > 65535
         for event in surface._gui.events
     )
     assert not surface._gui.capture
 
 
-@pytest.mark.parametrize("editor", [3, 7])
+@pytest.mark.parametrize("editor", [7])
 def test_edit_subclass_consumes_wheel_once_with_precision_and_windows_preferences(surface, editor):
     prepare_scrolling(surface)
     surface.controller.stop()
@@ -1813,44 +2116,43 @@ def test_bar_paint_failure_still_finishes_paint_and_releases_its_gdi_objects(sur
     assert len([event for event in surface._gui.events if event[0] == "delete"]) == 2
 
 
-def test_programmatic_reflow_notifications_and_copy_do_not_change_deliberate_follow_state(surface):
+def test_programmatic_reflow_leaves_the_component_following_policy_authoritative(surface):
     prepare_scrolling(surface)
     entries = history_entries(6, text="A short message.")
     surface._update_history(entries)
     surface._scroll_to(3, 3)
-    surface._gui.selections[3] = (15, 15)
-    before = surface._sample_view(3, history=True)
+    surface._history.following = False
+    view = surface._history.view
     surface._button(EXPAND)
-    assert surface._gui.first_lines[3] == 0
-    surface._edit_procedure(3, win32con.WM_KEYDOWN, ord("C"), 0)
-    surface._procedure(1, win32con.WM_COMMAND, HISTORY | (win32con.EN_VSCROLL << 16), 3)
-    assert not surface._read_view(3, history=True).following
+    assert surface._history.following is False
     surface._button(EXPAND)
-    assert surface._sample_view(3, history=True).anchor == before.anchor
+    assert surface._history.view is view
+    surface._history.unread = True
     surface._update_history((*entries, *history_entries(1, start=7)))
     assert surface._history_unread
-    surface._procedure(surface._scrollbars[HISTORY_SCROLL], win32con.WM_KEYDOWN, win32con.VK_END, 0)
-    assert surface._sample_view(3, history=True).following and not surface._history_unread
+    surface._scroll_latest()
+    assert surface._history.following and not surface._history_unread
 
 
 def test_reply_during_a_thumb_drag_preserves_reading_and_does_not_move_the_composer(surface):
     prepare_scrolling(surface)
     surface._scroll_to(3, 5)
     scrollbar = grab_thumb(surface)
-    before = surface._read_view(3, history=True)
+    assert surface._history.interacting
+    view = surface._history.view
     draft, selection = surface._gui.texts[7], surface._gui.selections.get(7)
     surface._update_history(history_entries(21))
-    assert surface._read_view(3, history=True).anchor == before.anchor
-    assert surface._history_unread and not surface._read_view(3, history=True).following
+    assert surface._history.view is view and surface._history.interacting
     assert surface._gui.capture == scrollbar
     assert surface._gui.texts[7] == draft and surface._gui.selections.get(7) == selection
     surface._procedure(scrollbar, win32con.WM_LBUTTONUP, 0, mouse_point(4, 2000))
-    assert not surface._history_unread
+    assert not surface._history.interacting
 
 
 def test_native_keyboard_and_ime_messages_delegate_without_replacing_native_edit_behavior(surface):
     prepare_scrolling(surface)
-    surface._scroll_to(3, surface._scroll_state(3).maximum)
+    surface._scroll_to(7, surface._scroll_state(7).maximum)
+    before = surface._scroll_state(7).position
 
     def page_up(handle, key):
         if key == win32con.VK_PRIOR:
@@ -1858,13 +2160,13 @@ def test_native_keyboard_and_ime_messages_delegate_without_replacing_native_edit
 
     surface._gui.native_key = page_up
     surface._gui.events.clear()
-    surface._edit_procedure(3, win32con.WM_KEYDOWN, win32con.VK_PRIOR, 0)
-    assert not surface._read_view(3, history=True).following
+    surface._edit_procedure(7, win32con.WM_KEYDOWN, win32con.VK_PRIOR, 0)
+    assert surface._scroll_state(7).position < before
     surface._edit_procedure(7, 0x010F, 0, 8)  # WM_IME_COMPOSITION stays with the native EDIT.
     calls = [
         e
         for e in surface._gui.events
-        if e[0] == "default-edit" and e[1:4] == (3, win32con.WM_KEYDOWN, win32con.VK_PRIOR)
+        if e[0] == "default-edit" and e[1:4] == (7, win32con.WM_KEYDOWN, win32con.VK_PRIOR)
     ]
     assert len(calls) == 1
     assert ("default-edit", 7, 0x010F, 0, 8) in surface._gui.events
@@ -1944,7 +2246,7 @@ def test_page_size_uses_the_native_formatting_rectangle_and_measured_font_height
     original = surface._gui.native_message
 
     def formatted(handle, message, wparam, lparam):
-        if handle == 3 and message == win32con.EM_GETRECT:
+        if handle == 7 and message == win32con.EM_GETRECT:
             rect = ctypes.cast(lparam, ctypes.POINTER(ctypes.wintypes.RECT)).contents
             rect.left, rect.top, rect.right, rect.bottom = 4, 7, 500, 43
             return 0
@@ -1957,7 +2259,667 @@ def test_page_size_uses_the_native_formatting_rectangle_and_measured_font_height
     surface._gui.native_message = formatted
     surface._gdi32.GetTextMetricsW = metrics
     surface._line_height = 0
-    state = surface._scroll_state(3)
+    state = surface._scroll_state(7)
     assert state.page == 2
     assert surface._line_height == 18
-    assert surface._gui.GetClientRect(3)[3] != 36
+    assert surface._gui.GetClientRect(7)[3] != 36
+
+
+def test_history_component_dynamic_and_hidden_hwnds_are_protected_without_text_queries(surface):
+    prepare_layout(surface)
+    surface._history.roles = {
+        9001: "transcript-history-body",
+        9002: "transcript-history-label",
+    }
+    surface._gui.visible[9002] = False
+    surface._gui.GetWindowText = lambda handle: pytest.fail("Roles must not inspect content")
+    roles = surface.window_roles()
+    assert roles[3] == "transcript-history"
+    assert roles[9001] == "transcript-history-body"
+    assert roles[9002] == "transcript-history-label"
+    assert {9001, 9002} <= set(surface.window_handles())
+    surface._history.roles[9003] = "transcript-history-body"
+    assert 9003 in surface.window_handles()
+
+
+def test_history_font_is_replaced_before_the_old_borrowed_font_is_deleted(surface):
+    prepare_layout(surface)
+    surface._set_font()
+    surface._layout()
+    assert surface._font == 60
+    surface._gui.events.clear()
+    original = surface._history.set_font
+
+    def borrow(font, **kwargs):
+        surface._gui.events.append(("history-font", font))
+        original(font, **kwargs)
+
+    surface._history.set_font = borrow
+    surface._gui.CreateFontIndirect = lambda description: 61
+    surface._replace_font()
+    assert 60 in surface._retired_fonts
+    assert ("delete", 60) not in surface._gui.events
+    surface._layout()
+    assert surface._gui.events.index(("history-font", 61)) < surface._gui.events.index(
+        ("delete", 60)
+    )
+    assert not surface._retired_fonts
+
+
+def test_history_wheel_and_pixel_scroll_commands_delegate_without_edit_line_conversion(surface):
+    prepare_scrolling(surface)
+    history = surface._history
+    history.state = ScrollState(200000, 120, 70000)
+    history.calls.clear()
+    surface._scroll_to(3, 150000)
+    assert ("scroll-to", 150000) in history.calls
+    surface._scroll_command(3, win32con.SB_PAGEUP)
+    assert ("scroll-command", win32con.SB_PAGEUP) in history.calls
+    surface._procedure(
+        surface._scrollbars[HISTORY_SCROLL],
+        win32con.WM_MOUSEWHEEL,
+        (-30 & 0xFFFF) << 16,
+        0,
+    )
+    assert ("wheel", -30, 3) in history.calls
+    with pytest.raises(RuntimeError, match="only to the composer"):
+        surface._sample_view(3)
+
+
+@pytest.mark.parametrize("visible,motion", [(False, True), (True, False), (True, True)])
+def test_arrival_animation_policy_is_visible_and_reduced_motion_aware(surface, visible, motion):
+    prepare_layout(surface)
+    surface._shown = visible
+    surface._motion_enabled = motion
+    entries = history_entries(1)
+    surface._update_history(entries, now=20.0)
+    assert surface._history.calls[-1] == ("entries", entries, 20.0, visible and motion)
+    surface._history.animation_active = True
+    surface._tick_history(20.016)
+    if visible and motion:
+        assert ("tick", 20.016) in surface._history.calls
+        assert surface._chat_animating
+    else:
+        assert ("cancel-animation",) in surface._history.calls
+        assert not surface._chat_animating
+
+
+def test_hide_show_reflow_and_motion_setting_changes_do_not_replay_arrivals(surface):
+    prepare_layout(surface)
+    surface._shown = True
+    surface._motion_enabled = True
+    entries = history_entries(2)
+    surface._update_history(entries)
+    history = surface._history
+    history.animation_active = True
+    history.calls.clear()
+    surface._apply_visibility(False)
+    surface._apply_visibility(True)
+    surface._layout()
+    surface._update_history(entries)
+    assert not history.animation_active
+    assert not any(call[0] == "entries" for call in history.calls)
+    history.animation_active = True
+    surface._gui.client_animations = False
+    surface._procedure(1, 0x001A, 0x1043, 0)
+    assert not surface._motion_enabled and not history.animation_active
+
+
+def test_chat_arrivals_tick_without_sixty_hz_model_or_status_churn(surface, monkeypatch):
+    prepare_layout(surface)
+    clock = [10.0]
+    monkeypatch.setattr("desktop_mcp.teaching_ui.time.monotonic", lambda: clock[0])
+    surface._shown = True
+    surface._motion_enabled = True
+    surface._history.animation_active = True
+    counts = []
+    surface.session.snapshot = lambda: (
+        counts.append("model") or TeachingSnapshot(1, (), (), None, None)
+    )
+    surface._refresh_status = lambda *args: counts.append("status")
+    surface._refresh_scene = lambda *args, **kwargs: None
+    surface._timer_running = True
+    surface._timer_interval = _IDLE_TIMER_MS
+    surface._on_timer()
+    clock[0] += 0.016
+    surface._on_timer()
+    assert counts == ["model", "status"]
+    assert len([call for call in surface._history.calls if call[0] == "tick"]) == 2
+    assert surface._timer_interval == _ANIMATION_TIMER_MS
+
+
+def test_settling_frame_stops_fast_timer_when_component_reports_no_active_arrivals(surface):
+    prepare_layout(surface)
+    surface._shown = True
+    surface._motion_enabled = True
+    surface._history.animation_active = True
+    surface._timer_running = True
+    surface._timer_interval = _ANIMATION_TIMER_MS
+
+    def settle(now):
+        surface._history.animation_active = False
+        return True
+
+    surface._history.tick = settle
+    surface._tick_history(10.18)
+    surface._schedule_timer()
+    assert not surface._chat_animating
+    assert surface._timer_interval == _IDLE_TIMER_MS
+
+
+def test_component_failure_is_content_free_and_releases_local_capture(surface):
+    prepare_scrolling(surface)
+    grab_thumb(surface)
+    surface._history_failed(OSError("Private body must not become status text"))
+    assert surface._exit and not surface._gui.capture
+    assert not surface.controller.snapshot().interface_ready
+    assert "Private body" not in surface.controller.snapshot().reason
+    assert ("cancel-interaction",) in surface._history.calls
+
+
+def test_history_close_is_explicit_without_deleting_its_borrowed_font(surface):
+    prepare_layout(surface)
+    history = surface._history
+    surface._font = 60
+    surface._close_history()
+    assert ("close",) in history.calls
+    assert surface._history is None and surface._history_window == 0
+    assert ("delete", 60) not in surface._gui.events
+
+
+def test_real_history_component_integrates_through_its_public_api_with_fake_windows(surface):
+    import win32gui
+
+    from desktop_mcp.transcript_chat import native_text
+    from desktop_mcp.transcript_chat_native import NativeChatHistory
+    from tests.test_desktop_transcript_chat_native import FakeWin32
+
+    prepare_layout(surface)
+    native = FakeWin32()
+    history = NativeChatHistory(
+        on_change=surface._history_changed, on_error=surface._history_failed
+    )
+
+    def load():
+        history._gui = SimpleNamespace(
+            **{name: getattr(native, name) for name in dir(native) if hasattr(win32gui, name)}
+        )
+        history._api = history._comctl = history._user32 = native
+        history._con = win32con
+        history._text_callback = history._text_procedure
+
+    history._load_native = load
+    surface._history = history
+    surface._history_window = history.create(1, 7, HISTORY)
+    surface._font = 700
+    surface._line_height = native.pitches[700]
+    surface._history_font_dirty = True
+    move = surface._gui.MoveWindow
+
+    def position(handle, x, y, width, height, repaint):
+        move(handle, x, y, width, height, repaint)
+        if handle == history.hwnd:
+            native.MoveWindow(handle, x, y, width, height, False)
+
+    surface._gui.MoveWindow = position
+    try:
+        surface._layout()
+        surface._shown = True
+        surface._motion_enabled = True
+        entries = history_entries(8, text="Full message 😀\n" * 100)
+        surface._update_history(entries, now=10.0)
+        assert not history.animation_active
+        assert set(history.window_handles()) <= set(surface.window_handles())
+        body = history._bubbles[3].editor
+        assert native.GetWindowText(body) == native_text(entries[2][2])
+        native.SendMessage(body, win32con.EM_SETSEL, 5, 900)
+        history.scroll_to(100)
+        view = history.capture_view()
+        surface._button(EXPAND)
+        restored = history.capture_view()
+        assert restored.anchor == view.anchor
+        assert restored.messages == view.messages
+        next_font = [710]
+
+        def create_font(description):
+            next_font[0] += 1
+            surface._gui.font_height = -description.lfHeight
+            surface._gui.font_face = description.lfFaceName
+            native.pitches[next_font[0]] = surface._gui.font_height + 2
+            return next_font[0]
+
+        surface._gui.CreateFontIndirect = create_font
+        surface._gui.foreground, surface._gui.focused = surface._panel, surface._composer
+        surface._user32.GetKeyState = lambda key: 0x8000 if key == win32con.VK_CONTROL else 0
+        for key, selected in ((0xBB, 16), (0xBD, 14), (0xBD, 12)):
+            press_text_size(surface, key)
+            resized = history.capture_view()
+            assert resized.anchor == view.anchor and resized.messages == view.messages
+            assert surface.layout_status()["font_dip"] == selected
+            assert native.GetWindowText(body) == native_text(entries[2][2])
+        surface._update_history(
+            (*entries, (9, "Assistant", "A complete new reply", "assistant")), now=11.0
+        )
+        assert history.unread and not history.following
+        assert surface._history_unread
+        assert native.GetWindowText(body) == native_text(entries[2][2])
+        surface._scroll_latest()
+        assert history.following and not surface._history_unread
+        assert not surface._exit
+    finally:
+        surface._close_history()
+    assert not native.objects and not native.classes and not native.subclasses
+    assert 700 not in native.deleted
+
+
+def fake_scene(surface, monkeypatch, *, waiting=None):
+    clock = [1.0]
+    monkeypatch.setattr("desktop_mcp.teaching_ui.time.monotonic", lambda: clock[0])
+    mark = Mark("laser", "laser", ((20, 20),), "#ffb454", 3, 0.0, 10.0, None)
+    snapshot = [TeachingSnapshot(1, (), (mark,) if waiting is None else (), waiting, None)]
+    surface.session.snapshot = lambda: snapshot[0]
+    surface._api.GetSystemMetrics = lambda code: {76: 0, 77: 0, 78: 1920, 79: 1080}[code]
+    bounds_times, renders, uploads, closed = [], [], [], []
+    before_return = [lambda: None]
+
+    def bounds(value, desktop, *, now):
+        bounds_times.append(now)
+        return (0, 0, 40, 40) if value.marks or value.waiting is not None else None
+
+    def render(value, rectangle, *, now):
+        renders.append(now)
+        before_return[0]()
+        return SimpleNamespace(close=lambda: closed.append(now))
+
+    surface._scene_bounds = bounds
+    monkeypatch.setattr("desktop_mcp.teaching_render.render_marks", render)
+    monkeypatch.setattr("desktop_mcp.layers.upload_rgba", lambda *args: uploads.append(args))
+    return SimpleNamespace(
+        clock=clock,
+        snapshot=snapshot,
+        bounds=bounds_times,
+        renders=renders,
+        uploads=uploads,
+        closed=closed,
+        before_return=before_return,
+    )
+
+
+def test_root_deactivation_cancels_internal_history_capture_and_settles_arrivals(surface):
+    prepare_scrolling(surface)
+    surface._history.interacting = True
+    surface._history.animation_active = True
+    surface._procedure(1, win32con.WM_ACTIVATE, 0, 0)
+    assert not surface._history.interacting and not surface._history.animation_active
+    assert ("cancel-interaction",) in surface._history.calls
+
+
+def test_same_wait_snapshot_is_not_a_time_animation_and_new_progress_still_repaints(
+    surface, monkeypatch
+):
+    scene = fake_scene(surface, monkeypatch, waiting=WaitTarget((10, 10), 28, True, 0.1, 1.0))
+    control = surface.controller.snapshot()
+    surface._refresh_scene(control, scene.snapshot[0], 1.0)
+    surface._refresh_scene(control, scene.snapshot[0], 1.016)
+    assert not surface._scene_animating
+    assert scene.renders == [1.0]
+    scene.snapshot[0] = TeachingSnapshot(1, (), (), WaitTarget((10, 10), 28, True, 0.5, 1.1), None)
+    surface._refresh_scene(control, scene.snapshot[0], 1.033)
+    assert scene.renders == [1.0, 1.033]
+    assert scene.closed == scene.renders
+
+
+@pytest.mark.parametrize(
+    "now,animated", [(-0.001, False), (0.0, True), (9.999, True), (10.0, False)]
+)
+def test_only_live_started_lasers_request_fast_animation_cadence(
+    surface, monkeypatch, now, animated
+):
+    scene = fake_scene(surface, monkeypatch)
+    surface._refresh_scene(surface.controller.snapshot(), scene.snapshot[0], now)
+    assert surface._scene_animating is animated
+
+
+def test_repaint_tick_observes_removed_marks_without_rebuilding_chat_or_status(
+    surface, monkeypatch
+):
+    scene = fake_scene(surface, monkeypatch)
+    updates = []
+    surface._update_history = lambda *args, **kwargs: updates.append("history")
+    surface._refresh_status = lambda *args: updates.append("status")
+    surface._sync_scrollbars = lambda: None
+    surface._on_timer()
+    assert len(scene.uploads) == 1
+    scene.snapshot[0] = TeachingSnapshot(2, (), (), None, None)
+    scene.clock[0] = 1.016
+    surface._on_timer()
+    assert updates == ["history", "status"]
+    assert len(scene.uploads) == 1 and not surface._scene_animating
+    assert not surface._gui.IsWindowVisible(2)
+
+
+@pytest.mark.parametrize("change", ["stop", "rearm", "erase", "capture", "capture-restore"])
+def test_frame_is_closed_and_not_uploaded_after_revocation_or_liveness_change(
+    surface, monkeypatch, change
+):
+    scene = fake_scene(surface, monkeypatch)
+    control = surface.controller.snapshot()
+    pending = []
+
+    def change_during_render():
+        if change == "stop":
+            surface.controller.stop()
+        elif change == "rearm":
+            surface.controller.stop()
+            surface.controller.arm_local()
+        elif change == "erase":
+            scene.snapshot[0] = TeachingSnapshot(2, (), (), None, None)
+        else:
+            request = _Request("hide")
+            pending.append(request)
+            surface._requests.put(request)
+            if change == "capture-restore":
+                restore = _Request("restore")
+                pending.append(restore)
+                surface._requests.put(restore)
+
+    scene.before_return[0] = change_during_render
+    surface._refresh_scene(control, scene.snapshot[0], 1.0)
+    assert not scene.uploads
+    assert scene.closed == [1.0]
+    assert surface._scene_snapshot is None and surface._scene_ticket is None
+    assert not surface._gui.IsWindowVisible(2)
+    for request in pending:
+        assert request.done.is_set() and request.error is None
+    if change == "capture":
+        assert dispatch(surface, "restore").error is None
+
+
+def test_upload_failure_closes_the_returned_image(surface, monkeypatch):
+    scene = fake_scene(surface, monkeypatch)
+
+    def fail(*args):
+        raise OSError("Synthetic upload failure")
+
+    monkeypatch.setattr("desktop_mcp.layers.upload_rgba", fail)
+    with pytest.raises(OSError, match="upload failure"):
+        surface._refresh_scene(surface.controller.snapshot(), scene.snapshot[0], 1.0)
+    assert scene.closed == [1.0] and not surface._scene_rendering
+
+
+def test_heavy_frames_are_coalesced_with_request_service_and_no_catch_up(surface, monkeypatch):
+    scene = fake_scene(surface, monkeypatch)
+    scene.before_return[0] = lambda: scene.clock.__setitem__(0, scene.clock[0] + 0.05)
+    control = surface.controller.snapshot()
+    surface._refresh_scene(control, scene.snapshot[0], 1.0)
+    assert scene.renders == [1.0]
+    assert surface._next_scene_frame == pytest.approx(1.075)
+    scene.clock[0] = 1.06
+    surface._refresh_scene(control, scene.snapshot[0], scene.clock[0])
+    assert scene.renders == [1.0]
+    request = _Request("hide")
+    surface._requests.put(request)
+    surface._procedure(1, win32con.WM_TIMER, 1, 0)
+    assert request.done.is_set() and request.error is None
+    assert scene.renders == [1.0]
+    assert dispatch(surface, "restore").error is None
+    scene.clock[0] = 2.0
+    surface._refresh_scene(control, scene.snapshot[0], scene.clock[0])
+    assert scene.renders == [1.0, 2.0]
+    assert scene.closed == scene.renders
+    assert scene.bounds[-1] == scene.renders[-1]
+
+
+def test_manual_chat_refresh_does_not_add_extra_laser_frames_between_animation_wakes(
+    surface, monkeypatch
+):
+    scene = fake_scene(surface, monkeypatch)
+    surface._update_history = lambda *args, **kwargs: None
+    surface._refresh_status = lambda *args: None
+    surface._sync_scrollbars = lambda: None
+    surface._on_timer()
+    scene.clock[0] = 1.005
+    surface._refresh()
+    assert scene.renders == [1.0]
+    scene.clock[0] = 1.016
+    surface._on_timer()
+    assert scene.renders == [1.0, 1.016]
+
+
+def test_input_revision_change_during_render_does_not_rebase_the_old_scene(surface, monkeypatch):
+    scene = fake_scene(surface, monkeypatch)
+    original = surface.controller.snapshot()
+    state = [original]
+    monkeypatch.setattr(surface.controller, "snapshot", lambda: state[0])
+    scene.before_return[0] = lambda: state.__setitem__(
+        0, replace(original, input_revision=original.input_revision + 1)
+    )
+    surface._refresh_scene(original, scene.snapshot[0], 1.0)
+    assert not scene.uploads and scene.closed == [1.0]
+    assert surface._scene_ticket is None and surface._scene_snapshot is None
+
+
+def test_idle_33ms_wakes_do_not_halve_state_polling_and_long_gaps_are_coalesced(
+    surface, monkeypatch
+):
+    clock = [10.0]
+    monkeypatch.setattr("desktop_mcp.teaching_ui.time.monotonic", lambda: clock[0])
+    polls = []
+    surface.session.snapshot = lambda: (
+        polls.append(clock[0]) or TeachingSnapshot(1, (), (), None, None)
+    )
+    surface._update_history = lambda *args, **kwargs: None
+    surface._refresh_status = lambda *args: None
+    surface._sync_scrollbars = lambda: None
+    surface._refresh_scene = lambda *args, **kwargs: None
+    for index in range(121):
+        clock[0] = 10.0 + index * 0.033
+        surface._on_timer()
+    assert len(polls) == 121
+    clock[0] += 5.0
+    surface._on_timer()
+    assert len(polls) == 122
+    assert clock[0] < surface._next_state_refresh <= clock[0] + 0.033001
+
+
+def test_16ms_animation_sequence_has_no_periodic_bucket_gap(surface, monkeypatch):
+    scene = fake_scene(surface, monkeypatch)
+    surface._update_history = lambda *args, **kwargs: None
+    surface._refresh_status = lambda *args: None
+    surface._sync_scrollbars = lambda: None
+    expected = []
+    for index in range(121):
+        scene.clock[0] = 1.0 + index * 0.016
+        expected.append(scene.clock[0])
+        surface._on_timer()
+    assert scene.renders == expected
+    assert scene.closed == expected
+
+
+def prepare_text_sizes(surface, *, scale=1.0, focused=7):
+    prepare_scrolling(surface, scale=scale)
+    surface._shown = True
+    surface._gui.foreground = surface._panel
+    surface._gui.focused = focused
+    keys = {win32con.VK_CONTROL: 0x8000}
+    surface._user32.GetKeyState = lambda key: keys.get(key, 0)
+    return keys
+
+
+def text_size_message(surface, key, *, kind=win32con.WM_KEYDOWN, repeat=False, window=None):
+    return ctypes.wintypes.MSG(
+        hWnd=surface._gui.GetFocus() if window is None else window,
+        message=kind,
+        wParam=key,
+        lParam=(1 << 30) if repeat else 0,
+    )
+
+
+def press_text_size(surface, key):
+    assert surface._text_size_key(text_size_message(surface, key))
+    assert surface._text_size_key(text_size_message(surface, key, kind=win32con.WM_KEYUP))
+
+
+def test_text_size_has_exactly_three_clamped_steps_and_a_medium_default(surface):
+    prepare_text_sizes(surface)
+    assert surface.layout_status()["text_size"] == "Medium"
+    assert surface.layout_status()["font_dip"] == 14
+    sizes = []
+    for key in (0xBB, 0xBB, 0xBD, 0xBD, 0xBD, 0xBB, 0xBB):
+        press_text_size(surface, key)
+        sizes.append(surface.layout_status()["font_dip"])
+    assert sizes == [16, 16, 14, 12, 12, 14, 16]
+    assert surface._font_face == "Segoe UI Variable Text"
+    assert "Text: Large" in surface._gui.texts[surface._history_label]
+    assert "Ctrl +/-" in surface._gui.texts[surface._history_label]
+
+
+@pytest.mark.parametrize(
+    "key,shift,expected",
+    [(0xBB, False, 16), (0xBB, True, 16), (0x6B, False, 16), (0xBD, False, 12), (0x6D, False, 12)],
+)
+def test_text_size_accepts_equals_plus_minus_and_keypad(surface, key, shift, expected):
+    keys = prepare_text_sizes(surface)
+    if shift:
+        keys[win32con.VK_SHIFT] = 0x8000
+    press_text_size(surface, key)
+    assert surface.layout_status()["font_dip"] == expected
+
+
+@pytest.mark.parametrize("focused", [1, 3, 7, 8, 301, 406, 9001])
+def test_text_size_is_local_to_focused_transcript_descendants(surface, focused):
+    prepare_text_sizes(surface, focused=focused)
+    surface._history.roles[9001] = "transcript-history-text"
+    press_text_size(surface, 0xBB)
+    assert surface.layout_status()["font_dip"] == 16
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "other-app",
+        "other-window",
+        "wrong-target",
+        "canvas",
+        "no-ctrl",
+        "altgr",
+        "ime-flag",
+        "ime-context",
+        "hidden",
+        "system-key",
+    ],
+)
+def test_text_size_does_not_intercept_focus_modifier_or_ime_boundaries(surface, boundary):
+    keys = prepare_text_sizes(surface)
+    message = text_size_message(surface, 0xBB)
+    if boundary == "other-app":
+        surface._gui.foreground = 999
+    elif boundary == "other-window":
+        surface._gui.focused = 999
+        message.hWnd = 999
+    elif boundary == "wrong-target":
+        message.hWnd = surface._panel
+    elif boundary == "canvas":
+        surface._gui.focused = surface._canvas
+        message.hWnd = surface._canvas
+    elif boundary == "no-ctrl":
+        keys.clear()
+    elif boundary == "altgr":
+        keys[win32con.VK_MENU] = 0x8000
+    elif boundary == "ime-flag":
+        surface._ime_composing = True
+    elif boundary == "ime-context":
+        surface._composition_active = lambda: True
+    elif boundary == "hidden":
+        surface._shown = False
+    else:
+        message.message = win32con.WM_SYSKEYDOWN
+    before = surface._font
+    assert not surface._text_size_key(message)
+    assert surface._font == before and surface.layout_status()["font_dip"] == 14
+
+
+@pytest.mark.parametrize(
+    "key,char",
+    [
+        (0xBB, ord("=")),
+        (0xBB, ord("+")),
+        (0x6B, ord("+")),
+        (0xBD, ord("-")),
+        (0x6D, ord("-")),
+        (0xBD, 0x1F),
+    ],
+)
+def test_text_size_consumes_duplicate_key_and_char_events_without_touching_draft(
+    surface, key, char
+):
+    prepare_text_sizes(surface)
+    draft = surface._gui.texts[7]
+    assert surface._text_size_key(text_size_message(surface, key))
+    expected = surface.layout_status()["font_dip"]
+    surface._gui.events.clear()
+    assert surface._text_size_key(text_size_message(surface, key, repeat=True))
+    assert surface._text_size_key(text_size_message(surface, key))
+    assert surface._text_size_key(text_size_message(surface, char, kind=win32con.WM_CHAR))
+    assert surface.layout_status()["font_dip"] == expected
+    assert surface._gui.texts[7] == draft
+    assert not any(
+        event[0] in {"begin-defer", "focus", "position"} for event in surface._gui.events
+    )
+    assert surface._text_size_key(text_size_message(surface, key, kind=win32con.WM_KEYUP))
+    assert not surface._text_size_key(text_size_message(surface, char, kind=win32con.WM_CHAR))
+
+
+def test_text_size_choice_survives_modes_hide_resize_and_dpi_without_losing_state(surface):
+    prepare_text_sizes(surface)
+    surface.controller.stop()
+    generation = surface.controller.snapshot().generation
+    surface.session.conversation.send_user("Keep this pending correction")
+    surface._gui.SetWindowText(7, "Draft 😀\r\nstill being written")
+    surface._gui.selections[7] = (6, 14)
+    view = surface._history.view
+    original_bounds = surface._gui.rect
+    surface._gui.events.clear()
+    press_text_size(surface, 0x6D)
+    assert surface._gui.rect == original_bounds
+    assert not any(event[0] in {"focus", "position"} for event in surface._gui.events)
+    surface._button(EXPAND)
+    surface._apply_visibility(False)
+    surface._apply_visibility(True)
+    surface._gui.rect = (100, 100, 1000, 500)
+    surface._layout()
+    surface._button(EXPAND)
+    proposed = ctypes.wintypes.RECT(100, 100, 1780, 500)
+    surface._gui.chrome = (24, 58)
+    surface._procedure(1, 0x02E0, 144 | (144 << 16), ctypes.addressof(proposed))
+    status = surface.layout_status()
+    assert status["text_size"] == "Small" and status["font_dip"] == 12
+    assert status["font_height"] == round(12 * surface._scale)
+    assert status["font_face"] == "Segoe UI Variable Text"
+    assert surface._gui.texts[7] == "Draft 😀\r\nstill being written"
+    assert surface._gui.selections[7] == (6, 14)
+    assert surface._history.view is view
+    assert surface.session.conversation.status()["pending_messages"] == 1
+    assert surface.controller.snapshot().generation == generation
+    assert not surface.controller.snapshot().armed
+
+
+def test_text_shortcut_is_still_discoverable_in_a_narrow_host(surface):
+    prepare_text_sizes(surface)
+    surface._gui.rect = (0, 0, 380, 340)
+    surface._layout()
+    label = surface._gui.texts[surface._history_label]
+    assert "Medium" in label and "Ctrl +/-" in label
+    assert surface._text_width(label) <= surface._gui.positions[surface._history_label][2]
+
+
+def test_deactivation_and_ime_start_clear_pending_text_shortcut_char_suppression(surface):
+    prepare_text_sizes(surface)
+    assert surface._text_size_key(text_size_message(surface, 0xBB))
+    surface._procedure(1, win32con.WM_ACTIVATE, 0, 0)
+    assert not surface._text_size_keys_held
+    assert not surface._text_size_key(text_size_message(surface, ord("+"), kind=win32con.WM_CHAR))
+    assert surface._text_size_key(text_size_message(surface, 0xBD))
+    surface._edit_procedure(7, 0x010D, 0, 0)
+    assert not surface._text_size_keys_held
+    assert not surface._text_size_key(text_size_message(surface, ord("-"), kind=win32con.WM_CHAR))

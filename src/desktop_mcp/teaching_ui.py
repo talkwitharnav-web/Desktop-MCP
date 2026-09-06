@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from collections.abc import Callable
 import ctypes
 from ctypes import wintypes
@@ -15,6 +15,7 @@ import uuid
 
 from desktop_mcp.contracts import Rect
 from desktop_mcp.conversation import MAX_TEXT
+from desktop_mcp.transcript_chat import BACKGROUND, TEXT_COLOR
 from desktop_mcp.transcript_layout import (
     BOTTOM as _BOTTOM,
     CLEAR as _CLEAR,
@@ -24,6 +25,7 @@ from desktop_mcp.transcript_layout import (
     COMPOSER_SCROLL,
     EXPAND as _EXPAND,
     FONT_DIP,
+    FONT_SIZES,
     HISTORY,
     HISTORY_LABEL,
     HISTORY_SCROLL,
@@ -51,11 +53,19 @@ from desktop_mcp.transcript_scroll import (
 if TYPE_CHECKING:
     from desktop_mcp.runtime import Controller
     from desktop_mcp.teaching import TeachingSession, TeachingSnapshot
+    from desktop_mcp.transcript_chat_native import NativeChatHistory
 
 _COMMAND = 0x8000 + 73
 _REFLOW = 0x8000 + 74
 _EDIT_SUBCLASS = 1
-_EMPTY_HISTORY = "Your messages and replies appear here. Ask Copilot to listen with TranscriptRead."
+_FONT_FACES = ("Segoe UI Variable Text", "Segoe UI")
+_CLIENT_AREA_ANIMATION = 0x1042
+_IDLE_TIMER_MS = 33
+_STATE_REFRESH_SECONDS = _IDLE_TIMER_MS / 1000
+_STATE_DEADLINE_EPSILON = 0.000001
+_ANIMATION_TIMER_MS = 16
+_TEXT_SIZE_NAMES = ("Small", "Medium", "Large")
+_TEXT_SIZE_KEYS = {0xBB: 1, 0x6B: 1, 0xBD: -1, 0x6D: -1}
 
 
 @dataclass
@@ -132,13 +142,13 @@ class _TextMetric(ctypes.Structure):
 class _ScrollDrag:
     window: int
     fraction: float
+    origin: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
 class _EditView:
     anchor: int
     selection: tuple[int, int]
-    following: bool = False
 
 
 class TeachingSurface:
@@ -161,7 +171,8 @@ class TeachingSurface:
         self._error: Exception | None = None
         self._panel = 0
         self._canvas = 0
-        self._editor = 0
+        self._history_window = 0
+        self._history: NativeChatHistory | None = None
         self._composer = 0
         self._send = 0
         self._status = 0
@@ -173,7 +184,6 @@ class TeachingSurface:
         self._scroll_drag: _ScrollDrag | None = None
         self._scroll_hover = 0
         self._wheel_remainders: dict[int, int] = {}
-        self._history_pointer_down = False
         self._ime_composing = False
         self._edit_callback = self._edit_procedure
         self._line_height = 0
@@ -185,27 +195,47 @@ class TeachingSurface:
         self._layout_serial = 0
         self._child_visibility: dict[int, bool] = {}
         self._hide_count = 0
+        self._capture_serial = 0
         self._restore_panel: tuple[bool, bool] = (False, False)
         self._shown = False
         self._minimized = False
         self._pinned = False
         self._last_text: tuple = ()
-        self._history_offsets: dict[int, tuple[int, int]] = {}
-        self._history_length = 0
         self._history_unread = False
-        self._history_view_cache: tuple[_EditView, _EditView] | None = None
         self._last_scene: tuple | None = None
+        self._scene_snapshot: TeachingSnapshot | None = None
+        self._scene_ticket: tuple[int, int] | None = None
+        self._scene_animating = False
+        self._scene_rendering = False
+        self._next_scene_frame = 0.0
+        self._chat_animating = False
+        self._next_state_refresh = 0.0
+        self._timer_interval = 0
+        self._timer_running = False
         self._exit = False
         self._font = 0
+        self._retired_fonts: list[int] = []
+        self._history_font_dirty = False
         self._background = 0
         self._scale = 1.0
         self._dpi_scale = 1.0
         self._font_height = FONT_DIP
+        self._text_size_index = 1
+        self._text_size_keys_held: set[int] = set()
+        self._font_face = _FONT_FACES[0]
+        self._font_face_verified = False
+        self._motion_enabled = False
         self._compact = True
         self._dock_edge: Dock = "bottom"
         self._mode_sizes: dict[bool, tuple[float, float]] = {}
         self._placement_width: int | None = None
-        self._layout_info: dict[str, object] = {"compact": True, "dock": "bottom", "bounds": None}
+        self._layout_info: dict[str, object] = {
+            "compact": True,
+            "dock": "bottom",
+            "bounds": None,
+            "text_size": "Medium",
+            "font_dip": FONT_DIP,
+        }
         self._status_width = 0
         self._last_status: str | None = None
         self._status_key: tuple | None = None
@@ -237,7 +267,7 @@ class TeachingSurface:
         roles = (
             (self._panel, "transcript"),
             (self._canvas, "annotation-overlay"),
-            (self._editor, "transcript-history"),
+            (self._history_window, "transcript-history"),
             (self._composer, "transcript-composer"),
             (self._send, "transcript-send"),
             (self._status, "transcript-controls"),
@@ -249,7 +279,10 @@ class TeachingSurface:
                 for identifier, handle in tuple(self._scrollbars.items())
             ),
         )
-        return {handle: role for handle, role in roles if handle}
+        result = {handle: role for handle, role in roles if handle}
+        if self._history is not None:
+            result.update(self._history.window_roles())
+        return result
 
     def layout_status(self) -> dict[str, object]:
         """Return content-free layout metadata; bounds and font height are physical pixels."""
@@ -257,7 +290,7 @@ class TeachingSurface:
 
     def _children(self) -> dict[int, int]:
         return {
-            HISTORY: self._editor,
+            HISTORY: self._history_window,
             STATUS: self._status,
             COMPOSER: self._composer,
             _SEND: self._send,
@@ -459,6 +492,8 @@ class TeachingSurface:
         self._gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
         self._gdi32.GetTextMetricsW.argtypes = [wintypes.HDC, ctypes.POINTER(_TextMetric)]
         self._gdi32.GetTextMetricsW.restype = wintypes.BOOL
+        self._gdi32.GetTextFaceW.argtypes = [wintypes.HDC, ctypes.c_int, wintypes.LPWSTR]
+        self._gdi32.GetTextFaceW.restype = ctypes.c_int
         self._dwm = ctypes.WinDLL("dwmapi", use_last_error=True)
         self._dwm.DwmFlush.restype = ctypes.c_long
         self._dwm.DwmSetWindowAttribute.argtypes = [
@@ -475,7 +510,7 @@ class TeachingSurface:
         if not previous_dpi:
             raise ctypes.WinError(ctypes.get_last_error())
         try:
-            self._background = win32gui.CreateSolidBrush(win32api.RGB(23, 24, 27))
+            self._background = win32gui.CreateSolidBrush(win32api.RGB(*BACKGROUND))
             cls = win32gui.WNDCLASS()
             cls.hInstance = instance
             cls.lpszClassName = class_name
@@ -521,13 +556,16 @@ class TeachingSurface:
             enabled, rounded = ctypes.c_int(1), ctypes.c_int(2)
             self._dwm.DwmSetWindowAttribute(self._panel, 20, ctypes.byref(enabled), 4)
             self._dwm.DwmSetWindowAttribute(self._panel, 33, ctypes.byref(rounded), 4)
+            self._motion_enabled = self._client_animations_enabled()
             self._create_controls(instance)
             self._set_font()
             self._resize_mode(initial=True)
             self._refresh()
             self._apply_visibility(True)
-            if not self._user32.SetTimer(self._panel, 1, 33, None):
+            if not self._user32.SetTimer(self._panel, 1, _IDLE_TIMER_MS, None):
                 raise ctypes.WinError(ctypes.get_last_error())
+            self._timer_interval = _IDLE_TIMER_MS
+            self._timer_running = True
             self._ready.set()
             message = wintypes.MSG()
             while not self._exit:
@@ -535,7 +573,7 @@ class TeachingSurface:
                     if message.message == win32con.WM_QUIT:
                         self._exit = True
                         break
-                    if self._composer_key(message):
+                    if self._text_size_key(message) or self._composer_key(message):
                         continue
                     if not self._user32.IsDialogMessageW(self._panel, ctypes.byref(message)):
                         self._user32.TranslateMessage(ctypes.byref(message))
@@ -543,6 +581,7 @@ class TeachingSurface:
                 self._finished.wait(0.004)
         finally:
             try:
+                self._exit = True
                 with ExitStack() as cleanup:
                     cleanup.callback(self._user32.SetThreadDpiAwarenessContext, previous_dpi)
                     if registered:
@@ -551,14 +590,18 @@ class TeachingSurface:
                         cleanup.callback(win32gui.DeleteObject, self._background)
                     if self._font:
                         cleanup.callback(win32gui.DeleteObject, self._font)
+                    for font in self._retired_fonts:
+                        cleanup.callback(win32gui.DeleteObject, font)
                     for handle in (self._panel, self._canvas):
                         if handle and win32gui.IsWindow(handle):
                             cleanup.callback(win32gui.DestroyWindow, handle)
                     cleanup.callback(self._cancel_scroll_drag)
+                    cleanup.callback(self._close_history)
                     if self._panel and win32gui.IsWindow(self._panel):
                         self._user32.KillTimer(self._panel, 1)
+                    self._timer_running = False
             finally:
-                self._canvas = self._panel = self._editor = self._status = 0
+                self._canvas = self._panel = self._history_window = self._status = 0
                 self._composer = self._send = 0
                 self._history_label = self._composer_label = 0
                 self._buttons.clear()
@@ -566,9 +609,11 @@ class TeachingSurface:
                 self._scroll_states.clear()
                 self._wheel_remainders.clear()
                 self._ime_composing = False
+                self._text_size_keys_held.clear()
                 self._child_visibility.clear()
                 self._layout_info = {**self._layout_info, "bounds": None}
                 self._font = self._background = 0
+                self._retired_fonts.clear()
 
     def _create_controls(self, instance: int) -> None:
         gui, con = self._gui, self._con
@@ -592,16 +637,9 @@ class TeachingSurface:
 
         label_style = con.SS_NOPREFIX | con.SS_CENTERIMAGE | con.SS_ENDELLIPSIS
         self._history_label = create(HISTORY_LABEL, "STATIC", "Conversation", label_style)
-        self._editor = create(
-            HISTORY,
-            "EDIT",
-            _EMPTY_HISTORY,
-            con.WS_TABSTOP
-            | con.ES_MULTILINE
-            | con.ES_READONLY
-            | con.ES_AUTOVSCROLL
-            | con.ES_NOHIDESEL,
-        )
+        self._history = self._new_history()
+        self._history_window = self._history.create(self._panel, instance, HISTORY)
+        self._history_font_dirty = True
         scroll_class = gui.GetClassName(self._panel)
         self._scrollbars[HISTORY_SCROLL] = create(
             HISTORY_SCROLL, scroll_class, "Conversation scroll", con.WS_TABSTOP
@@ -619,9 +657,10 @@ class TeachingSurface:
         self._scrollbars[COMPOSER_SCROLL] = create(
             COMPOSER_SCROLL, scroll_class, "Message scroll", con.WS_TABSTOP
         )
-        for handle in (self._editor, self._composer):
-            if not self._comctl.SetWindowSubclass(handle, self._edit_callback, _EDIT_SUBCLASS, 0):
-                raise ctypes.WinError(ctypes.get_last_error())
+        if not self._comctl.SetWindowSubclass(
+            self._composer, self._edit_callback, _EDIT_SUBCLASS, 0
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
         gui.SendMessage(self._composer, con.EM_SETLIMITTEXT, 16_000, 0)
         button_style = con.WS_TABSTOP | con.BS_OWNERDRAW
         self._send = create(_SEND, "BUTTON", "Send", button_style)
@@ -638,6 +677,38 @@ class TeachingSurface:
         ):
             self._buttons[identifier] = create(identifier, "BUTTON", label, button_style)
         self._child_visibility = {identifier: True for identifier in self._children()}
+
+    def _new_history(self) -> NativeChatHistory:
+        from desktop_mcp.transcript_chat_native import NativeChatHistory
+
+        return NativeChatHistory(
+            on_change=self._history_changed,
+            on_error=self._history_failed,
+        )
+
+    def _close_history(self) -> None:
+        history, self._history = self._history, None
+        self._history_window = 0
+        if history is not None:
+            history.close()
+
+    def _history_changed(self) -> None:
+        if self._history is None or self._exit:
+            return
+        self._set_unread(self._history.unread)
+        self._chat_animating = self._motion_enabled and self._history.animation_active
+        self._sync_scrollbars()
+        self._schedule_timer()
+
+    def _history_failed(self, error: Exception) -> None:
+        if self._exit:
+            return
+        self._error = error
+        self.controller.set_interface_ready(
+            False, f"Transcript history failed: {type(error).__name__}"
+        )
+        self._exit = True
+        self._cancel_modal()
 
     def _procedure(self, handle, message, wparam, lparam):
         gui, con = self._gui, self._con
@@ -659,7 +730,7 @@ class TeachingSurface:
             if message == con.WM_TIMER and handle == self._panel:
                 self._drain_requests()
                 if not self._exit and not self._layout_busy and not self._programmatic_depth:
-                    self._refresh()
+                    self._on_timer()
                 return 0
             if message == con.WM_CLOSE and handle == self._panel:
                 try:
@@ -671,10 +742,14 @@ class TeachingSurface:
                         self._exit = True
                     self._cancel_modal()
                 return 0
-            if message == con.WM_SIZE and handle == self._panel and self._editor:
+            if message == con.WM_SIZE and handle == self._panel and self._history_window:
                 self._minimized = wparam == con.SIZE_MINIMIZED
                 if self._minimized:
+                    self._text_size_keys_held.clear()
                     self._cancel_scroll_drag()
+                    if self._history is not None:
+                        self._history.cancel_interaction()
+                        self._history_changed()
                 else:
                     self._layout()
                 return 0
@@ -684,11 +759,15 @@ class TeachingSurface:
                     self._dock_area(), self._placement_width
                 )
                 return 0
-            if message == con.WM_SETFOCUS and handle == self._panel and self._editor:
-                gui.SetFocus(self._composer or self._editor)
+            if message == con.WM_SETFOCUS and handle == self._panel and self._composer:
+                gui.SetFocus(self._composer)
                 return 0
             if message == con.WM_ACTIVATE and handle == self._panel and (wparam & 0xFFFF) == 0:
+                self._text_size_keys_held.clear()
                 self._cancel_scroll_drag()
+                if self._history is not None:
+                    self._history.cancel_interaction()
+                    self._history_changed()
             if message == con.WM_ERASEBKGND and handle == self._panel:
                 gui.FillRect(wparam, gui.GetClientRect(handle), self._background)
                 return 1
@@ -704,15 +783,15 @@ class TeachingSurface:
                 self._layout()
                 return 0
             if message in (con.WM_CTLCOLORSTATIC, con.WM_CTLCOLOREDIT):
-                gui.SetTextColor(wparam, self._api.RGB(238, 239, 241))
-                gui.SetBkColor(wparam, self._api.RGB(23, 24, 27))
+                gui.SetTextColor(wparam, self._api.RGB(*TEXT_COLOR))
+                gui.SetBkColor(wparam, self._api.RGB(*BACKGROUND))
                 return self._background
             if message == con.WM_DRAWITEM:
                 self._paint_button(lparam)
                 return 1
             if (
                 message == con.WM_COMMAND
-                and lparam in (self._editor, self._composer)
+                and lparam == self._composer
                 and (wparam >> 16) in (con.EN_CHANGE, con.EN_VSCROLL)
             ):
                 self._sync_scrollbars()
@@ -726,11 +805,14 @@ class TeachingSurface:
                 return 0
             if (
                 handle == self._panel
-                and self._editor
+                and self._history_window
                 and (message == 0x007E or (message == 0x001A and wparam == 0x002F))
             ):  # WM_DISPLAYCHANGE / SPI_SETWORKAREA
                 self._read_dpi()
                 self._fit_current()
+                return 0
+            if message == 0x001A and handle == self._panel:
+                self._update_motion_preference()
                 return 0
         except Exception as error:
             self._error = error
@@ -752,47 +834,90 @@ class TeachingSurface:
     def _set_font(self) -> None:
         self._read_dpi()
         self._scale = self._dpi_scale
-        self._font_height = max(1, round(FONT_DIP * self._scale))
+        self._font_height = max(1, round(FONT_SIZES[self._text_size_index] * self._scale))
         self._replace_font()
 
     def _replace_font(self):
         gui, con = self._gui, self._con
-        description = gui.LOGFONT()
-        description.lfFaceName = "Segoe UI"
-        description.lfHeight = -self._font_height
-        description.lfWeight = 400
-        description.lfQuality = con.CLEARTYPE_QUALITY
-        font = gui.CreateFontIndirect(description)
-        for handle in self._children().values():
-            if handle:
+        candidates = (self._font_face,) if self._font_face_verified else _FONT_FACES
+        for face in candidates:
+            description = gui.LOGFONT()
+            description.lfFaceName = face
+            description.lfHeight = -self._font_height
+            description.lfWeight = 400
+            description.lfQuality = con.CLEARTYPE_QUALITY
+            font = gui.CreateFontIndirect(description)
+            try:
+                actual_face = face if self._font_face_verified else self._font_name(font)
+            except Exception:
+                gui.DeleteObject(font)
+                raise
+            if face != candidates[-1] and not actual_face.casefold().startswith(
+                "segoe ui variable"
+            ):
+                gui.DeleteObject(font)
+                continue
+            self._font_face, self._font_face_verified = actual_face, True
+            break
+        for identifier, handle in self._children().items():
+            if handle and identifier != HISTORY:
                 gui.SendMessage(handle, con.WM_SETFONT, font, False)
         old, self._font = self._font, font
         self._line_height = 0
+        self._history_font_dirty = True
         if old:
-            gui.DeleteObject(old)
+            if self._history is not None:
+                self._retired_fonts.append(old)
+            else:
+                gui.DeleteObject(old)
+
+    def _font_name(self, font: int) -> str:
+        gui = self._gui
+        dc = gui.GetDC(self._panel)
+        with ExitStack() as cleanup:
+            cleanup.callback(gui.ReleaseDC, self._panel, dc)
+            old = gui.SelectObject(dc, font)
+            cleanup.callback(gui.SelectObject, dc, old)
+            name = ctypes.create_unicode_buffer(64)
+            if not self._gdi32.GetTextFaceW(dc, len(name), name):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return name.value
+
+    def _client_animations_enabled(self) -> bool:
+        enabled = wintypes.BOOL()
+        success = self._user32.SystemParametersInfoW(
+            _CLIENT_AREA_ANIMATION, 0, ctypes.byref(enabled), 0
+        )
+        return bool(success and enabled.value)
+
+    def _update_motion_preference(self) -> None:
+        self._motion_enabled = self._client_animations_enabled()
+        if not self._motion_enabled and self._history is not None:
+            self._history.cancel_animation()
+            self._history_changed()
+
+    def _style_history(self) -> None:
+        if self._history is not None and self._font and self._history_font_dirty:
+            self._history.set_font(
+                self._font, line_height=self._font_line_height(), scale=self._scale
+            )
+            self._history_font_dirty = False
+            old_fonts, self._retired_fonts = self._retired_fonts, []
+            for font in old_fonts:
+                self._gui.DeleteObject(font)
 
     @contextmanager
-    def _redraw_editors(self, *, history_only: bool = False) -> Iterator[None]:
-        composing = bool(
-            not history_only
-            and self._composer
-            and (self._ime_composing or self._composition_active())
-        )
-        editors = (self._editor,) if history_only else (self._editor, self._composer)
+    def _redraw_editors(self) -> Iterator[None]:
+        composing = bool(self._composer and (self._ime_composing or self._composition_active()))
         self._programmatic_depth += 1
         try:
             with ExitStack() as cleanup:
-                for handle in editors:
-                    if (
-                        handle
-                        and not (handle == self._composer and composing)
-                        and self._gui.IsWindowVisible(handle)
-                    ):
-                        # Never suppress the root: WM_SETREDRAW changes WS_VISIBLE.
-                        cleanup.callback(
-                            self._gui.SendMessage, handle, self._con.WM_SETREDRAW, True, 0
-                        )
-                        self._gui.SendMessage(handle, self._con.WM_SETREDRAW, False, 0)
+                if self._composer and not composing and self._gui.IsWindowVisible(self._composer):
+                    # The history component owns its paint transaction; never suppress its host.
+                    cleanup.callback(
+                        self._gui.SendMessage, self._composer, self._con.WM_SETREDRAW, True, 0
+                    )
+                    self._gui.SendMessage(self._composer, self._con.WM_SETREDRAW, False, 0)
                 yield
         finally:
             self._programmatic_depth -= 1
@@ -850,6 +975,8 @@ class TeachingSurface:
         self._layout_busy = True
         try:
             self._cancel_scroll_drag()
+            if self._history is not None:
+                self._history.cancel_interaction()
             with self._redraw_editors():
                 self._layout_controls(width, height)
             self._layout_serial += 1
@@ -861,24 +988,46 @@ class TeachingSurface:
     def _layout_controls(self, width: int, height: int) -> None:
         gui = self._gui
         composing = bool(self._composer and (self._ime_composing or self._composition_active()))
-        views = {
-            handle: self._read_view(handle, history=handle == self._editor)
-            for handle in (self._editor, self._composer)
-            if handle and not (handle == self._composer and composing)
-        }
-        layout = layout_client(width, height, self._dpi_scale, compact=self._compact)
+        history_view = self._history.capture_view() if self._history is not None else None
+        composer_view = (
+            self._read_view(self._composer) if self._composer and not composing else None
+        )
+        font_dip = FONT_SIZES[self._text_size_index]
+        layout = layout_client(
+            width, height, self._dpi_scale, compact=self._compact, font_dip=font_dip
+        )
+        if self._scale != layout.scale:
+            self._history_font_dirty = True
         self._scale = layout.scale
         if self._font_height != layout.font_height:
             self._font_height = layout.font_height
             if self._font:
                 self._replace_font()
         self._position_children(layout.controls)
-        for handle in (self._editor, self._composer):
-            if handle:
-                margin = max(1, round(4 * self._scale))
-                gui.SendMessage(handle, self._con.EM_SETMARGINS, 3, margin | (margin << 16))
-        for handle, view in views.items():
-            self._restore_view(handle, view)
+        if self._composer:
+            margin = max(1, round(4 * self._scale))
+            gui.SendMessage(self._composer, self._con.EM_SETMARGINS, 3, margin | (margin << 16))
+        if self._history is not None:
+            self._style_history()
+            _, _, history_width, history_height = gui.GetClientRect(self._history_window)
+            self._history.reflow(history_width, history_height)
+            if history_view is not None:
+                self._history.restore_view(history_view)
+        if composer_view is not None:
+            self._restore_view(self._composer, composer_view)
+        size_name = _TEXT_SIZE_NAMES[self._text_size_index]
+        if self._history_label:
+            left, _, right, _ = layout.controls[HISTORY_LABEL]
+            label = self._fit_text(
+                (
+                    f"Conversation · Text: {size_name} · Ctrl +/-",
+                    f"Text: {size_name} · Ctrl +/-",
+                    f"{size_name} · Ctrl +/-",
+                    f"Text: {size_name}",
+                ),
+                right - left,
+            )
+            gui.SetWindowText(self._history_label, label)
         if self._composer_label and COMPOSER_LABEL in layout.controls:
             left, _, right, _ = layout.controls[COMPOSER_LABEL]
             label = self._fit_text(
@@ -900,6 +1049,9 @@ class TeachingSurface:
             "bounds": tuple(gui.GetWindowRect(self._panel)),
             "dpi": round(96 * self._dpi_scale),
             "font_height": self._font_height,
+            "font_face": self._font_face,
+            "text_size": size_name,
+            "font_dip": font_dip,
             "split": layout.split,
             "scrollbar_width": layout.scrollbar_width,
         }
@@ -908,9 +1060,9 @@ class TeachingSurface:
     def _font_line_height(self) -> int:
         if not self._line_height:
             gui = self._gui
-            dc = gui.GetDC(self._editor or self._panel)
+            dc = gui.GetDC(self._composer or self._panel)
             with ExitStack() as cleanup:
-                cleanup.callback(gui.ReleaseDC, self._editor or self._panel, dc)
+                cleanup.callback(gui.ReleaseDC, self._composer or self._panel, dc)
                 if self._font:
                     old = gui.SelectObject(dc, self._font)
                     cleanup.callback(gui.SelectObject, dc, old)
@@ -921,6 +1073,10 @@ class TeachingSurface:
         return self._line_height
 
     def _scroll_state(self, editor: int) -> ScrollState:
+        if editor == self._history_window and self._history is not None:
+            return self._history.scroll_state()
+        if editor != self._composer:
+            raise RuntimeError("The scroll target is unavailable.")
         gui, con = self._gui, self._con
         lines = gui.SendMessage(editor, con.EM_GETLINECOUNT, 0, 0)
         first = gui.SendMessage(editor, con.EM_GETFIRSTVISIBLELINE, 0, 0)
@@ -933,7 +1089,7 @@ class TeachingSurface:
 
     def _scroll_target(self, scrollbar: int) -> int:
         if scrollbar == self._scrollbars.get(HISTORY_SCROLL):
-            return self._editor
+            return self._history_window
         if scrollbar == self._scrollbars.get(COMPOSER_SCROLL):
             return self._composer
         return 0
@@ -958,22 +1114,25 @@ class TeachingSurface:
             self._scroll_syncing = False
 
     def _record_user_view(self, editor: int) -> None:
-        if editor == self._editor:
-            actual = self._sample_view(editor, history=True)
-            self._history_view_cache = actual, actual
-            if actual.following:
-                self._set_unread(False)
+        if editor == self._history_window:
+            self._history_changed()
         self._sync_scrollbars()
 
     def _scroll_to(self, editor: int, position: int) -> None:
+        if editor == self._history_window and self._history is not None:
+            self._history.scroll_to(position)
+            self._history_changed()
+            return
         state = self._scroll_state(editor)
         current = self._gui.SendMessage(editor, self._con.EM_GETFIRSTVISIBLELINE, 0, 0)
-        if editor == self._editor:
-            self._history_view_cache = None
         self._gui.SendMessage(editor, self._con.EM_LINESCROLL, 0, state.clamp(position) - current)
         self._record_user_view(editor)
 
     def _scroll_command(self, editor: int, command: int) -> bool:
+        if editor == self._history_window and self._history is not None:
+            handled = self._history.scroll_command(command)
+            self._history_changed()
+            return handled
         con = self._con
         state = self._scroll_state(editor)
         targets = {
@@ -994,6 +1153,10 @@ class TeachingSurface:
         lines = wintypes.UINT(3)
         if not self._user32.SystemParametersInfoW(0x0068, 0, ctypes.byref(lines), 0):
             lines.value = 3
+        if editor == self._history_window and self._history is not None:
+            self._history.wheel(delta, lines_per_notch=lines.value)
+            self._history_changed()
+            return
         state = self._scroll_state(editor)
         movement, remainder = wheel_movement(
             self._wheel_remainders.get(editor, 0), delta, lines.value, state.page
@@ -1008,6 +1171,7 @@ class TeachingSurface:
             if handle == self._composer:
                 if message == 0x010D:  # WM_IME_STARTCOMPOSITION, including an empty preedit.
                     self._ime_composing = True
+                    self._text_size_keys_held.clear()
                 elif message in (0x010E, con.WM_NCDESTROY):
                     self._ime_composing = False
             if message == con.WM_NCDESTROY:
@@ -1043,13 +1207,6 @@ class TeachingSurface:
                     con.VK_END,
                 )
             )
-            if handle == self._editor:
-                if message in (con.WM_LBUTTONDOWN, con.WM_LBUTTONDBLCLK):
-                    self._history_pointer_down = True
-                elif message in (con.WM_LBUTTONUP, con.WM_CANCELMODE, 0x0215):
-                    self._history_pointer_down = False
-                if navigation:
-                    self._history_view_cache = None
             result = self._comctl.DefSubclassProc(handle, message, wparam, lparam)
             if navigation:
                 self._record_user_view(handle)
@@ -1084,6 +1241,12 @@ class TeachingSurface:
             if self._gui.GetCapture() == drag.window:
                 self._gui.ReleaseCapture()
         finally:
+            if (
+                self._history is not None
+                and self._scroll_target(drag.window) == self._history_window
+            ):
+                self._history.set_interacting(False)
+                self._history_changed()
             if repaint and not self._exit:
                 self._gui.InvalidateRect(drag.window, None, False)
 
@@ -1098,7 +1261,9 @@ class TeachingSurface:
         state = self._scroll_state(editor)
         height = self._gui.GetClientRect(handle)[3]
         thumb = thumb_geometry(state, height, self._scale)
-        self._scroll_to(editor, dragged_position(state, thumb, y, drag.fraction))
+        self._scroll_to(
+            editor, dragged_position(state, thumb, y, drag.fraction, origin=drag.origin)
+        )
 
     def _scrollbar_procedure(self, handle, message, wparam, lparam):
         gui, con = self._gui, self._con
@@ -1187,7 +1352,11 @@ class TeachingSurface:
                     return 0
                 gui.SetCapture(handle)
                 if gui.GetCapture() == handle:
-                    self._scroll_drag = _ScrollDrag(handle, thumb.grab_fraction(y))
+                    self._scroll_drag = _ScrollDrag(
+                        handle, thumb.grab_fraction(y), (y, state.position)
+                    )
+                    if editor == self._history_window and self._history is not None:
+                        self._history.set_interacting(True)
                     self._record_user_view(editor)
                     gui.InvalidateRect(handle, None, False)
             else:
@@ -1370,6 +1539,60 @@ class TeachingSurface:
         finally:
             imm.ImmReleaseContext(self._composer, context)
 
+    def _text_size_key(self, message) -> bool:
+        con, gui = self._con, self._gui
+        kind, key = message.message, int(message.wParam)
+        if kind == con.WM_KEYUP and key in (con.VK_CONTROL, 0xA2, 0xA3):
+            self._text_size_keys_held.clear()
+            return False
+        if kind not in (con.WM_KEYDOWN, con.WM_KEYUP, con.WM_CHAR):
+            return False
+        if kind == con.WM_KEYDOWN and key not in _TEXT_SIZE_KEYS:
+            return False
+        if kind == con.WM_KEYUP and key not in self._text_size_keys_held:
+            return False
+        if kind == con.WM_CHAR and not self._text_size_keys_held:
+            return False
+        if not self.visible or gui.GetForegroundWindow() != self._panel:
+            self._text_size_keys_held.clear()
+            return False
+        focused = gui.GetFocus()
+        if (
+            not focused
+            or focused != message.hWnd
+            or focused == self._canvas
+            or focused not in self.window_roles()
+        ):
+            self._text_size_keys_held.clear()
+            return False
+        if kind == con.WM_KEYUP:
+            handled = key in self._text_size_keys_held
+            self._text_size_keys_held.discard(key)
+            return handled
+        if self._ime_composing or (focused == self._composer and self._composition_active()):
+            self._text_size_keys_held.clear()
+            return False
+        if kind == con.WM_CHAR:
+            return any(
+                key in ((ord("+"), ord("=")) if _TEXT_SIZE_KEYS[held] > 0 else (ord("-"), 0x1F))
+                for held in self._text_size_keys_held
+            )
+        if (
+            key not in _TEXT_SIZE_KEYS
+            or not self._user32.GetKeyState(con.VK_CONTROL) & 0x8000
+            or self._user32.GetKeyState(con.VK_MENU) & 0x8000
+        ):
+            return False
+        repeated = key in self._text_size_keys_held or bool(message.lParam & (1 << 30))
+        self._text_size_keys_held.add(key)
+        if not repeated:
+            target = max(0, min(len(FONT_SIZES) - 1, self._text_size_index + _TEXT_SIZE_KEYS[key]))
+            if target != self._text_size_index:
+                self._text_size_index = target
+                self._history_font_dirty = True
+                self._layout()
+        return True
+
     def _composer_key(self, message) -> bool:
         if (
             not self._composer
@@ -1407,44 +1630,28 @@ class TeachingSurface:
             self._gui.SetWindowText(self._composer, "")
         self._refresh()
 
-    def _sample_view(self, handle: int, *, history: bool = False) -> _EditView:
+    def _sample_view(self, handle: int) -> _EditView:
+        if handle != self._composer:
+            raise RuntimeError("Native EDIT views belong only to the composer.")
         gui, con = self._gui, self._con
         start, end = wintypes.DWORD(), wintypes.DWORD()
         # The packed EM_GETSEL result truncates offsets above 65535 UTF-16 code units.
         gui.SendMessage(handle, con.EM_GETSEL, ctypes.addressof(start), ctypes.addressof(end))
         first_line = gui.SendMessage(handle, con.EM_GETFIRSTVISIBLELINE, 0, 0)
         anchor = max(0, gui.SendMessage(handle, con.EM_LINEINDEX, first_line, 0))
-        following = False
-        if history:
-            state = self._scroll_state(handle)
-            dragging = self._scroll_drag is not None and (
-                self._scroll_target(self._scroll_drag.window) == handle
-            )
-            following = (not self._last_text or (start.value == end.value and state.at_end)) and (
-                not dragging and not self._history_pointer_down
-            )
-        return _EditView(anchor, (start.value, end.value), following)
+        return _EditView(anchor, (start.value, end.value))
 
-    def _read_view(self, handle: int, *, history: bool = False) -> _EditView:
-        actual = self._sample_view(handle, history=history)
-        if history and self._history_view_cache is not None:
-            desired, previous = self._history_view_cache
-            if (actual.anchor, actual.selection) == (previous.anchor, previous.selection):
-                # A larger viewport can clamp the scroll range. That is not a user scroll.
-                return desired
-        return actual
+    def _read_view(self, handle: int) -> _EditView:
+        return self._sample_view(handle)
 
     def _restore_view(self, handle: int, view: _EditView) -> None:
-        if handle == self._editor and view.following:
-            self._scroll_latest()
-            return
+        if handle != self._composer:
+            raise RuntimeError("Native EDIT views belong only to the composer.")
         gui, con = self._gui, self._con
         gui.SendMessage(handle, con.EM_SETSEL, *view.selection)
         line = gui.SendMessage(handle, con.EM_LINEFROMCHAR, view.anchor, 0)
         current = gui.SendMessage(handle, con.EM_GETFIRSTVISIBLELINE, 0, 0)
         gui.SendMessage(handle, con.EM_LINESCROLL, 0, line - current)
-        if handle == self._editor:
-            self._history_view_cache = view, self._sample_view(handle, history=True)
 
     def _set_unread(self, unread: bool) -> None:
         if unread != self._history_unread:
@@ -1453,70 +1660,23 @@ class TeachingSurface:
                 self._gui.SetWindowText(handle, "Latest *" if unread else "Latest")
 
     def _scroll_latest(self) -> None:
-        self._gui.SendMessage(
-            self._editor, self._con.EM_SETSEL, self._history_length, self._history_length
-        )
-        # Explicit line scrolling also works while a history update suppresses EDIT redraw.
-        state = self._scroll_state(self._editor)
-        first = self._gui.SendMessage(self._editor, self._con.EM_GETFIRSTVISIBLELINE, 0, 0)
-        self._gui.SendMessage(self._editor, self._con.EM_LINESCROLL, 0, state.maximum - first)
-        actual = self._sample_view(self._editor, history=True)
-        self._history_view_cache = _EditView(actual.anchor, actual.selection, True), actual
-        self._set_unread(False)
+        if self._history is not None:
+            self._history.latest()
+            self._history_changed()
 
-    @staticmethod
-    def _history_document(entries: tuple) -> tuple[str, dict[int, tuple[int, int]], int]:
-        chunks = []
-        offsets = {}
-        position = 0
-        for index, (sequence, title, text, role) in enumerate(entries):
-            label = "You" if role == "user" else f"Assistant · {title}"
-            chunk = f"{label}: {text}".replace("\r\n", "\n").replace("\r", "\n")
-            chunk = chunk.replace("\n", "\r\n")
-            if index < len(entries) - 1:
-                chunk += "\r\n\r\n"
-            length = len(chunk.encode("utf-16-le")) // 2
-            offsets[sequence] = position, length
-            position += length
-            chunks.append(chunk)
-        return "".join(chunks), offsets, position
-
-    @staticmethod
-    def _remap_offset(
-        position: int, old: dict[int, tuple[int, int]], new: dict[int, tuple[int, int]]
-    ) -> int:
-        for sequence, (start, length) in reversed(old.items()):
-            if position >= start:
-                if sequence not in new:
-                    return 0
-                new_start, new_length = new[sequence]
-                return new_start + min(position - start, length, new_length)
-        return 0
-
-    def _update_history(self, entries: tuple) -> None:
-        if entries == self._last_text:
-            if self._history_unread and self._read_view(self._editor, history=True).following:
-                self._set_unread(False)
+    def _update_history(self, entries: tuple, *, now: float | None = None) -> None:
+        if self._history is None:
+            if entries:
+                raise RuntimeError("The history component is unavailable.")
             return
-        view = self._read_view(self._editor, history=True)
-        text, offsets, length = self._history_document(entries)
-        if not view.following:
-            view = _EditView(
-                self._remap_offset(view.anchor, self._history_offsets, offsets),
-                tuple(
-                    self._remap_offset(p, self._history_offsets, offsets) for p in view.selection
-                ),
+        if entries != self._last_text:
+            self._history.set_entries(
+                entries,
+                now=time.monotonic() if now is None else now,
+                animate=self.visible and self._motion_enabled and not self._layout_busy,
             )
-        try:
-            with self._redraw_editors(history_only=True):
-                self._gui.SetWindowText(self._editor, text or _EMPTY_HISTORY)
-                self._last_text = entries
-                self._history_offsets, self._history_length = offsets, length
-                self._restore_view(self._editor, view)
-                self._set_unread(bool(entries) and not view.following)
-                self._sync_scrollbars(force=True)
-        finally:
-            self._redraw_panel()
+            self._last_text = entries
+        self._history_changed()
 
     def _text_width(self, text: str) -> int:
         gui = self._gui
@@ -1550,7 +1710,7 @@ class TeachingSurface:
         pending = chat["pending_messages"]
         if self._message_error:
             full, short = f"Not sent: {self._message_error} · draft kept", "Not sent · draft kept"
-            terse = short
+            terse = "Not sent; kept"
         elif chat["awaiting_reply"]:
             full, short = "Awaiting the agent's reply", "awaiting reply"
             terse = "reply pending"
@@ -1588,7 +1748,11 @@ class TeachingSurface:
 
     def _apply_visibility(self, visible: bool) -> None:
         if not visible:
+            self._text_size_keys_held.clear()
             self._cancel_scroll_drag()
+            if self._history is not None:
+                self._history.cancel_interaction()
+                self._history_changed()
         self._shown = visible
         self._minimized = False
         if self._hide_count:
@@ -1597,6 +1761,7 @@ class TeachingSurface:
         self._gui.ShowWindow(
             self._panel, self._con.SW_SHOWNOACTIVATE if visible else self._con.SW_HIDE
         )
+        self._schedule_timer()
 
     def _work_area(self):
         monitor = self._api.MonitorFromWindow(self._panel, 2)
@@ -1790,7 +1955,11 @@ class TeachingSurface:
                     self._shown = True
                 elif request.command == "hide":
                     if self._hide_count == 0:
+                        self._capture_serial += 1
                         self._cancel_scroll_drag()
+                        if self._history is not None:
+                            self._history.cancel_interaction()
+                            self._history_changed()
                         self._restore_panel = (
                             bool(gui.IsWindowVisible(self._panel)),
                             bool(gui.IsIconic(self._panel)),
@@ -1809,13 +1978,16 @@ class TeachingSurface:
                             self._last_scene = None
                             raise
                     self._hide_count += 1
+                    self._schedule_timer()
                 elif request.command == "restore":
                     if self._hide_count <= 0:
                         raise RuntimeError("Unbalanced guidance capture guard.")
                     self._hide_count -= 1
                     if self._hide_count == 0:
+                        self._capture_serial += 1
                         self._restore_panel_visibility()
                         self._last_scene = None
+                        self._next_state_refresh = 0.0
                 else:
                     raise ValueError("Unknown guidance UI command.")
                 request.error = None
@@ -1842,8 +2014,13 @@ class TeachingSurface:
         self._minimized = iconic
 
     def _cancel_modal(self):
+        self._text_size_keys_held.clear()
         try:
-            self._cancel_scroll_drag()
+            try:
+                self._cancel_scroll_drag()
+            finally:
+                if self._history is not None:
+                    self._history.cancel_interaction()
         finally:
             if self._panel:
                 self._gui.SendMessage(self._panel, self._con.WM_CANCELMODE, 0, 0)
@@ -1856,22 +2033,133 @@ class TeachingSurface:
 
         return validate_scene(snapshot, now=time.monotonic() if now is None else now, clip=desktop)
 
-    def _refresh(self):
+    def _schedule_timer(self) -> None:
+        animated = not self._hide_count and (
+            self._scene_animating or (self.visible and self._chat_animating)
+        )
+        interval = _ANIMATION_TIMER_MS if animated else _IDLE_TIMER_MS
+        if self._timer_running and not self._exit and interval != self._timer_interval:
+            if not self._user32.SetTimer(self._panel, 1, interval, None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            self._timer_interval = interval
+
+    def _on_timer(self) -> None:
+        if self._scene_rendering:
+            return
+        now = time.monotonic()
+        control = self.controller.snapshot()
+        ticket = control.generation, control.input_revision
+        if (
+            self._scene_snapshot is None
+            or ticket != self._scene_ticket
+            or now + _STATE_DEADLINE_EPSILON >= self._next_state_refresh
+        ):
+            self._refresh(now=now, animate_scene=True)
+        elif self._hide_count or not control.armed:
+            self._clear_scene()
+        elif self._scene_animating and now >= self._next_scene_frame:
+            snapshot = self.session.snapshot()
+            confirmed = self.controller.snapshot()
+            if ticket != (confirmed.generation, confirmed.input_revision):
+                self._clear_scene(invalidate=True)
+            else:
+                self._scene_snapshot, self._scene_ticket = snapshot, ticket
+                self._refresh_scene(confirmed, snapshot, now)
+        self._tick_history(now)
+        self._schedule_timer()
+
+    def _tick_history(self, now: float) -> None:
+        if self._history is None:
+            self._chat_animating = False
+            return
+        if not self.visible or not self._motion_enabled:
+            if self._history.animation_active:
+                self._history.cancel_animation()
+            self._chat_animating = False
+        elif self._history.animation_active:
+            self._history.tick(now)
+            self._chat_animating = self._history.animation_active
+        else:
+            self._chat_animating = False
+
+    def _advance_state_deadline(self, now: float) -> None:
+        if self._next_state_refresh <= 0:
+            self._next_state_refresh = now + _STATE_REFRESH_SECONDS
+        elif now + _STATE_DEADLINE_EPSILON >= self._next_state_refresh:
+            missed = (
+                int(
+                    (now - self._next_state_refresh + _STATE_DEADLINE_EPSILON)
+                    // _STATE_REFRESH_SECONDS
+                )
+                + 1
+            )
+            self._next_state_refresh += max(1, missed) * _STATE_REFRESH_SECONDS
+
+    def _refresh(self, *, now: float | None = None, animate_scene: bool = False) -> None:
+        now = time.monotonic() if now is None else now
+        control = self.controller.snapshot()
+        snapshot = self.session.snapshot()
+        ticket = control.generation, control.input_revision
+        confirmed = self.controller.snapshot()
+        valid = ticket == (confirmed.generation, confirmed.input_revision)
+        self._scene_snapshot = snapshot if valid else None
+        self._scene_ticket = ticket if valid else None
+        self._advance_state_deadline(now)
+        entries = tuple(
+            (entry.sequence, entry.title, entry.text, entry.role) for entry in snapshot.entries
+        )
+        self._update_history(entries, now=now)
+        self._refresh_status(control, snapshot)
+        self._sync_scrollbars()
+        if valid:
+            self._refresh_scene(confirmed, snapshot, now, animate=animate_scene)
+        else:
+            self._clear_scene(invalidate=True)
+        self._schedule_timer()
+
+    def _clear_scene(self, *, invalidate: bool = False) -> None:
+        if self._canvas:
+            self._gui.ShowWindow(self._canvas, self._con.SW_HIDE)
+        self._last_scene = None
+        self._scene_animating = False
+        if invalidate:
+            self._scene_snapshot = None
+            self._scene_ticket = None
+            self._next_state_refresh = 0.0
+
+    def _scene_authorized(self, ticket: tuple[int, int], capture_serial: int) -> bool:
+        control = self.controller.snapshot()
+        return (
+            not self._exit
+            and not self._hide_count
+            and self._capture_serial == capture_serial
+            and control.armed
+            and (control.generation, control.input_revision) == ticket
+        )
+
+    @staticmethod
+    def _same_scene_context(before: TeachingSnapshot, after: TeachingSnapshot) -> bool:
+        if before.marks != after.marks:
+            return False
+        if before.waiting is None or after.waiting is None:
+            return before.waiting is after.waiting
+        return (
+            before.waiting.center == after.waiting.center
+            and before.waiting.radius == after.waiting.radius
+        )
+
+    def _refresh_scene(
+        self, control, snapshot: TeachingSnapshot, now: float, *, animate: bool = True
+    ) -> None:
         from desktop_mcp.layers import upload_rgba
         from desktop_mcp.teaching_render import SceneTooLarge, render_marks
 
         gui, con = self._gui, self._con
-        control = self.controller.snapshot()
-        snapshot = self.session.snapshot()
-        entries = tuple(
-            (entry.sequence, entry.title, entry.text, entry.role) for entry in snapshot.entries
-        )
-        self._update_history(entries)
-        self._refresh_status(control, snapshot)
-        self._sync_scrollbars()
-        if self._hide_count or not control.armed:
-            gui.ShowWindow(self._canvas, con.SW_HIDE)
-            self._last_scene = None
+        self._scene_animating = False
+        ticket = control.generation, control.input_revision
+        capture_serial = self._capture_serial
+        if not self._scene_authorized(ticket, capture_serial):
+            self._clear_scene(invalidate=True)
             return
         left, top = self._api.GetSystemMetrics(76), self._api.GetSystemMetrics(77)
         desktop = (
@@ -1880,25 +2168,48 @@ class TeachingSurface:
             left + self._api.GetSystemMetrics(78),
             top + self._api.GetSystemMetrics(79),
         )
-        now = time.monotonic()
         try:
             bounds = self._scene_bounds(snapshot, desktop, now=now)
         except SceneTooLarge:
-            gui.ShowWindow(self._canvas, con.SW_HIDE)
+            self._clear_scene()
             self._set_status("Guidance scene too large. Erase older marks.")
-            self._last_scene = None
             return
         if bounds is None:
-            gui.ShowWindow(self._canvas, con.SW_HIDE)
-            self._last_scene = None
+            self._clear_scene()
             return
-        animated = (
-            any(mark.kind == "laser" for mark in snapshot.marks) or snapshot.waiting is not None
+        self._scene_animating = any(
+            mark.kind == "laser"
+            and mark.created_at
+            <= now
+            < (mark.expires_at if mark.expires_at is not None else mark.created_at + 2.0)
+            for mark in snapshot.marks
         )
-        signature = (snapshot.revision, bounds, round(now * 30) if animated else 0)
-        if signature != self._last_scene:
-            with render_marks(snapshot, bounds, now=now) as image:
+        signature = snapshot.revision, bounds, snapshot.waiting
+        if (
+            self._scene_rendering
+            or now < self._next_scene_frame
+            or (signature == self._last_scene and not (animate and self._scene_animating))
+        ):
+            return
+        self._scene_rendering = True
+        started = time.monotonic()
+        try:
+            with closing(render_marks(snapshot, bounds, now=now)) as image:
+                # Rendering can outlast a Stop, capture request or annotation-only update.
+                self._drain_requests()
+                if not self._scene_authorized(ticket, capture_serial):
+                    self._clear_scene(invalidate=True)
+                    return
+                live = self.session.snapshot()
+                if not self._same_scene_context(snapshot, live) or not self._scene_authorized(
+                    ticket, capture_serial
+                ):
+                    self._clear_scene(invalidate=True)
+                    return
                 upload_rgba(self._canvas, (bounds[0], bounds[1]), image)
+            if not self._scene_authorized(ticket, capture_serial):
+                self._clear_scene(invalidate=True)
+                return
             gui.SetWindowPos(
                 self._canvas,
                 con.HWND_TOPMOST,
@@ -1909,3 +2220,11 @@ class TeachingSurface:
                 con.SWP_NOMOVE | con.SWP_NOSIZE | con.SWP_NOACTIVATE | con.SWP_SHOWWINDOW,
             )
             self._last_scene = signature
+        finally:
+            finished = time.monotonic()
+            elapsed = max(0.0, finished - started)
+            # Fast scenes use every wake. Slow scenes leave bounded UI service time, not a backlog.
+            self._next_scene_frame = (
+                finished + min(0.05, elapsed * 0.5) if elapsed > _ANIMATION_TIMER_MS / 1000 else 0.0
+            )
+            self._scene_rendering = False

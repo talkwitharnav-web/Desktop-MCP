@@ -16,6 +16,7 @@ from fastmcp import Client
 
 from desktop_mcp.pipe_transport import connect
 from desktop_mcp.service import ServiceState, _handshake
+from desktop_mcp.transcript_layout import COMPACT_SIZE, FONT_DIP
 from tests.test_desktop_service import transport
 
 pytestmark = pytest.mark.skipif(
@@ -51,6 +52,22 @@ def control_text(handle):
         ctypes.byref(result),
     )
     return buffer.value
+
+
+def chat_message_controls(history, *, expected_pid):
+    """Inspect only native message controls beneath an explicitly owned fixture."""
+    assert win32process.GetWindowThreadProcessId(history)[1] == expected_pid
+    assert win32gui.GetClassName(history).startswith("DesktopMCPChat-")
+    messages = []
+
+    def collect(handle, _):
+        assert win32process.GetWindowThreadProcessId(handle)[1] == expected_pid
+        if win32gui.GetClassName(handle).casefold() == "edit":
+            messages.append((handle, control_text(handle)))
+        return True
+
+    win32gui.EnumChildWindows(history, collect, None)
+    return messages
 
 
 @pytest.fixture
@@ -108,6 +125,7 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
         assert info["status"]["state"] == "stopped"
         assert info["status"]["completed_actions"] == 0
         assert "mode" not in info["status"]
+
         def collect(handle, _):
             if win32process.GetWindowThreadProcessId(handle)[1] == info["pid"]:
                 title = win32gui.GetWindowText(handle)
@@ -146,10 +164,13 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
                 assert list(compact_bounds) == layout["bounds"]
                 assert work[0] <= compact_bounds[0] < compact_bounds[2] <= work[2]
                 assert work[1] <= compact_bounds[1] < compact_bounds[3] <= work[3]
-                if work[2] - work[0] >= 1136 * scale and work[3] - work[1] >= 180 * scale:
-                    assert compact_bounds[2] - compact_bounds[0] == round(1120 * scale)
-                    assert compact_bounds[3] - compact_bounds[1] == round(164 * scale)
-                    assert layout["font_height"] == round(14 * scale)
+                if (
+                    work[2] - work[0] >= (COMPACT_SIZE[0] + 16) * scale
+                    and work[3] - work[1] >= (COMPACT_SIZE[1] + 16) * scale
+                ):
+                    assert compact_bounds[2] - compact_bounds[0] == round(COMPACT_SIZE[0] * scale)
+                    assert compact_bounds[3] - compact_bounds[1] == round(COMPACT_SIZE[1] * scale)
+                    assert layout["font_height"] == round(FONT_DIP * scale)
                 if layout["split"]:
                     assert compact_bounds[2] - compact_bounds[0] > 4 * (
                         compact_bounds[3] - compact_bounds[1]
@@ -165,8 +186,14 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
                     assert rows[handle]["root_id"] == transcript
                 origin = win32gui.ClientToScreen(transcript, (0, 0))
                 _, _, width, height = win32gui.GetClientRect(transcript)
-                assert rows[win32gui.GetDlgItem(transcript, 306)]["role"] == "transcript-history-scrollbar"
-                assert rows[win32gui.GetDlgItem(transcript, 307)]["role"] == "transcript-composer-scrollbar"
+                assert (
+                    rows[win32gui.GetDlgItem(transcript, 306)]["role"]
+                    == "transcript-history-scrollbar"
+                )
+                assert (
+                    rows[win32gui.GetDlgItem(transcript, 307)]["role"]
+                    == "transcript-composer-scrollbar"
+                )
                 for identifier in (*range(201, 210), *range(301, 308)):
                     child = win32gui.GetDlgItem(transcript, identifier)
                     assert child and child in rows
@@ -181,7 +208,9 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
                 foreground = win32gui.GetForegroundWindow()
                 for compact in (False, True):
                     win32gui.SendMessage(
-                        transcript, win32con.WM_COMMAND, 207,
+                        transcript,
+                        win32con.WM_COMMAND,
+                        207,
                         win32gui.GetDlgItem(transcript, 207),
                     )
                     status = (await client.call_tool("DesktopStatus")).data
@@ -198,7 +227,8 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
                         "after": actual_foreground,
                         "after_is_owned": (
                             win32gui.IsWindow(actual_foreground)
-                            and win32process.GetWindowThreadProcessId(actual_foreground)[1] == info["pid"]
+                            and win32process.GetWindowThreadProcessId(actual_foreground)[1]
+                            == info["pid"]
                         ),
                         "transcript": transcript,
                         "main": main_panel,
@@ -211,9 +241,7 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
                 assert win32gui.GetWindowRect(transcript) == compact_bounds
                 pin = win32gui.GetDlgItem(transcript, 201)
                 win32gui.SendMessage(pin, win32con.BM_CLICK, 0, 0)
-                win32gui.SendMessage(
-                    win32gui.GetDlgItem(transcript, 208), win32con.BM_CLICK, 0, 0
-                )
+                win32gui.SendMessage(win32gui.GetDlgItem(transcript, 208), win32con.BM_CLICK, 0, 0)
                 layout = (await client.call_tool("DesktopStatus")).data["transcript"]["layout"]
                 monitor = win32api.GetMonitorInfo(
                     win32api.MonitorFromWindow(transcript, win32con.MONITOR_DEFAULTTONEAREST)
@@ -227,9 +255,7 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
                 assert win32gui.GetAncestor(hit, 2) == transcript, (
                     "The pinned taskbar-edge Stop control is occluded"
                 )
-                win32gui.SendMessage(
-                    win32gui.GetDlgItem(transcript, 203), win32con.BM_CLICK, 0, 0
-                )
+                win32gui.SendMessage(win32gui.GetDlgItem(transcript, 203), win32con.BM_CLICK, 0, 0)
                 win32gui.SendMessage(pin, win32con.BM_CLICK, 0, 0)
                 assert control_text(composer) == draft
                 native_question = "Native transcript question " + "\u03bb" * 1000
@@ -252,10 +278,13 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
                     },
                 )
                 for _ in range(100):
-                    if "Native transcript reply" in control_text(history):
+                    messages = chat_message_controls(history, expected_pid=info["pid"])
+                    if any(text == "Native transcript reply" for _, text in messages):
                         break
                     await asyncio.sleep(0.02)
-                assert "Native transcript reply" in control_text(history)
+                texts = [text for _, text in messages]
+                assert "Native transcript reply" in texts
+                assert native_question in texts
                 await client.call_tool("Transcript", {"action": "hide"})
                 assert not win32gui.IsWindowVisible(transcript)
                 await client.call_tool("Transcript", {"action": "show"})

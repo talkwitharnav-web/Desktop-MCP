@@ -350,9 +350,7 @@ def save_own_window(
         backdrop_affinity = wintypes.DWORD()
         assert user32.GetWindowDisplayAffinity(backdrop, ctypes.byref(backdrop_affinity))
         assert backdrop_affinity.value == 0
-        win32gui.ShowWindow(
-            handle, win32con.SW_RESTORE if activate else win32con.SW_SHOWNOACTIVATE
-        )
+        win32gui.ShowWindow(handle, win32con.SW_RESTORE if activate else win32con.SW_SHOWNOACTIVATE)
         wait_until(lambda: win32gui.IsWindowVisible(handle) and not win32gui.IsIconic(handle))
         for own_handle in handles:
             owned_window_pid(own_handle)
@@ -439,6 +437,8 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
     import win32con
     import win32gui
 
+    from tests.test_desktop_launch_live import chat_message_controls
+
     assert win32gui.GetForegroundWindow() == fixture.hwnd
     win32gui.ShowWindow(main_window, win32con.SW_SHOWNOACTIVATE)
     assert not application.controller.snapshot().armed
@@ -448,10 +448,10 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
     wait_until(lambda: win32gui.GetForegroundWindow() == fixture.hwnd)
 
     transcript = application.teaching_surface._panel
-    editor = application.teaching_surface._editor
+    editor = application.teaching_surface._history_window
     assert win32gui.IsWindowVisible(transcript)
     assert not win32gui.GetWindowLong(transcript, win32con.GWL_EXSTYLE) & win32con.WS_EX_TOOLWINDOW
-    assert win32gui.GetWindowLong(editor, win32con.GWL_STYLE) & win32con.ES_READONLY
+    assert win32gui.GetClassName(editor).startswith("DesktopMCPChat-")
     pointer = win32api.GetCursorPos()
     note = "Move your cursor into the marked area. Proximity does not mean you clicked."
     result = await client.call_tool(
@@ -459,7 +459,16 @@ async def exercise_native_teaching(client, application, fixture, main_window, ar
     )
     assert not result.is_error
     wait_until(lambda: win32gui.IsWindowVisible(transcript))
-    wait_until(lambda: note in win32gui.GetWindowText(editor))
+    wait_until(
+        lambda: any(
+            text == note for _, text in chat_message_controls(editor, expected_pid=os.getpid())
+        )
+    )
+    messages = chat_message_controls(editor, expected_pid=os.getpid())
+    assert all(
+        win32gui.GetWindowLong(handle, win32con.GWL_STYLE) & win32con.ES_READONLY
+        for handle, _ in messages
+    )
     assert win32gui.GetForegroundWindow() == fixture.hwnd
     assert win32api.GetCursorPos() == pointer
     click_local_button(transcript, "Pin")
@@ -755,12 +764,8 @@ async def test_native_control_input_images_and_global_stop(monkeypatch):
                 },
             )
             assert not result.is_error
-            wait_until(
-                lambda: fixture.text().replace("\r\n", "\n") == content
-            )
-            await client.call_tool(
-                "Click", {"loc": list(point), "clicks": 2, "observe": False}
-            )
+            wait_until(lambda: fixture.text().replace("\r\n", "\n") == content)
+            await client.call_tool("Click", {"loc": list(point), "clicks": 2, "observe": False})
             thread = win32process.GetWindowThreadProcessId(fixture.hwnd)[0]
             focused = GUIThreadInfo(cbSize=ctypes.sizeof(GUIThreadInfo))
             assert application.backend._user32.GetGUIThreadInfo(thread, ctypes.byref(focused))
@@ -1029,6 +1034,7 @@ async def test_native_compact_transcript_appearance_without_foreground(monkeypat
     import win32gui
 
     from desktop_mcp.app import DesktopApplication, create_server
+    from tests.test_desktop_launch_live import chat_message_controls, control_text
 
     if os.getenv("DESKTOP_MCP_LIVE_APPEARANCE") != "1":
         pytest.skip("Native appearance needs its separate, explicit diagnostic capture run.")
@@ -1077,18 +1083,40 @@ async def test_native_compact_transcript_appearance_without_foreground(monkeypat
                     "text": "This fixture is paused. Send still works; desktop input is not armed.",
                 },
             )
-            draft = "A short question can still be sent here."
-            win32gui.SendMessage(
-                application.teaching_surface._composer, win32con.WM_SETTEXT, 0, draft
+            composer = application.teaching_surface._composer
+            question = "Can you explain the next step before clicking it?"
+            win32gui.SendMessage(composer, win32con.WM_SETTEXT, 0, question)
+            win32gui.SendMessage(win32gui.GetDlgItem(transcript, 206), win32con.BM_CLICK, 0, 0)
+            incoming = await client.call_tool("TranscriptRead", {"timeout": 2.0})
+            assert incoming.data["message"]["text"] == question
+            await client.call_tool(
+                "Transcript",
+                {
+                    "title": "One step at a time",
+                    "text": "Yes. I will explain the control, give you a turn, then continue.",
+                    "reply_to": incoming.data["message"]["id"],
+                },
             )
+            draft = "A short question can still be sent here."
+            win32gui.SendMessage(composer, win32con.WM_SETTEXT, 0, draft)
             metadata = {}
             for name, compact in (("compact", True), ("expanded", False)):
                 if not compact:
                     click_local_button(transcript, "Expand")
-                wait_until(lambda: application.teaching_surface.layout_status()["compact"] is compact)
+                wait_until(
+                    lambda: application.teaching_surface.layout_status()["compact"] is compact
+                )
                 status = (await client.call_tool("DesktopStatus")).data
                 assert status["state"] == "stopped" and status["completed_actions"] == 0
-                assert win32gui.GetWindowText(application.teaching_surface._composer) == draft
+                assert control_text(composer) == draft
+                texts = [
+                    text
+                    for _, text in chat_message_controls(
+                        application.teaching_surface._history_window, expected_pid=os.getpid()
+                    )
+                ]
+                assert question in texts
+                assert "Yes. I will explain the control, give you a turn, then continue." in texts
                 metadata[name] = status["transcript"]["layout"]
                 save_own_window(
                     transcript,
@@ -1099,7 +1127,9 @@ async def test_native_compact_transcript_appearance_without_foreground(monkeypat
                 assert win32gui.GetForegroundWindow() == foreground
                 assert win32api.GetCursorPos() == pointer
             (artifact_root / "layout.json").write_text(json.dumps(metadata), encoding="utf-8")
-            print("Native compact/expanded appearance captured on an opaque owned backdrop; no input armed")
+            print(
+                "Native compact/expanded appearance captured on an opaque owned backdrop; no input armed"
+            )
     finally:
         try:
             application.close()

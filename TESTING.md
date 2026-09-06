@@ -51,6 +51,11 @@ Service tests use `StdioTransport(keep_alive=False)` when testing actual client
 disconnection; leaving a transport alive is not evidence of a disconnect.
 Transcript UI tests cover Send/draft retention, Enter/Shift+Enter/IME handling,
 compact history/composer/status/control layout, and capture-safe local toggles.
+The two `test_desktop_transcript_chat*` suites cover native-message presentation
+with fakes: role boxes, complete long/Unicode text, directional selection,
+reading/pruning, inner/outer slim scrolling, page-wheel spillover, held-thumb
+follow suppression, arrival lifecycle and terminal cleanup after partial failure.
+The fake distinguishes ordered `EM_GETSEL` bounds from anchor/active endpoints.
 
 `test_desktop_interaction.py` covers task-wide ownership, rejected-helper
 disconnects, queued corrections, timely post-input observation, per-client image
@@ -127,7 +132,11 @@ repeated native resizing, scrolling and repaint verification. Its first image
 does **not** call ShowWindow, repositioning or RedrawWindow: comparing it to a
 subsequent forced full erase/repaint detects stale pixels rather than repairing
 them before inspection. It checks draft/selection/reading anchors, visible dark
-scrollbar pixels, wheel/page/track/thumb behavior and capture release.
+scrollbar pixels, separate message/history/composer wheel/page/track/thumb paths
+and capture release. Native history is inspected through its actual message
+EDIT children, not invented EDIT messages sent to container 301.
+Its arrival probe samples real message-window positions and settling while
+respecting the Windows animation preference; this is not compositor FPS evidence.
 The recorded physical monitor DPI is distinct from controlled
 `WM_DPICHANGED` reflows used to exercise other rendering scales. No Windows DPI
 settings are changed; these reflows are not evidence of real monitor transitions.

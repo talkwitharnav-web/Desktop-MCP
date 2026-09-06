@@ -15,11 +15,12 @@ HISTORY, STATUS, COMPOSER, HISTORY_LABEL, COMPOSER_LABEL = range(301, 306)
 HISTORY_SCROLL, COMPOSER_SCROLL = 306, 307
 
 Dock = Literal["floating", "top", "bottom", "taskbar-edge"]
-COMPACT_SIZE = (1120, 164)
+COMPACT_SIZE = (1120, 184)
 EXPANDED_SIZE = (1120, 440)
+FONT_SIZES = (12, 14, 16)
 FONT_DIP = 14
 
-_PAD, _GAP, _HEADER, _BUTTON, _STATUS = 6, 4, 20, 26, 18
+_PAD, _GAP, _HEADER, _BUTTON, _STATUS = 6, 4, 22, 28, 20
 _TOOLBAR = (
     (PIN, 54),
     (TOP, 48),
@@ -66,9 +67,9 @@ def _toolbar(width: float) -> tuple[bool, list[list[tuple[int, int]]], float]:
 
 def _minimum_height(width: float, *, compact: bool, split: bool) -> float:
     _, _, footer = _toolbar(width)
-    content = _HEADER + _GAP + 32
+    content = _HEADER + _GAP + 52
     if not split:
-        content += 6 + (34 if compact else _STATUS + _GAP + 54)
+        content += 6 + (42 if compact else _STATUS + _GAP + 62)
     return 2 * _PAD + content + _GAP + footer
 
 
@@ -81,9 +82,13 @@ def minimum_client_height(width: int, dpi_scale: float, *, compact: bool) -> int
     return math.ceil(_minimum_height(logical_width, compact=compact, split=split) * scale)
 
 
-def layout_client(width: int, height: int, dpi_scale: float, *, compact: bool) -> TranscriptLayout:
+def layout_client(
+    width: int, height: int, dpi_scale: float, *, compact: bool, font_dip: int = FONT_DIP
+) -> TranscriptLayout:
     """Lay out every visible HWND without minima extending beyond the actual client."""
     _validate(width, height, dpi_scale)
+    if isinstance(font_dip, bool) or font_dip not in FONT_SIZES:
+        raise ValueError("Transcript text size must be Small12, Medium14 or Large16 DIP.")
     scale = min(dpi_scale, width / 320)
     split = compact and width / scale >= 760 and height / scale <= 220
     scale = min(scale, height / _minimum_height(width / scale, compact=compact, split=split))
@@ -127,7 +132,7 @@ def layout_client(width: int, height: int, dpi_scale: float, *, compact: bool) -
         box(SEND, logical_width - _PAD - send_width, history_top, send_width, body_height)
     else:
         history_width = inner
-        composer_height = 34 if compact else 54
+        composer_height = 42 if compact else 62
         composer_top = content_bottom - composer_height
         history_bottom = composer_top - 6
         if not compact:
@@ -145,7 +150,7 @@ def layout_client(width: int, height: int, dpi_scale: float, *, compact: bool) -
         controls[editor] = left, top, right - reserved, bottom
         controls[scrollbar] = right - reserved, top, right, bottom
     return TranscriptLayout(
-        scale, max(1, round(FONT_DIP * scale)), split, controls, scrollbar_width
+        scale, max(1, round(font_dip * scale)), split, controls, scrollbar_width
     )
 
 

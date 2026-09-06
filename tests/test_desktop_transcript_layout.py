@@ -9,6 +9,7 @@ from desktop_mcp.transcript_layout import (
     COMPOSER_LABEL,
     COMPOSER_SCROLL,
     EXPAND,
+    FONT_SIZES,
     HISTORY,
     HISTORY_LABEL,
     HISTORY_SCROLL,
@@ -61,8 +62,8 @@ def test_default_is_a_short_wide_readable_ribbon_including_window_chrome(dpi):
     work = (0, 0, round(1920 * scale), round(1040 * scale))
     chrome = round(16 * scale), round(39 * scale)
     width, height = preferred_size(work, scale, chrome, compact=True, dock="bottom")
-    assert (width, height) == (round(1120 * scale), round(164 * scale))
-    assert height < 0.4 * 430 * scale
+    assert (width, height) == (round(1120 * scale), round(184 * scale))
+    assert height < 0.45 * 430 * scale
     client_width, client_height = width - chrome[0], height - chrome[1]
     layout = layout_client(client_width, client_height, scale, compact=True)
     assert layout.split
@@ -146,7 +147,7 @@ def test_taskbar_edge_is_explicit_and_does_not_inset_the_monitor_bottom():
 def test_narrow_default_stacks_and_toolbar_wraps_without_losing_controls():
     width, height = preferred_size((0, 0, 380, 800), 1, (16, 39), compact=True, dock="bottom")
     assert width == 364
-    assert 216 <= height < 260
+    assert 216 <= height < 280
     layout = layout_client(width - 16, height - 39, 1, compact=True)
     assert not layout.split
     assert layout.font_height == 14
@@ -156,17 +157,17 @@ def test_narrow_default_stacks_and_toolbar_wraps_without_losing_controls():
 
 
 def test_expanded_and_manually_taller_windows_spend_extra_space_on_history():
-    compact = layout_client(1104, 125, 1, compact=True)
+    compact = layout_client(1104, 145, 1, compact=True)
     expanded = layout_client(1104, 401, 1, compact=False)
     taller = layout_client(1104, 700, 1, compact=True)
     assert compact.split and not expanded.split and not taller.split
     small = compact.controls[HISTORY]
     big = expanded.controls[HISTORY]
-    assert big[3] - big[1] > 4 * (small[3] - small[1])
+    assert big[3] - big[1] > 3 * (small[3] - small[1])
     assert big[2] - big[0] > small[2] - small[0]
-    assert taller.controls[COMPOSER][3] - taller.controls[COMPOSER][1] == 34
+    assert taller.controls[COMPOSER][3] - taller.controls[COMPOSER][1] == 42
     assert taller.controls[HISTORY][3] - taller.controls[HISTORY][1] > 500
-    assert expanded.controls[COMPOSER][3] - expanded.controls[COMPOSER][1] == 54
+    assert expanded.controls[COMPOSER][3] - expanded.controls[COMPOSER][1] == 62
 
 
 @pytest.mark.parametrize("width", [320, 360, 640, 900, 1120])
@@ -186,3 +187,19 @@ def test_readable_minimum_and_layout_share_the_same_constraints(width, compact):
 def test_invalid_geometry_is_not_silently_published(width, height, scale):
     with pytest.raises(ValueError, match="positive"):
         layout_client(width, height, scale, compact=True)
+
+
+@pytest.mark.parametrize("font_dip", FONT_SIZES)
+@pytest.mark.parametrize("dpi", [96, 144, 192, 288])
+def test_exact_text_presets_scale_with_dpi_and_keep_all_controls_bounded(font_dip, dpi):
+    scale = dpi / 96
+    client = round(1104 * scale), round(145 * scale)
+    layout = layout_client(*client, scale, compact=True, font_dip=font_dip)
+    assert layout.font_height == round(font_dip * scale)
+    assert_contained(layout, *client)
+
+
+@pytest.mark.parametrize("font_dip", [0, 11, 13, 15, 17, 20, True])
+def test_text_presets_do_not_create_extra_zoom_steps(font_dip):
+    with pytest.raises(ValueError, match="Small12, Medium14 or Large16"):
+        layout_client(1104, 145, 1, compact=True, font_dip=font_dip)

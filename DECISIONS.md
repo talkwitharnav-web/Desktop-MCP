@@ -161,3 +161,15 @@ Browser GUI-event adapters are a scope-specific option, not silent substitutes
 for manual host-desktop work. Microsoft's input/session documentation and the
 independent-cursor investigation establish this distinction; changing the UI
 language or drawing another arrow does not change Windows input semantics.
+
+## D-013: A readable conversation, not a changing log
+
+Present assistant and user messages in distinct labelled native boxes, retaining
+complete selectable text with bounded scrolling rather than truncating content
+to fit a bubble. Selection is per message; long messages keep their own slim
+scrolling affordance while the outer history remains independently navigable.
+
+New-message motion is brief and local, never artificial token streaming or a
+reason to move an older reading selection. Respect reduced motion. Offer exactly
+Small12, Medium14 and Large16 DIP text with transcript-local Ctrl+plus/minus;
+do not replace the user's display scale or another application's shortcuts.
