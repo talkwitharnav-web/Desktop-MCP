@@ -2367,6 +2367,7 @@ def test_hide_show_reflow_and_motion_setting_changes_do_not_replay_arrivals(surf
 
 def test_chat_arrivals_tick_without_sixty_hz_model_or_status_churn(surface, monkeypatch):
     prepare_layout(surface)
+    surface.controller.stop()
     clock = [10.0]
     monkeypatch.setattr("desktop_mcp.teaching_ui.time.monotonic", lambda: clock[0])
     surface._shown = True
@@ -2377,7 +2378,6 @@ def test_chat_arrivals_tick_without_sixty_hz_model_or_status_churn(surface, monk
         counts.append("model") or TeachingSnapshot(1, (), (), None, None)
     )
     surface._refresh_status = lambda *args: counts.append("status")
-    surface._refresh_scene = lambda *args, **kwargs: None
     surface._timer_running = True
     surface._timer_interval = _IDLE_TIMER_MS
     surface._on_timer()
@@ -2386,6 +2386,14 @@ def test_chat_arrivals_tick_without_sixty_hz_model_or_status_churn(surface, monk
     assert counts == ["model", "status"]
     assert len([call for call in surface._history.calls if call[0] == "tick"]) == 2
     assert surface._timer_interval == _ANIMATION_TIMER_MS
+    for index in range(2, 121):
+        clock[0] = 10.0 + index * 0.016
+        surface._on_timer()
+    assert 50 <= counts.count("model") <= 61
+    assert counts.count("status") == counts.count("model")
+    assert len([call for call in surface._history.calls if call[0] == "tick"]) == 121
+    assert surface._next_state_refresh > clock[0]
+    assert not surface._gui.IsWindowVisible(surface._canvas)
 
 
 def test_settling_frame_stops_fast_timer_when_component_reports_no_active_arrivals(surface):

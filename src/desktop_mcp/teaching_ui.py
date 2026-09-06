@@ -2158,6 +2158,10 @@ class TeachingSurface:
         self._scene_animating = False
         ticket = control.generation, control.input_revision
         capture_serial = self._capture_serial
+        if self._hide_count or not control.armed:
+            # Canvas visibility does not invalidate the independent chat polling deadline.
+            self._clear_scene()
+            return
         if not self._scene_authorized(ticket, capture_serial):
             self._clear_scene(invalidate=True)
             return

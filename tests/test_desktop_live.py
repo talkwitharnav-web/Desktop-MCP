@@ -1099,6 +1099,19 @@ async def test_native_compact_transcript_appearance_without_foreground(monkeypat
             )
             draft = "A short question can still be sent here."
             win32gui.SendMessage(composer, win32con.WM_SETTEXT, 0, draft)
+
+            def reply_rendered():
+                assert application.controller.snapshot().interface_ready, (
+                    application.teaching_surface._error
+                )
+                return any(
+                    text == "Yes. I will explain the control, give you a turn, then continue."
+                    for _, text in chat_message_controls(
+                        application.teaching_surface._history_window, expected_pid=os.getpid()
+                    )
+                )
+
+            wait_until(reply_rendered, timeout=2.0)
             metadata = {}
             for name, compact in (("compact", True), ("expanded", False)):
                 if not compact:
