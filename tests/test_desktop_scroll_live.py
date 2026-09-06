@@ -239,6 +239,7 @@ async def _exercise_scrollbars(client, application, backdrop, root, evidence):
     assert capture_owner(panel) == 0
     evidence["scrolling"]["history"] = measured
     _history_edge(panel, bottom=True)
+    foreground = win32gui.GetForegroundWindow()
     await client.call_tool(
         "Transcript",
         {"title": "Owned scroll fixture", "text": "A reply follows an explicit scroll to the end."},
@@ -247,6 +248,7 @@ async def _exercise_scrollbars(client, application, backdrop, root, evidence):
     following = _message_editor(history, "A reply follows an explicit scroll")
     assert win32gui.IsWindowVisible(following)
     assert "*" not in win32gui.GetWindowText(win32gui.GetDlgItem(panel, 209))
+    assert win32gui.GetForegroundWindow() == foreground
     _history_edge(panel)
     _scroll_top(message)
     win32gui.SendMessage(message, win32con.EM_SETSEL, 10, 20)
@@ -272,6 +274,7 @@ async def _exercise_scrollbars(client, application, backdrop, root, evidence):
     newest = _message_editor(history, "A new reply must not replace")
     assert win32gui.IsWindowVisible(newest)
     capture_without_repaint(panel, backdrop, root / "following-latest.png")
+    assert win32gui.GetForegroundWindow() == foreground
 
 
 async def _exercise_arrival(client, application, evidence):
@@ -489,9 +492,12 @@ async def test_native_resize_reflow_repaints_without_losing_edit_state(monkeypat
                     }
                     assert win32api.GetCursorPos() == pointer
             await _exercise_scrollbars(client, application, fixture.hwnd, root, evidence)
+            # Local scrollbar presses may activate this owned transcript, unlike agent replies.
+            after_local_scroll = win32gui.GetForegroundWindow()
+            assert after_local_scroll in (foreground, panel)
             await _exercise_arrival(client, application, evidence)
             assert control_text(composer) == draft
-            assert win32gui.GetForegroundWindow() == foreground
+            assert win32gui.GetForegroundWindow() == after_local_scroll
             assert win32api.GetCursorPos() == pointer
             evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
             assert not application.controller.snapshot().armed

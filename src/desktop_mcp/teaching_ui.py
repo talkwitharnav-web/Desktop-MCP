@@ -15,7 +15,7 @@ import uuid
 
 from desktop_mcp.contracts import Rect
 from desktop_mcp.conversation import MAX_TEXT
-from desktop_mcp.transcript_chat import BACKGROUND, TEXT_COLOR
+from desktop_mcp.transcript_chat import BACKGROUND, TEXT_COLOR, USER_BACKGROUND
 from desktop_mcp.transcript_layout import (
     BOTTOM as _BOTTOM,
     CLEAR as _CLEAR,
@@ -217,6 +217,7 @@ class TeachingSurface:
         self._retired_fonts: list[int] = []
         self._history_font_dirty = False
         self._background = 0
+        self._composer_brush = 0
         self._scale = 1.0
         self._dpi_scale = 1.0
         self._font_height = FONT_DIP
@@ -511,6 +512,7 @@ class TeachingSurface:
             raise ctypes.WinError(ctypes.get_last_error())
         try:
             self._background = win32gui.CreateSolidBrush(win32api.RGB(*BACKGROUND))
+            self._composer_brush = win32gui.CreateSolidBrush(win32api.RGB(*USER_BACKGROUND))
             cls = win32gui.WNDCLASS()
             cls.hInstance = instance
             cls.lpszClassName = class_name
@@ -588,6 +590,8 @@ class TeachingSurface:
                         cleanup.callback(win32gui.UnregisterClass, class_name, instance)
                     elif self._background:
                         cleanup.callback(win32gui.DeleteObject, self._background)
+                    if self._composer_brush:
+                        cleanup.callback(win32gui.DeleteObject, self._composer_brush)
                     if self._font:
                         cleanup.callback(win32gui.DeleteObject, self._font)
                     for font in self._retired_fonts:
@@ -612,7 +616,7 @@ class TeachingSurface:
                 self._text_size_keys_held.clear()
                 self._child_visibility.clear()
                 self._layout_info = {**self._layout_info, "bounds": None}
-                self._font = self._background = 0
+                self._font = self._background = self._composer_brush = 0
                 self._retired_fonts.clear()
 
     def _create_controls(self, instance: int) -> None:
@@ -652,7 +656,6 @@ class TeachingSurface:
             "EDIT",
             "",
             con.WS_TABSTOP | con.ES_MULTILINE | con.ES_AUTOVSCROLL | con.ES_WANTRETURN,
-            con.WS_EX_CLIENTEDGE,
         )
         self._scrollbars[COMPOSER_SCROLL] = create(
             COMPOSER_SCROLL, scroll_class, "Message scroll", con.WS_TABSTOP
@@ -784,6 +787,9 @@ class TeachingSurface:
                 return 0
             if message in (con.WM_CTLCOLORSTATIC, con.WM_CTLCOLOREDIT):
                 gui.SetTextColor(wparam, self._api.RGB(*TEXT_COLOR))
+                if lparam == self._composer:
+                    gui.SetBkColor(wparam, self._api.RGB(*USER_BACKGROUND))
+                    return self._composer_brush
                 gui.SetBkColor(wparam, self._api.RGB(*BACKGROUND))
                 return self._background
             if message == con.WM_DRAWITEM:

@@ -846,6 +846,7 @@ def test_native_child_creation_preserves_ids_wrapping_and_content_free_roles(sur
         assert not style & win32con.WS_VSCROLL
         assert not style & (win32con.WS_HSCROLL | win32con.ES_AUTOHSCROLL)
     assert surface._gui.created[children[COMPOSER]][3] & win32con.ES_WANTRETURN
+    assert not surface._gui.created[children[COMPOSER]][0] & win32con.WS_EX_CLIENTEDGE
     assert surface._gui.created[children[HISTORY]][1] == "FixtureChatHistory"
     assert children[HISTORY] not in surface._gui.subclasses
     assert (
@@ -879,6 +880,18 @@ def test_native_child_creation_preserves_ids_wrapping_and_content_free_roles(sur
     assert font_targets == set(children.values()) - {children[HISTORY]}
     surface._style_history()
     assert surface._history.calls[-1][0] == "font"
+
+
+def test_composer_uses_a_distinct_dark_background_without_stock_edge_paint(surface):
+    surface._composer_brush = 811
+    surface._background = 812
+    colors = []
+    surface._gui.SetTextColor = lambda dc, color: None
+    surface._gui.SetBkColor = lambda dc, color: colors.append(color)
+    assert surface._procedure(1, win32con.WM_CTLCOLOREDIT, 500, 7) == 811
+    assert colors[-1] == surface._api.RGB(39, 49, 61)
+    assert surface._procedure(1, win32con.WM_CTLCOLORSTATIC, 500, 4) == 812
+    assert colors[-1] == surface._api.RGB(23, 26, 31)
 
 
 @pytest.mark.parametrize("scale", [1.0, 1.5, 2.0, 3.0])

@@ -1058,7 +1058,10 @@ async def test_native_compact_transcript_appearance_without_foreground(monkeypat
         main_panel = application.surface.window_handles()[0]
         win32gui.ShowWindow(main_panel, win32con.SW_SHOWMINNOACTIVE)
         foreground, pointer = win32gui.GetForegroundWindow(), win32api.GetCursorPos()
-        click_local_button(transcript, "Pin")
+        # This no-activation fixture invokes handlers; BM_CLICK includes normal user focus behavior.
+        win32gui.SendMessage(
+            transcript, win32con.WM_COMMAND, 201, win32gui.GetDlgItem(transcript, 201)
+        )
         win32gui.SetWindowPos(
             fixture.hwnd,
             transcript,
@@ -1086,7 +1089,9 @@ async def test_native_compact_transcript_appearance_without_foreground(monkeypat
             composer = application.teaching_surface._composer
             question = "Can you explain the next step before clicking it?"
             win32gui.SendMessage(composer, win32con.WM_SETTEXT, 0, question)
-            win32gui.SendMessage(win32gui.GetDlgItem(transcript, 206), win32con.BM_CLICK, 0, 0)
+            win32gui.SendMessage(
+                transcript, win32con.WM_COMMAND, 206, win32gui.GetDlgItem(transcript, 206)
+            )
             incoming = await client.call_tool("TranscriptRead", {"timeout": 2.0})
             assert incoming.data["message"]["text"] == question
             await client.call_tool(
@@ -1115,7 +1120,9 @@ async def test_native_compact_transcript_appearance_without_foreground(monkeypat
             metadata = {}
             for name, compact in (("compact", True), ("expanded", False)):
                 if not compact:
-                    click_local_button(transcript, "Expand")
+                    win32gui.SendMessage(
+                        transcript, win32con.WM_COMMAND, 207, win32gui.GetDlgItem(transcript, 207)
+                    )
                 wait_until(
                     lambda: application.teaching_surface.layout_status()["compact"] is compact
                 )
@@ -1137,7 +1144,16 @@ async def test_native_compact_transcript_appearance_without_foreground(monkeypat
                     backdrop=fixture.hwnd,
                     activate=False,
                 )
-                assert win32gui.GetForegroundWindow() == foreground
+                assert win32gui.GetForegroundWindow() == foreground, {
+                    "phase": name,
+                    "expected": foreground,
+                    "actual": win32gui.GetForegroundWindow(),
+                    "known_owned": {
+                        "transcript": transcript,
+                        "control": main_panel,
+                        "backdrop": fixture.hwnd,
+                    },
+                }
                 assert win32api.GetCursorPos() == pointer
             (artifact_root / "layout.json").write_text(json.dumps(metadata), encoding="utf-8")
             print(
