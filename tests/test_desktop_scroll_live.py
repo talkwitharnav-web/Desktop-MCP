@@ -26,7 +26,9 @@ from tests.desktop_repaint_fixture import (
 )
 from tests.test_desktop_live import (
     FixtureWindow,
+    click_local_button,
     enable_owned_appearance_capture,
+    wait_until,
 )
 from tests.test_desktop_launch_live import chat_message_controls, control_text
 
@@ -277,7 +279,7 @@ async def _exercise_scrollbars(client, application, backdrop, root, evidence):
     assert win32gui.GetForegroundWindow() == foreground
 
 
-async def _exercise_arrival(client, application, evidence):
+async def _exercise_arrival(client, application, evidence, evidence_path):
     surface = application.teaching_surface
     history = surface._history_window
     win32gui.SendMessage(
@@ -298,7 +300,30 @@ async def _exercise_arrival(client, application, evidence):
     assert user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(enabled), 0)
     text = "A new message arrives without replacing your reading history."
     samples = []
+    rendered = []
     started = time.monotonic()
+    initial = {
+        "following": surface._history.following,
+        "motion_enabled": surface._motion_enabled,
+        "visible": surface.visible,
+        "unread": surface._history.unread,
+    }
+    original_render = surface._history._render
+
+    def record_render():
+        original_render()
+        for bubble in surface._history._bubbles.values():
+            if bubble.entry.text == text and win32gui.IsWindowVisible(bubble.window):
+                rendered.append(
+                    {
+                        "elapsed": time.monotonic() - started,
+                        "bounds": list(win32gui.GetWindowRect(bubble.window)),
+                        "animation_now": surface._history._animation_now,
+                        "animation_start": surface._history._arrivals.get(bubble.entry.sequence),
+                    }
+                )
+
+    surface._history._render = record_render
 
     async def sample_positions():
         bubble = None
@@ -316,6 +341,8 @@ async def _exercise_arrival(client, application, evidence):
                     {
                         "elapsed": time.monotonic() - started,
                         "bounds": list(win32gui.GetWindowRect(bubble)),
+                        "animation_active": surface._history.animation_active,
+                        "following": surface._history.following,
                     }
                 )
             await asyncio.sleep(0.006)
@@ -324,21 +351,29 @@ async def _exercise_arrival(client, application, evidence):
     try:
         await client.call_tool("Transcript", {"title": "Owned arrival animation", "text": text})
     finally:
-        await sampling
+        try:
+            await sampling
+        finally:
+            surface._history._render = original_render
+    positions = {sample["bounds"][0] for sample in rendered}
+    evidence["arrival"] = {
+        "client_animations_enabled": bool(enabled.value),
+        "initial": initial,
+        "distinct_horizontal_positions": len(positions),
+        "distinct_externally_sampled_positions": len({sample["bounds"][0] for sample in samples}),
+        "samples": samples,
+        "rendered_positions": rendered,
+        "scope": "Actual native window positions after render callbacks; external polling may arrive late; not compositor FPS",
+    }
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
     assert samples, "The new native message never became visible"
-    positions = {sample["bounds"][0] for sample in samples}
+    assert rendered, "No visible native message render was recorded"
     if enabled.value:
         assert len(positions) > 1, "The native message appeared without an arrival transition"
     else:
         assert len(positions) == 1, "The Windows reduced-motion preference was ignored"
     settled = samples[-5:]
     assert len({tuple(sample["bounds"]) for sample in settled}) == 1
-    evidence["arrival"] = {
-        "client_animations_enabled": bool(enabled.value),
-        "distinct_horizontal_positions": len(positions),
-        "samples": samples,
-        "scope": "Native message-window movement, not a compositor FPS measurement",
-    }
 
 
 async def test_native_resize_reflow_repaints_without_losing_edit_state(monkeypatch):
@@ -349,7 +384,7 @@ async def test_native_resize_reflow_repaints_without_losing_edit_state(monkeypat
     root.mkdir(parents=True, exist_ok=False)
     enable_owned_appearance_capture(monkeypatch)
     application = DesktopApplication()
-    fixture = FixtureWindow()
+    fixture = FixtureWindow(passive=True)
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
     user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
@@ -361,7 +396,12 @@ async def test_native_resize_reflow_repaints_without_losing_edit_state(monkeypat
         surface = application.teaching_surface
         panel, history, composer = surface._panel, surface._history_window, surface._composer
         win32gui.ShowWindow(application.surface.window_handles()[0], win32con.SW_SHOWMINNOACTIVE)
-        win32gui.SendMessage(panel, win32con.WM_COMMAND, 201, win32gui.GetDlgItem(panel, 201))
+        click_local_button(panel, "Pin")
+        wait_until(
+            lambda: bool(
+                win32gui.GetWindowLong(panel, win32con.GWL_EXSTYLE) & win32con.WS_EX_TOPMOST
+            )
+        )
         win32gui.SetWindowPos(
             fixture.hwnd,
             panel,
@@ -453,6 +493,7 @@ async def test_native_resize_reflow_repaints_without_losing_edit_state(monkeypat
                         "resize_route": route,
                         "requested_dip": [width_dip, height_dip],
                         "layout": surface.layout_status(),
+                        "capture_window_style": win32gui.GetWindowLong(panel, win32con.GWL_EXSTYLE),
                     }
                     evidence["steps"].append(step)
                     evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
@@ -492,10 +533,11 @@ async def test_native_resize_reflow_repaints_without_losing_edit_state(monkeypat
                     }
                     assert win32api.GetCursorPos() == pointer
             await _exercise_scrollbars(client, application, fixture.hwnd, root, evidence)
+            evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
             # Local scrollbar presses may activate this owned transcript, unlike agent replies.
             after_local_scroll = win32gui.GetForegroundWindow()
             assert after_local_scroll in (foreground, panel)
-            await _exercise_arrival(client, application, evidence)
+            await _exercise_arrival(client, application, evidence, evidence_path)
             assert control_text(composer) == draft
             assert win32gui.GetForegroundWindow() == after_local_scroll
             assert win32api.GetCursorPos() == pointer

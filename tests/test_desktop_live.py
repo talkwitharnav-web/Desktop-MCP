@@ -26,7 +26,8 @@ _WM_XBUTTONDOWN, _WM_XBUTTONUP = 0x020B, 0x020C
 
 
 class FixtureWindow:
-    def __init__(self):
+    def __init__(self, *, passive=False):
+        self.passive = passive
         self.ready = threading.Event()
         self.painted = threading.Event()
         self.closed = threading.Event()
@@ -57,6 +58,8 @@ class FixtureWindow:
         try:
 
             def handle_message(hwnd, message, wparam, lparam):
+                if self.passive and message == win32con.WM_MOUSEACTIVATE:
+                    return win32con.MA_NOACTIVATE
                 if message in (
                     win32con.WM_MOUSEWHEEL,
                     _WM_MOUSEHWHEEL,
@@ -114,7 +117,8 @@ class FixtureWindow:
             win32gui.RegisterClass(cls)
             registered = True
             self.hwnd = win32gui.CreateWindowEx(
-                win32con.WS_EX_TOPMOST | win32con.WS_EX_APPWINDOW,
+                win32con.WS_EX_TOPMOST
+                | (win32con.WS_EX_NOACTIVATE if self.passive else win32con.WS_EX_APPWINDOW),
                 name,
                 "Desktop-MCP isolated fixture",
                 win32con.WS_POPUP | win32con.WS_VISIBLE,
@@ -1045,7 +1049,7 @@ async def test_native_compact_transcript_appearance_without_foreground(monkeypat
     artifact_root.mkdir(parents=True, exist_ok=False)
     enable_owned_appearance_capture(monkeypatch)
     application = DesktopApplication()
-    fixture = FixtureWindow()
+    fixture = FixtureWindow(passive=True)
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
     user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
@@ -1057,11 +1061,15 @@ async def test_native_compact_transcript_appearance_without_foreground(monkeypat
         transcript = application.teaching_surface._panel
         main_panel = application.surface.window_handles()[0]
         win32gui.ShowWindow(main_panel, win32con.SW_SHOWMINNOACTIVE)
-        foreground, pointer = win32gui.GetForegroundWindow(), win32api.GetCursorPos()
-        # This no-activation fixture invokes handlers; BM_CLICK includes normal user focus behavior.
-        win32gui.SendMessage(
-            transcript, win32con.WM_COMMAND, 201, win32gui.GetDlgItem(transcript, 201)
+        before_pin = win32gui.GetForegroundWindow()
+        click_local_button(transcript, "Pin")
+        wait_until(
+            lambda: bool(
+                win32gui.GetWindowLong(transcript, win32con.GWL_EXSTYLE) & win32con.WS_EX_TOPMOST
+            )
         )
+        foreground, pointer = win32gui.GetForegroundWindow(), win32api.GetCursorPos()
+        assert foreground in (before_pin, transcript)
         win32gui.SetWindowPos(
             fixture.hwnd,
             transcript,
@@ -1071,6 +1079,7 @@ async def test_native_compact_transcript_appearance_without_foreground(monkeypat
             0,
             win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE,
         )
+        assert win32gui.GetWindowLong(transcript, win32con.GWL_EXSTYLE) & win32con.WS_EX_TOPMOST
         async with Client(create_server(application, manage_application=False)) as client:
             await client.call_tool(
                 "Transcript",
@@ -1138,6 +1147,10 @@ async def test_native_compact_transcript_appearance_without_foreground(monkeypat
                 assert question in texts
                 assert "Yes. I will explain the control, give you a turn, then continue." in texts
                 metadata[name] = status["transcript"]["layout"]
+                metadata[name]["capture_window_style"] = win32gui.GetWindowLong(
+                    transcript, win32con.GWL_EXSTYLE
+                )
+                (artifact_root / "layout.json").write_text(json.dumps(metadata), encoding="utf-8")
                 save_own_window(
                     transcript,
                     artifact_root / f"{name}.png",

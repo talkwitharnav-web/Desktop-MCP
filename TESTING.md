@@ -127,6 +127,9 @@ requesting foreground. It pins only its owned transcript above an opaque owned
 backdrop, retains the overlap/privacy checks, and also requires the explicit
 appearance flag and artifact directory. It does not replace real input,
 hotkey, IME or multi-monitor transition coverage.
+Read-only appearance fixtures use a non-activating backdrop. Local Pin-button
+behavior is completed before measuring the separate no-focus-stealing contract
+for programmatic transcript updates; capture guards are never disabled.
 `test_desktop_scroll_live.py` uses the same opt-in and privacy boundary for
 repeated native resizing, scrolling and repaint verification. Its first image
 does **not** call ShowWindow, repositioning or RedrawWindow: comparing it to a
@@ -135,8 +138,9 @@ them before inspection. It checks draft/selection/reading anchors, visible dark
 scrollbar pixels, separate message/history/composer wheel/page/track/thumb paths
 and capture release. Native history is inspected through its actual message
 EDIT children, not invented EDIT messages sent to container 301.
-Its arrival probe samples real message-window positions and settling while
-respecting the Windows animation preference; this is not compositor FPS evidence.
+Its arrival probe records real window positions after native render callbacks
+and external samples while respecting the Windows animation preference. External
+queries may arrive after a short transition; neither trace measures compositor FPS.
 The recorded physical monitor DPI is distinct from controlled
 `WM_DPICHANGED` reflows used to exercise other rendering scales. No Windows DPI
 settings are changed; these reflows are not evidence of real monitor transitions.

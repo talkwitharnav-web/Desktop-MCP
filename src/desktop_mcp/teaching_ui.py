@@ -1670,7 +1670,7 @@ class TeachingSurface:
             self._history.latest()
             self._history_changed()
 
-    def _update_history(self, entries: tuple, *, now: float | None = None) -> None:
+    def _update_history(self, entries: tuple) -> None:
         if self._history is None:
             if entries:
                 raise RuntimeError("The history component is unavailable.")
@@ -1678,7 +1678,6 @@ class TeachingSurface:
         if entries != self._last_text:
             self._history.set_entries(
                 entries,
-                now=time.monotonic() if now is None else now,
                 animate=self.visible and self._motion_enabled and not self._layout_busy,
             )
             self._last_text = entries
@@ -2071,7 +2070,7 @@ class TeachingSurface:
             else:
                 self._scene_snapshot, self._scene_ticket = snapshot, ticket
                 self._refresh_scene(confirmed, snapshot, now)
-        self._tick_history(now)
+        self._tick_history(time.monotonic())
         self._schedule_timer()
 
     def _tick_history(self, now: float) -> None:
@@ -2114,7 +2113,7 @@ class TeachingSurface:
         entries = tuple(
             (entry.sequence, entry.title, entry.text, entry.role) for entry in snapshot.entries
         )
-        self._update_history(entries, now=now)
+        self._update_history(entries)
         self._refresh_status(control, snapshot)
         self._sync_scrollbars()
         if valid:

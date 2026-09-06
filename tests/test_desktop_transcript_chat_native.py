@@ -872,6 +872,26 @@ def test_inner_thumb_preserves_unrounded_position_at_its_grab_origin(chat, fract
     assert native.GetCapture() == 0
 
 
+def test_arrival_clock_starts_after_slow_native_message_preparation(chat, monkeypatch):
+    history, native, _, _ = chat
+    clock = [10.0]
+    monkeypatch.setattr("desktop_mcp.transcript_chat_native.time.monotonic", lambda: clock[0])
+    history.set_entries(entries(1), animate=False)
+    original_measure = history._measure
+
+    def slow_measure():
+        original_measure()
+        clock[0] += 0.3
+
+    history._measure = slow_measure
+    history.set_entries(entries(2))
+    assert history._arrivals == {2: clock[0]}
+    before = history._bubbles[2].position
+    history.tick(clock[0] + 0.04)
+    assert history.animation_active
+    assert history._bubbles[2].position != before
+
+
 def test_inner_track_pages_once_without_turning_the_click_into_a_thumb_jump(chat):
     history, native, _, _ = chat
     history.set_entries(entries(1, text="line\n" * 500), animate=False)

@@ -2345,8 +2345,8 @@ def test_arrival_animation_policy_is_visible_and_reduced_motion_aware(surface, v
     surface._shown = visible
     surface._motion_enabled = motion
     entries = history_entries(1)
-    surface._update_history(entries, now=20.0)
-    assert surface._history.calls[-1] == ("entries", entries, 20.0, visible and motion)
+    surface._update_history(entries)
+    assert surface._history.calls[-1] == ("entries", entries, None, visible and motion)
     surface._history.animation_active = True
     surface._tick_history(20.016)
     if visible and motion:
@@ -2488,7 +2488,7 @@ def test_real_history_component_integrates_through_its_public_api_with_fake_wind
         surface._shown = True
         surface._motion_enabled = True
         entries = history_entries(8, text="Full message 😀\n" * 100)
-        surface._update_history(entries, now=10.0)
+        surface._update_history(entries)
         assert not history.animation_active
         assert set(history.window_handles()) <= set(surface.window_handles())
         body = history._bubbles[3].editor
@@ -2518,9 +2518,7 @@ def test_real_history_component_integrates_through_its_public_api_with_fake_wind
             assert resized.anchor == view.anchor and resized.messages == view.messages
             assert surface.layout_status()["font_dip"] == selected
             assert native.GetWindowText(body) == native_text(entries[2][2])
-        surface._update_history(
-            (*entries, (9, "Assistant", "A complete new reply", "assistant")), now=11.0
-        )
+        surface._update_history((*entries, (9, "Assistant", "A complete new reply", "assistant")))
         assert history.unread and not history.following
         assert surface._history_unread
         assert native.GetWindowText(body) == native_text(entries[2][2])

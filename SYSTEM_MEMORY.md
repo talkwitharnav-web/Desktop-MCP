@@ -239,6 +239,9 @@ implementation lives under `src/desktop_mcp`.
   Brief arrival motion applies only to genuinely new, visible, following
   messages; reduced motion, reading, selection, reflow and hiding cancel it.
   Text is never withheld for animation and timer frames do not rebuild history.
+  Automatic arrival clocks begin after native message preparation, not before
+  layout work that could consume the entire transition. Tick the chat with a
+  fresh clock after other UI work; explicit renderer-test clocks stay supported.
   Reflow batches child positioning without copied pixels or intermediate paints,
   suppresses redraw only on the eligible composer (never the history host,
   root visibility or active IME),

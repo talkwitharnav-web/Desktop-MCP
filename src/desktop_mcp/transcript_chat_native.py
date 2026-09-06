@@ -410,7 +410,8 @@ class NativeChatHistory:
         if entries == self._entries:
             return False
         validated = validate_entries(entries)
-        now = time.monotonic() if now is None else now
+        automatic_time = now is None
+        now = time.monotonic() if automatic_time else now
         if not math.isfinite(now):
             raise ValueError("Chat animation requires finite monotonic time.")
         view = self.capture_view()
@@ -464,6 +465,12 @@ class NativeChatHistory:
                     for box in self._boxes
                     if box.bottom > self._position and box.y < self._position + self._height
                 }
+                if automatic_time:
+                    # Native preparation must not consume the visible arrival transition.
+                    now = time.monotonic()
+                    if not math.isfinite(now):
+                        raise ValueError("Chat animation requires finite monotonic time.")
+                    self._animation_now = now
                 self._arrivals = {sequence: now for sequence in new_ids & visible}
             self._publish_roles()
             self._render()
