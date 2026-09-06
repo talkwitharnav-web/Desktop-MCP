@@ -111,6 +111,15 @@ requesting foreground. It pins only its owned transcript above an opaque owned
 backdrop, retains the overlap/privacy checks, and also requires the explicit
 appearance flag and artifact directory. It does not replace real input,
 hotkey, IME or multi-monitor transition coverage.
+`test_desktop_scroll_live.py` uses the same opt-in and privacy boundary for
+repeated native resizing, scrolling and repaint verification. Its first image
+does **not** call ShowWindow, repositioning or RedrawWindow: comparing it to a
+subsequent forced full erase/repaint detects stale pixels rather than repairing
+them before inspection. It checks draft/selection/reading anchors, visible dark
+scrollbar pixels, wheel/page/track/thumb behavior and capture release.
+The recorded physical monitor DPI is distinct from controlled
+`WM_DPICHANGED` reflows used to exercise other rendering scales. No Windows DPI
+settings are changed; these reflows are not evidence of real monitor transitions.
 
 The same fixture uses the same Arm authorization for guidance and input, checks transcript
 stacking/pinning without focus theft, renders/erases ink and a laser, verifies their

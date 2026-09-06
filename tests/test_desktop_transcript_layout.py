@@ -7,9 +7,11 @@ from desktop_mcp.transcript_layout import (
     CLEAR,
     COMPOSER,
     COMPOSER_LABEL,
+    COMPOSER_SCROLL,
     EXPAND,
     HISTORY,
     HISTORY_LABEL,
+    HISTORY_SCROLL,
     LATEST,
     PIN,
     SEND,
@@ -39,6 +41,8 @@ REQUIRED = {
     STATUS,
     COMPOSER,
     HISTORY_LABEL,
+    HISTORY_SCROLL,
+    COMPOSER_SCROLL,
 }
 
 
@@ -64,6 +68,11 @@ def test_default_is_a_short_wide_readable_ribbon_including_window_chrome(dpi):
     assert layout.split
     assert layout.font_height == round(14 * scale)
     assert layout.scale == scale
+    assert layout.scrollbar_width == round(8 * scale)
+    for edit, bar in ((HISTORY, HISTORY_SCROLL), (COMPOSER, COMPOSER_SCROLL)):
+        assert layout.controls[bar][2] - layout.controls[bar][0] == round(8 * scale)
+        assert layout.controls[edit][2] == layout.controls[bar][0]
+        assert layout.controls[edit][1::2] == layout.controls[bar][1::2]
     for identifier in (HISTORY, COMPOSER, SEND):
         rect = layout.controls[identifier]
         assert rect[3] - rect[1] >= 3 * layout.font_height

@@ -7,16 +7,26 @@ import pytest
 import win32con
 
 from desktop_mcp.layers import upload_rgba
-from desktop_mcp.teaching_ui import TeachingSurface, _DrawItem, _MinMaxInfo, _Request
+from desktop_mcp.teaching_ui import (
+    TeachingSurface,
+    _DrawItem,
+    _MinMaxInfo,
+    _Request,
+    _TextMetric,
+    _TrackMouseEvent,
+    _REFLOW,
+)
 from desktop_mcp.teaching import Mark, TeachingSnapshot, WaitTarget
 from desktop_mcp.transcript_layout import (
     BOTTOM,
     CLEAR,
     COMPOSER,
     COMPOSER_LABEL,
+    COMPOSER_SCROLL,
     EXPAND,
     HISTORY,
     HISTORY_LABEL,
+    HISTORY_SCROLL,
     LATEST,
     PIN,
     SEND,
@@ -27,6 +37,7 @@ from desktop_mcp.transcript_layout import (
     layout_client,
     usable_area,
 )
+from desktop_mcp.transcript_scroll import ScrollState, thumb_geometry
 from tests.test_desktop_tools import FixtureApplication
 
 
@@ -45,10 +56,23 @@ class Gui:
         self.created = {}
         self.font_height = 14
         self.foreground = 999
+        self.focused = 0
+        self.capture = 0
+        self.on_capture_changed = None
+        self.on_end_defer = None
+        self.on_redraw = None
+        self.subclasses = {}
+        self.window_styles = {3: 0, 7: 0}
+        self.extra_styles = {7: win32con.WS_EX_CLIENTEDGE}
+        self.margins = {}
+        self.wheel_lines = 3
+        self.batch = []
+        self.native_key = None
+        self._gdi_handle = 800
         self.LOGFONT = SimpleNamespace
 
     def IsWindowVisible(self, handle):
-        return self.visible.get(handle, True)
+        return self.visible.get(handle, True) and (handle in (1, 2) or self.visible.get(1, True))
 
     def IsIconic(self, handle):
         return self.iconic.get(handle, False)
@@ -80,10 +104,12 @@ class Gui:
                 self.rect[2] - self.rect[0] - self.chrome[0],
                 self.rect[3] - self.rect[1] - self.chrome[1],
             )
-        return (0, 0, *self.positions.get(handle, (0, 0, 600, 100))[2:])
+        width, height = self.positions.get(handle, (0, 0, 600, 100))[2:]
+        border = 4 if self.extra_styles.get(handle, 0) & win32con.WS_EX_CLIENTEDGE else 0
+        return 0, 0, max(0, width - border), max(0, height - border)
 
     def MoveWindow(self, handle, x, y, width, height, repaint):
-        self.events.append(("move", handle, x, y, width, height))
+        self.events.append(("move", handle, x, y, width, height, repaint))
         self.positions[handle] = (x, y, width, height)
         self._clamp_scroll(handle)
 
@@ -92,12 +118,25 @@ class Gui:
 
     def SetWindowText(self, handle, text):
         self.events.append(("text", handle, text))
+        callback = self.subclasses.get(handle)
+        if callback is not None:
+            callback(handle, win32con.WM_SETTEXT, 0, text, 1, 0)
+        else:
+            self.store_text(handle, text)
+
+    def store_text(self, handle, text):
         self.texts[handle] = text
         self.selections[handle] = (0, 0)
         self.first_lines[handle] = 0
 
     def _lines(self, handle):
-        columns = max(1, (self.GetClientRect(handle)[2] - 24) // max(1, self.font_height // 2))
+        margin = self.margins.get(handle, 4)
+        scrollbar = 17 if self.window_styles.get(handle, 0) & win32con.WS_VSCROLL else 0
+        columns = max(
+            1,
+            (self.GetClientRect(handle)[2] - 2 * margin - scrollbar)
+            // max(1, self.font_height // 2),
+        )
         lines, offset = [], 0
         for paragraph in self.texts.get(handle, "").split("\r\n"):
             length = len(paragraph.encode("utf-16-le")) // 2
@@ -113,11 +152,25 @@ class Gui:
         self.first_lines[handle] = min(maximum, max(0, self.first_lines.get(handle, 0)))
 
     def GetScrollInfo(self, handle, bar, mask):
+        if not self.window_styles.get(handle, 0) & win32con.WS_VSCROLL:
+            raise OSError(1447, "GetScrollInfo: no scrollbars")
         self._clamp_scroll(handle)
         return 0, 0, len(self._lines(handle)) - 1, self._page(handle), self.first_lines[handle], 0
 
     def SendMessage(self, handle, message, wparam, lparam):
         self.events.append(("message", handle, message, wparam, lparam))
+        callback = self.subclasses.get(handle)
+        if callback is not None:
+            return callback(handle, message, wparam, lparam, 1, 0)
+        return self.native_message(handle, message, wparam, lparam)
+
+    def native_message(self, handle, message, wparam, lparam):
+        if message == win32con.WM_GETTEXTLENGTH:
+            return len(self.texts.get(handle, "").encode("utf-16-le")) // 2
+        if message == win32con.WM_GETTEXT:
+            encoded = self.texts.get(handle, "").encode("utf-16-le")[:max(0, wparam - 1) * 2]
+            ctypes.memmove(lparam, encoded + b"\0\0", len(encoded) + 2)
+            return len(encoded) // 2
         if message == win32con.EM_GETSEL:
             start, end = self.selections.get(handle, (0, 0))
             ctypes.cast(wparam, ctypes.POINTER(ctypes.wintypes.DWORD)).contents.value = start
@@ -125,6 +178,20 @@ class Gui:
             return (start & 0xFFFF) | ((end & 0xFFFF) << 16)
         if message == win32con.EM_SETSEL:
             self.selections[handle] = wparam, lparam
+        elif message == win32con.WM_SETTEXT:
+            self.store_text(handle, lparam)
+            return 1
+        elif message == win32con.WM_SETREDRAW:
+            self.visible[handle] = bool(wparam)
+        elif message == win32con.EM_GETLINECOUNT:
+            return len(self._lines(handle))
+        elif message == win32con.EM_GETRECT:
+            rectangle = ctypes.cast(lparam, ctypes.POINTER(ctypes.wintypes.RECT)).contents
+            _, _, width, height = self.GetClientRect(handle)
+            rectangle.left = self.margins.get(handle, 4)
+            rectangle.top, rectangle.right, rectangle.bottom = 0, width - rectangle.left, height
+        elif message == win32con.EM_SETMARGINS:
+            self.margins[handle] = lparam & 0xFFFF
         elif message == win32con.EM_GETFIRSTVISIBLELINE:
             return self.first_lines.get(handle, 0)
         elif message == win32con.EM_LINEINDEX:
@@ -136,6 +203,8 @@ class Gui:
             self.first_lines[handle] = self.first_lines.get(handle, 0) + lparam
             self._clamp_scroll(handle)
         elif message == win32con.EM_SCROLLCARET:
+            if not self.IsWindowVisible(handle):
+                return 0
             caret = self.selections.get(handle, (0, 0))[1]
             line = max(0, bisect_right(self._lines(handle), caret) - 1)
             first = self.first_lines.get(handle, 0)
@@ -144,12 +213,16 @@ class Gui:
             elif line >= first + self._page(handle):
                 self.first_lines[handle] = line - self._page(handle) + 1
             self._clamp_scroll(handle)
+        elif message == win32con.WM_KEYDOWN and self.native_key:
+            self.native_key(handle, wparam)
         return 0
 
     def CreateWindowEx(self, *arguments):
         identifier = arguments[9]
         handle = 1000 + identifier
         self.created[handle] = arguments
+        self.window_styles[handle] = arguments[3]
+        self.extra_styles[handle] = arguments[0]
         self.texts[handle] = arguments[2]
         self.positions[handle] = tuple(arguments[4:8])
         return handle
@@ -168,7 +241,124 @@ class Gui:
         return self.foreground
 
     def SetFocus(self, handle):
+        self.focused = handle
         self.events.append(("focus", handle))
+
+    def GetFocus(self):
+        return self.focused
+
+    def GetClassName(self, handle):
+        return "FixtureGuidance"
+
+    def GetDC(self, handle):
+        return 900
+
+    def ReleaseDC(self, handle, dc):
+        self.events.append(("release-dc", handle, dc))
+
+    def SelectObject(self, dc, obj):
+        self.events.append(("select", dc, obj))
+        return 901
+
+    def get_text_metrics(self, dc, pointer):
+        metrics = ctypes.cast(pointer, ctypes.POINTER(_TextMetric)).contents
+        metrics.height = self.font_height + 2
+        return True
+
+    def begin_defer(self, count):
+        self.events.append(("begin-defer", count))
+        self.batch = []
+        return 400
+
+    def defer(self, batch, handle, target, x, y, width, height, flags):
+        assert batch == 400
+        self.events.append(("defer", handle, x, y, width, height, flags))
+        self.batch.append((handle, x, y, width, height, flags))
+        return batch
+
+    def end_defer(self, batch):
+        assert batch == 400
+        for handle, x, y, width, height, flags in self.batch:
+            self.MoveWindow(handle, x, y, width, height, False)
+            if flags & win32con.SWP_SHOWWINDOW:
+                self.visible[handle] = True
+            elif flags & win32con.SWP_HIDEWINDOW:
+                self.visible[handle] = False
+        self.events.append(("end-defer",))
+        if self.on_end_defer:
+            self.on_end_defer()
+        return True
+
+    def RedrawWindow(self, handle, rect, region, flags):
+        self.events.append(("redraw", handle, flags))
+        if self.on_redraw:
+            self.on_redraw(handle, flags)
+
+    def PostMessage(self, *arguments):
+        self.events.append(("post", *arguments))
+
+    def SetCapture(self, handle):
+        old, self.capture = self.capture, handle
+        self.events.append(("capture", handle))
+        return old
+
+    def GetCapture(self):
+        return self.capture
+
+    def ReleaseCapture(self):
+        old, self.capture = self.capture, 0
+        self.events.append(("release-capture", old))
+        if self.on_capture_changed and old:
+            self.on_capture_changed(old, 0x0215, 0, 0)
+
+    def system_parameters(self, action, unused, pointer, flags):
+        assert action == 0x0068 and not flags
+        ctypes.cast(pointer, ctypes.POINTER(ctypes.wintypes.UINT)).contents.value = self.wheel_lines
+        return True
+
+    def track_mouse(self, pointer):
+        item = ctypes.cast(pointer, ctypes.POINTER(_TrackMouseEvent)).contents
+        self.events.append(("track-mouse", item.window, item.flags))
+        return True
+
+    def set_subclass(self, handle, callback, identifier, data):
+        self.subclasses[handle] = callback
+        self.events.append(("subclass", handle, identifier))
+        return True
+
+    def remove_subclass(self, handle, callback, identifier):
+        self.subclasses.pop(handle, None)
+        self.events.append(("remove-subclass", handle, identifier))
+        return True
+
+    def default_subclass(self, handle, message, wparam, lparam):
+        self.events.append(("default-edit", handle, message, wparam, lparam))
+        return self.native_message(handle, message, wparam, lparam)
+
+    def BeginPaint(self, handle):
+        self.events.append(("begin-paint", handle))
+        return 900, ("fixture-paint", handle)
+
+    def EndPaint(self, handle, paint):
+        self.events.append(("end-paint", handle))
+
+    def FillRect(self, dc, rectangle, brush):
+        self.events.append(("fill", dc, rectangle, brush))
+
+    def CreateSolidBrush(self, color):
+        self._gdi_handle += 1
+        self.events.append(("brush", color))
+        return self._gdi_handle
+
+    def CreatePen(self, style, width, color):
+        self._gdi_handle += 1
+        return self._gdi_handle
+
+    def RoundRect(self, *arguments):
+        self.events.append(("round", *arguments))
+
+    def DrawFocusRect(self, *arguments):
+        self.events.append(("focus-rect", *arguments))
 
     def DefWindowProc(self, *arguments):
         return 47
@@ -187,8 +377,22 @@ def surface():
     surface._gui = Gui()
     surface._con = win32con
     surface._user32 = SimpleNamespace(
-        GetDpiForWindow=lambda window: 96, IsZoomed=lambda window: surface._gui.zoomed
+        GetDpiForWindow=lambda window: 96,
+        IsZoomed=lambda window: surface._gui.zoomed,
+        BeginDeferWindowPos=surface._gui.begin_defer,
+        DeferWindowPos=surface._gui.defer,
+        EndDeferWindowPos=surface._gui.end_defer,
+        SystemParametersInfoW=surface._gui.system_parameters,
+        TrackMouseEvent=surface._gui.track_mouse,
     )
+    surface._gdi32 = SimpleNamespace(GetTextMetricsW=surface._gui.get_text_metrics)
+    surface._comctl = SimpleNamespace(
+        SetWindowSubclass=surface._gui.set_subclass,
+        RemoveWindowSubclass=surface._gui.remove_subclass,
+        DefSubclassProc=surface._gui.default_subclass,
+    )
+    surface._api = SimpleNamespace(RGB=lambda r, g, b: r | (g << 8) | (b << 16))
+    surface._gui.on_capture_changed = surface._procedure
     surface._native_error = OSError
     surface._dwm = SimpleNamespace(DwmFlush=lambda: 0)
     surface._composition_active = lambda: False
@@ -204,6 +408,7 @@ def prepare_layout(surface, *, scale=1.0, work=(0, 0, 1920, 1040), monitor=None,
         identifier: identifier + 100
         for identifier in (PIN, TOP, BOTTOM, TASKBAR, CLEAR, EXPAND, STOP, LATEST)
     }
+    surface._scrollbars = {HISTORY_SCROLL: 406, COMPOSER_SCROLL: 407}
     surface._scale = surface._dpi_scale = scale
     surface._user32.GetDpiForWindow = lambda window: round(scale * 96)
     surface._work_area = lambda: work
@@ -261,11 +466,11 @@ def test_transcript_font_uses_logfont_and_updates_every_child(surface):
     assert descriptions[0].lfWeight == 400
     assert descriptions[0].lfQuality == 5
     assert events == [
-        ("font", 3, 0x30, 60, True),
-        ("font", 4, 0x30, 60, True),
-        ("font", 7, 0x30, 60, True),
-        ("font", 8, 0x30, 60, True),
-        ("font", 5, 0x30, 60, True),
+        ("font", 3, 0x30, 60, False),
+        ("font", 4, 0x30, 60, False),
+        ("font", 7, 0x30, 60, False),
+        ("font", 8, 0x30, 60, False),
+        ("font", 5, 0x30, 60, False),
         ("delete", 50),
     ]
     assert surface._font == 60
@@ -360,6 +565,8 @@ def test_native_child_creation_preserves_ids_wrapping_and_content_free_roles(sur
         COMPOSER,
         HISTORY_LABEL,
         COMPOSER_LABEL,
+        HISTORY_SCROLL,
+        COMPOSER_SCROLL,
     }
     for identifier, handle in children.items():
         arguments = surface._gui.created[handle]
@@ -368,7 +575,7 @@ def test_native_child_creation_preserves_ids_wrapping_and_content_free_roles(sur
     for identifier in (HISTORY, COMPOSER):
         style = surface._gui.created[children[identifier]][3]
         assert style & win32con.ES_MULTILINE
-        assert style & win32con.WS_VSCROLL
+        assert not style & win32con.WS_VSCROLL
         assert not style & (win32con.WS_HSCROLL | win32con.ES_AUTOHSCROLL)
     assert surface._gui.created[children[COMPOSER]][3] & win32con.ES_WANTRETURN
     assert surface._gui.created[children[HISTORY]][3] & win32con.ES_READONLY
@@ -386,11 +593,13 @@ def test_native_child_creation_preserves_ids_wrapping_and_content_free_roles(sur
     assert roles[children[HISTORY]] == "transcript-history"
     assert roles[children[COMPOSER]] == "transcript-composer"
     assert roles[children[SEND]] == "transcript-send"
+    assert roles[children[HISTORY_SCROLL]] == "transcript-history-scrollbar"
+    assert roles[children[COMPOSER_SCROLL]] == "transcript-composer-scrollbar"
     assert set(surface.window_handles()) == {1, 2, *children.values()}
     assert all(
         roles[handle] == "transcript-controls"
         for identifier, handle in children.items()
-        if identifier not in {HISTORY, COMPOSER, SEND}
+        if identifier not in {HISTORY, COMPOSER, SEND, HISTORY_SCROLL, COMPOSER_SCROLL}
     )
     surface._set_font()
     font_targets = {
@@ -424,6 +633,7 @@ def test_default_native_placement_uses_outer_logical_size_without_activation(sur
         "dpi": round(96 * scale),
         "font_height": round(14 * scale),
         "split": True,
+        "scrollbar_width": round(8 * scale),
     }
     status["bounds"] = ("do not retain caller mutations",)
     assert surface.layout_status()["bounds"] == surface._gui.rect
@@ -438,9 +648,7 @@ def test_default_native_placement_uses_outer_logical_size_without_activation(sur
 @pytest.mark.parametrize("scale", [1.5, 2.0, 3.0])
 def test_native_minimum_query_during_placement_uses_the_proposed_width(surface, scale):
     work = (0, 0, round(1920 * scale), round(1040 * scale))
-    prepare_layout(
-        surface, scale=scale, work=work, chrome=(round(16 * scale), round(39 * scale))
-    )
+    prepare_layout(surface, scale=scale, work=work, chrome=(round(16 * scale), round(39 * scale)))
     original = surface._gui.SetWindowPos
 
     def constrain_before_resize(handle, target, x, y, width, height, flags):
@@ -656,11 +864,34 @@ def history_entries(count=12, *, start=1, text=None):
 
 
 @pytest.mark.parametrize("position,following", [(16, False), (17, True)])
-def test_native_scroll_info_has_six_fields_with_position_at_index_four(surface, position, following):
+def test_native_scroll_info_has_six_fields_with_position_at_index_four(
+    surface, position, following
+):
+    prepare_layout(surface)
+    surface._resize_mode(initial=True)
+    legacy = 9000
+    surface._gui.window_styles[legacy] = win32con.WS_VSCROLL
+    surface._gui.positions[legacy] = (0, 0, 400, 64)
+    surface._gui.texts[legacy] = "\r\n".join("line" for _ in range(21))
+    surface._gui.first_lines[legacy] = position
+    info = surface._gui.GetScrollInfo(legacy, win32con.SB_VERT, 7)
+    assert info == (0, 0, 20, 4, position, 0)
+    assert (info[4] >= info[2] - info[3] + 1) is following
+
+
+@pytest.mark.parametrize("position,following", [(16, False), (17, True)])
+def test_barless_edit_uses_actual_lines_and_formatting_rect_not_scrollinfo(
+    surface, position, following
+):
     prepare_layout(surface)
     surface._resize_mode(initial=True)
     surface._last_text = history_entries(1)
-    surface._gui.GetScrollInfo = lambda handle, bar, mask: (0, 0, 20, 4, position, position)
+    surface._gui.positions[3] = (0, 0, 400, 64)
+    surface._gui.texts[3] = "\r\n".join("line" for _ in range(21))
+    surface._gui.first_lines[3] = position
+    with pytest.raises(OSError) as error:
+        surface._gui.GetScrollInfo(3, win32con.SB_VERT, 7)
+    assert error.value.errno == 1447
     assert surface._sample_view(surface._editor, history=True).following is following
 
 
@@ -717,6 +948,19 @@ def test_new_replies_follow_only_when_the_history_was_already_at_the_end(surface
     assert surface._sample_view(3, history=True).following
 
 
+def test_new_history_reaches_latest_while_native_edit_redraw_is_suppressed(surface):
+    prepare_layout(surface)
+    surface._resize_mode(initial=True)
+    entries = history_entries(30)
+    surface._update_history(entries)
+    state = surface._scroll_state(surface._editor)
+    assert state.maximum > 0 and state.at_end
+    surface._update_history((*entries, *history_entries(1, start=31)))
+    assert surface._scroll_state(surface._editor).at_end
+    assert surface._gui.IsWindowVisible(surface._editor)
+    assert not surface._history_unread
+
+
 def test_selection_at_the_bottom_is_not_destroyed_by_an_incoming_reply(surface):
     prepare_layout(surface)
     surface._resize_mode(initial=True)
@@ -739,7 +983,7 @@ def test_expand_clamping_the_scroll_range_does_not_erase_the_reading_anchor(surf
     before = surface._sample_view(3, history=True)
     assert not before.following
     surface._button(EXPAND)
-    assert surface._gui.GetScrollInfo(3, 1, 0)[4] == 0
+    assert surface._gui.first_lines[3] == 0
     surface._button(EXPAND)
     after = surface._sample_view(3, history=True)
     assert after.anchor == before.anchor
@@ -1043,9 +1287,8 @@ def test_visibility_toggle_during_capture_is_applied_after_the_guard(surface):
 
 
 def test_native_send_keeps_failed_drafts_and_clears_only_accepted_messages(surface):
-    texts = {7: "I see it, but what does it do?"}
-    surface._gui.GetWindowText = lambda handle: texts.get(handle, "")
-    surface._gui.SetWindowText = lambda handle, text: texts.update({handle: text})
+    texts = surface._gui.texts
+    texts[7] = "I see it, but what does it do?"
     surface._refresh = lambda: None
     surface.controller.stop()
     surface._send_user()
@@ -1055,6 +1298,35 @@ def test_native_send_keeps_failed_drafts_and_clears_only_accepted_messages(surfa
     texts[7] = " "  # Invalid input is retained, not silently discarded.
     surface._send_user()
     assert texts[7] == " "
+    assert surface._message_error
+
+
+@pytest.mark.parametrize("draft", ["x" * 4000, "Hello \U0001f369 " * 900])
+def test_send_reads_the_entire_native_buffer_not_a_truncated_window_caption(surface, draft):
+    surface._gui.SetWindowText(7, draft)
+    surface._gui.GetWindowText = lambda handle: draft[:511]
+    surface._refresh = lambda: None
+    received = []
+    send = surface.session.conversation.send_user
+
+    def record(text):
+        received.append(text)
+        return send(text)
+
+    surface.session.conversation.send_user = record
+    surface._send_user()
+    assert received == [draft]
+    assert surface._gui.texts[7] == ""
+    assert surface.session.conversation.status()["pending_messages"] == 1
+
+
+def test_an_oversized_native_draft_is_retained_instead_of_truncated_and_sent(surface):
+    draft = "x" * 16001
+    surface._gui.SetWindowText(7, draft)
+    surface._refresh = lambda: None
+    surface._send_user()
+    assert surface._gui.texts[7] == draft
+    assert surface.session.conversation.status()["pending_messages"] == 0
     assert surface._message_error
 
 
@@ -1183,3 +1455,509 @@ def test_layer_upload_uses_premultiplied_pixels_without_a_native_window(monkeypa
     upload_rgba(123, (-100, 40), image)
     assert calls[0][:5] == (123, -100, 40, 2, 1)
     assert calls[0][-1] == bytes((25, 50, 100, 128, 0, 0, 0, 0))
+
+
+def prepare_scrolling(surface, *, scale=1.0):
+    prepare_layout(surface, scale=scale, work=(0, 0, round(1920 * scale), round(1040 * scale)))
+    for editor in (3, 7):
+        surface._comctl.SetWindowSubclass(editor, surface._edit_callback, 1, 0)
+    surface._set_font()
+    surface._resize_mode(initial=True)
+    surface._update_history(history_entries(20))
+    surface._gui.SetWindowText(7, "\r\n".join(f"Draft line {index}" for index in range(80)))
+    surface._scroll_to(3, 0)
+    surface._scroll_to(7, 0)
+    surface._sync_scrollbars()
+
+
+def mouse_point(x, y):
+    return (x & 0xFFFF) | ((y & 0xFFFF) << 16)
+
+
+def grab_thumb(surface, identifier=HISTORY_SCROLL):
+    scrollbar = surface._scrollbars[identifier]
+    editor = surface._scroll_target(scrollbar)
+    state = surface._scroll_state(editor)
+    _, _, width, height = surface._gui.GetClientRect(scrollbar)
+    thumb = thumb_geometry(state, height, surface._scale)
+    point = mouse_point(width // 2, thumb.top + thumb.length // 2)
+    surface._procedure(scrollbar, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, point)
+    assert surface._scroll_drag is not None
+    assert surface._gui.capture == scrollbar
+    return scrollbar
+
+
+def test_layout_batches_geometry_and_restores_redraw_before_one_complete_erase(surface):
+    prepare_scrolling(surface)
+    surface._gui.events.clear()
+    surface._gui.rect = (100, 100, 850, 400)
+    surface._dpi_scale = 1.5
+    surface._gui.on_redraw = lambda window, flags: surface._procedure(
+        window, win32con.WM_ERASEBKGND, 900, 0
+    )
+    surface._layout()
+    events = surface._gui.events
+    redraws = [event for event in events if event[0] == "redraw"]
+    assert len(redraws) == 1 and redraws[0][1] == 1
+    required = win32con.RDW_INVALIDATE | win32con.RDW_ERASE | win32con.RDW_ALLCHILDREN
+    required |= win32con.RDW_FRAME | win32con.RDW_UPDATENOW
+    assert redraws[0][2] & required == required
+    assert ("fill", 900, surface._gui.GetClientRect(1), surface._background) in events
+    for event in events:
+        if event[0] == "move":
+            assert event[-1] is False
+        elif event[0] == "defer":
+            flags = event[-1]
+            assert flags & win32con.SWP_NOREDRAW and flags & win32con.SWP_NOCOPYBITS
+            assert flags & win32con.SWP_NOACTIVATE and flags & win32con.SWP_NOZORDER
+        elif event[0] == "message" and event[2] == win32con.WM_SETFONT:
+            assert event[-1] is False
+    end = next(index for index, event in enumerate(events) if event[0] == "end-defer")
+    redraw = next(index for index, event in enumerate(events) if event[0] == "redraw")
+    for editor in (3, 7):
+        disable = events.index(("message", editor, win32con.WM_SETREDRAW, False, 0))
+        enable = events.index(("message", editor, win32con.WM_SETREDRAW, True, 0))
+        assert disable < end < enable < redraw
+        assert surface._gui.IsWindowVisible(editor)
+    assert not any(
+        event[0] == "message" and event[1] == 1 and event[2] == win32con.WM_SETREDRAW
+        for event in events
+    )
+
+
+def test_dpi_reflow_paints_only_the_final_clamped_placement(surface):
+    prepare_scrolling(surface)
+    surface._gui.events.clear()
+    surface._gui.chrome = (24, 58)
+    surface._work_area = lambda: (0, 0, 1200, 700)
+    suggested = ctypes.wintypes.RECT(-100, 600, 1900, 920)
+    surface._procedure(1, 0x02E0, 144 | (144 << 16), ctypes.addressof(suggested))
+    assert not surface._exit
+    assert surface._layout_hold == 0 and surface._placement_width is None
+    assert len([e for e in surface._gui.events if e[0] == "redraw" and e[1] == 1]) == 1
+    assert all(
+        event[-1] & win32con.SWP_NOREDRAW and event[-1] & win32con.SWP_NOCOPYBITS
+        for event in surface._gui.events
+        if event[0] == "position"
+    )
+    assert surface.layout_status()["scrollbar_width"] == round(8 * surface._scale)
+
+
+def test_synchronous_wm_size_does_not_cause_a_second_complete_repaint(surface):
+    prepare_scrolling(surface)
+    original = surface._gui.SetWindowPos
+
+    def resize(*arguments):
+        original(*arguments)
+        surface._procedure(1, win32con.WM_SIZE, win32con.SIZE_RESTORED, 0)
+
+    surface._gui.SetWindowPos = resize
+    surface._gui.events.clear()
+    surface._place_panel((100, 100, 1000, 320))
+    assert len([e for e in surface._gui.events if e[0] == "redraw" and e[1] == 1]) == 1
+
+
+def test_nested_resize_is_deferred_not_recursive_and_does_not_freeze_redraw(surface):
+    prepare_scrolling(surface)
+    surface._gui.events.clear()
+    surface._gui.on_end_defer = lambda: (surface._layout(), surface._layout())
+    surface._layout()
+    assert not surface._layout_busy and not surface._programmatic_depth
+    assert surface._layout_posted
+    assert [e for e in surface._gui.events if e[0] == "post"] == [("post", 1, _REFLOW, 0, 0)]
+    assert len([e for e in surface._gui.events if e[0] == "redraw"]) == 1
+    surface._gui.on_end_defer = None
+    surface._procedure(1, _REFLOW, 0, 0)
+    assert not surface._layout_posted and not surface._layout_busy
+
+
+def test_failed_child_batch_restores_every_edit_and_erases_partial_layout(surface):
+    prepare_scrolling(surface)
+    surface._gui.events.clear()
+    surface._user32.DeferWindowPos = lambda *args: 0
+    with pytest.raises(OSError):
+        surface._layout()
+    assert not surface._layout_busy and not surface._programmatic_depth
+    assert surface._gui.IsWindowVisible(3) and surface._gui.IsWindowVisible(7)
+    assert any(event[0] == "redraw" for event in surface._gui.events)
+    assert not any(event[0] == "end-defer" for event in surface._gui.events)
+
+
+def test_capture_visibility_intent_survives_a_reentrant_layout_transaction(surface):
+    prepare_scrolling(surface)
+    surface._shown = True
+
+    def hide_during_layout():
+        assert surface._layout_busy and surface._programmatic_depth
+        assert dispatch(surface, "hide").error is None
+        assert dispatch(surface, "visibility", argument="off").error is None
+
+    surface._gui.on_end_defer = hide_during_layout
+    surface._layout()
+    assert not surface.visible and not surface.enabled
+    assert not surface._gui.IsWindowVisible(1)
+    assert not surface._gui.IsWindowVisible(3)
+    assert dispatch(surface, "restore").error is None
+    assert not surface._gui.IsWindowVisible(1)
+
+
+@pytest.mark.parametrize("identifier", [HISTORY_SCROLL, COMPOSER_SCROLL])
+@pytest.mark.parametrize("scale", [1, 1.5, 2, 3])
+def test_dark_thumb_drag_pages_and_reaches_both_ends_without_changing_selection(
+    surface, identifier, scale
+):
+    prepare_scrolling(surface, scale=scale)
+    surface.controller.stop()
+    generation = surface.controller.snapshot().generation
+    scrollbar = surface._scrollbars[identifier]
+    editor = surface._scroll_target(scrollbar)
+    surface._gui.selections[editor] = (10, 20)
+    draft = surface._gui.texts[7]
+    maximum = surface._scroll_state(editor).maximum
+    scrollbar = grab_thumb(surface, identifier)
+    _, _, width, height = surface._gui.GetClientRect(scrollbar)
+    surface._procedure(
+        scrollbar, win32con.WM_MOUSEMOVE, win32con.MK_LBUTTON, mouse_point(width // 2, height + 100)
+    )
+    assert surface._scroll_state(editor).position == maximum
+    surface._procedure(scrollbar, win32con.WM_LBUTTONUP, 0, mouse_point(width // 2, height + 100))
+    assert surface._scroll_drag is None and not surface._gui.capture
+    assert surface._gui.selections[editor] == (10, 20)
+    surface._procedure(scrollbar, win32con.WM_LBUTTONDOWN, 1, mouse_point(width // 2, 0))
+    assert (
+        surface._scroll_state(editor).position == maximum - surface._scroll_state(editor).page_step
+    )
+    surface._procedure(scrollbar, win32con.WM_KEYDOWN, win32con.VK_HOME, 0)
+    assert surface._scroll_state(editor).position == 0
+    surface._procedure(scrollbar, win32con.WM_KEYDOWN, win32con.VK_END, 0)
+    assert surface._scroll_state(editor).position == maximum
+    assert surface._gui.texts[7] == draft
+    assert surface.controller.snapshot().generation == generation
+    assert not surface.controller.snapshot().armed
+    assert surface.controller.snapshot().completed_actions == 0
+
+
+def test_scroll_adapter_keeps_full_native_line_deltas_above_65535(surface):
+    prepare_scrolling(surface)
+    original = surface._gui._lines
+    surface._gui._lines = lambda handle: range(100000) if handle == 3 else original(handle)
+    surface._scroll_to(3, 0)
+    scrollbar = grab_thumb(surface)
+    surface._gui.events.clear()
+    surface._procedure(scrollbar, win32con.WM_LBUTTONUP, 0, mouse_point(4, 30000))
+    assert surface._scroll_state(3).position == surface._scroll_state(3).maximum
+    assert any(
+        event[0] == "message" and event[1:3] == (3, win32con.EM_LINESCROLL) and event[-1] > 65535
+        for event in surface._gui.events
+    )
+    assert not surface._gui.capture
+
+
+@pytest.mark.parametrize("editor", [3, 7])
+def test_edit_subclass_consumes_wheel_once_with_precision_and_windows_preferences(surface, editor):
+    prepare_scrolling(surface)
+    surface.controller.stop()
+    surface._scroll_to(editor, 10)
+    surface._gui.events.clear()
+    for _ in range(3):
+        surface._edit_procedure(editor, win32con.WM_MOUSEWHEEL, 30 << 16, 0)
+    assert surface._scroll_state(editor).position == 10
+    surface._edit_procedure(editor, win32con.WM_MOUSEWHEEL, 30 << 16, 0)
+    assert surface._scroll_state(editor).position == 7
+    assert not any(
+        e[0] == "default-edit" and e[2] == win32con.WM_MOUSEWHEEL for e in surface._gui.events
+    )
+    surface._gui.wheel_lines = 0
+    surface._edit_procedure(editor, win32con.WM_MOUSEWHEEL, (-120 & 0xFFFF) << 16, 0)
+    assert surface._scroll_state(editor).position == 7
+    surface._gui.wheel_lines = 0xFFFFFFFF
+    surface._edit_procedure(editor, win32con.WM_MOUSEWHEEL, (-120 & 0xFFFF) << 16, 0)
+    assert surface._scroll_state(editor).position == 7 + surface._scroll_state(editor).page_step
+    assert not surface.controller.snapshot().armed
+
+
+def test_wheel_over_the_custom_bar_and_refused_preference_read_use_safe_defaults(surface):
+    prepare_scrolling(surface)
+    surface._user32.SystemParametersInfoW = lambda *args: False
+    scrollbar = surface._scrollbars[COMPOSER_SCROLL]
+    surface._procedure(scrollbar, win32con.WM_MOUSEWHEEL, (-120 & 0xFFFF) << 16, 0)
+    assert surface._scroll_state(7).position == 3
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "up",
+        "cancel",
+        "capture-changed",
+        "destroy",
+        "hide",
+        "visibility",
+        "close",
+        "root-cancel",
+        "deactivate",
+        "lost-button",
+        "reflow",
+        "minimize",
+    ],
+)
+def test_local_thumb_capture_has_bounded_owned_cleanup_on_every_exit(surface, reason):
+    prepare_scrolling(surface)
+    surface._shown = True
+    scrollbar = grab_thumb(surface)
+    if reason == "up":
+        surface._procedure(scrollbar, win32con.WM_LBUTTONUP, 0, mouse_point(-50, -50))
+    elif reason == "cancel":
+        surface._procedure(scrollbar, win32con.WM_CANCELMODE, 0, 0)
+    elif reason == "capture-changed":
+        surface._gui.capture = 999
+        surface._procedure(scrollbar, 0x0215, 0, 999)
+        assert surface._gui.capture == 999
+    elif reason == "destroy":
+        surface._procedure(scrollbar, win32con.WM_NCDESTROY, 0, 0)
+        assert scrollbar not in surface.window_roles()
+    elif reason == "hide":
+        assert dispatch(surface, "hide").error is None
+        assert dispatch(surface, "restore").error is None
+    elif reason == "visibility":
+        surface._apply_visibility(False)
+    elif reason == "close":
+        assert dispatch(surface, "close").error is None
+    elif reason == "root-cancel":
+        surface._procedure(1, win32con.WM_CANCELMODE, 0, 0)
+    elif reason == "deactivate":
+        surface._procedure(1, win32con.WM_ACTIVATE, 0, 0)
+    elif reason == "lost-button":
+        surface._procedure(scrollbar, win32con.WM_MOUSEMOVE, 0, mouse_point(4, 12))
+    elif reason == "minimize":
+        surface._procedure(1, win32con.WM_SIZE, win32con.SIZE_MINIMIZED, 0)
+    else:
+        surface._layout()
+    assert surface._scroll_drag is None
+    assert surface._gui.capture == (999 if reason == "capture-changed" else 0)
+
+
+def test_bar_does_not_steal_another_window_capture_or_force_foreground(surface):
+    prepare_scrolling(surface)
+    surface._gui.capture = 999
+    surface._gui.events.clear()
+    scrollbar = surface._scrollbars[HISTORY_SCROLL]
+    state = surface._scroll_state(3)
+    thumb = thumb_geometry(state, surface._gui.GetClientRect(scrollbar)[3], surface._scale)
+    surface._procedure(scrollbar, win32con.WM_LBUTTONDOWN, 1, mouse_point(4, thumb.top + 1))
+    assert surface._gui.capture == 999 and surface._scroll_drag is None
+    assert not any(event[0] in {"capture", "focus"} for event in surface._gui.events)
+
+
+def test_refused_mouse_capture_leaves_no_latent_drag(surface):
+    prepare_scrolling(surface)
+    surface._gui.SetCapture = lambda window: 0
+    scrollbar = surface._scrollbars[HISTORY_SCROLL]
+    thumb = thumb_geometry(surface._scroll_state(3), surface._gui.GetClientRect(scrollbar)[3], 1)
+    surface._procedure(scrollbar, win32con.WM_LBUTTONDOWN, 1, mouse_point(4, thumb.top + 1))
+    assert surface._scroll_drag is None
+    assert not surface._exit
+
+
+def test_empty_editor_keeps_its_dark_scroll_affordance_without_a_spurious_thumb(surface):
+    prepare_scrolling(surface)
+    scrollbar = surface._scrollbars[COMPOSER_SCROLL]
+    surface._gui.SetWindowText(7, "")
+    state = surface._scroll_states[scrollbar]
+    assert isinstance(state, ScrollState) and state.maximum == 0
+    assert surface._gui.IsWindowVisible(scrollbar)
+    surface._gui.events.clear()
+    surface._procedure(scrollbar, win32con.WM_PAINT, 0, 0)
+    assert len([event for event in surface._gui.events if event[0] == "round"]) == 1
+    surface._procedure(scrollbar, win32con.WM_LBUTTONDOWN, 1, mouse_point(4, 12))
+    assert surface._scroll_drag is None and not surface._gui.capture
+    assert surface.window_roles()[scrollbar] == "transcript-composer-scrollbar"
+
+
+def test_paint_erases_old_thumb_and_uses_only_slim_dark_track_and_thumb_colors(surface):
+    prepare_scrolling(surface)
+    scrollbar = surface._scrollbars[HISTORY_SCROLL]
+    surface._gui.events.clear()
+    surface._procedure(scrollbar, win32con.WM_PAINT, 0, 0)
+    events = surface._gui.events
+    assert events[0] == ("begin-paint", scrollbar)
+    assert events[1] == ("fill", 900, surface._gui.GetClientRect(scrollbar), surface._background)
+    assert events[-1] == ("end-paint", scrollbar)
+    assert len([event for event in events if event[0] == "round"]) == 2
+    for event in events:
+        if event[0] == "brush":
+            rgb = event[1]
+            assert max(rgb & 255, (rgb >> 8) & 255, (rgb >> 16) & 255) < 180
+    width = surface._gui.GetClientRect(scrollbar)[2]
+    assert width == 8
+    assert surface.window_roles()[scrollbar] == "transcript-history-scrollbar"
+    surface._gui.events.clear()
+    surface._procedure(scrollbar, win32con.WM_MOUSEMOVE, 0, mouse_point(4, 4))
+    assert ("track-mouse", scrollbar, 2) in surface._gui.events
+    other = surface._scrollbars[COMPOSER_SCROLL]
+    surface._gui.events.clear()
+    surface._procedure(other, win32con.WM_MOUSEMOVE, 0, mouse_point(4, 4))
+    assert ("invalidate", scrollbar, None, False) in surface._gui.events
+    surface._procedure(other, 0x02A3, 0, 0)
+    assert not surface._scroll_hover
+
+
+def test_bar_paint_failure_still_finishes_paint_and_releases_its_gdi_objects(surface):
+    prepare_scrolling(surface)
+    scrollbar = surface._scrollbars[HISTORY_SCROLL]
+    surface._gui.RoundRect = lambda *args: (_ for _ in ()).throw(OSError("Fixture paint failed"))
+    surface._gui.events.clear()
+    with pytest.raises(OSError, match="paint failed"):
+        surface._paint_scrollbar(scrollbar)
+    assert ("end-paint", scrollbar) in surface._gui.events
+    assert len([event for event in surface._gui.events if event[0] == "delete"]) == 2
+
+
+def test_programmatic_reflow_notifications_and_copy_do_not_change_deliberate_follow_state(surface):
+    prepare_scrolling(surface)
+    entries = history_entries(6, text="A short message.")
+    surface._update_history(entries)
+    surface._scroll_to(3, 3)
+    surface._gui.selections[3] = (15, 15)
+    before = surface._sample_view(3, history=True)
+    surface._button(EXPAND)
+    assert surface._gui.first_lines[3] == 0
+    surface._edit_procedure(3, win32con.WM_KEYDOWN, ord("C"), 0)
+    surface._procedure(1, win32con.WM_COMMAND, HISTORY | (win32con.EN_VSCROLL << 16), 3)
+    assert not surface._read_view(3, history=True).following
+    surface._button(EXPAND)
+    assert surface._sample_view(3, history=True).anchor == before.anchor
+    surface._update_history((*entries, *history_entries(1, start=7)))
+    assert surface._history_unread
+    surface._procedure(surface._scrollbars[HISTORY_SCROLL], win32con.WM_KEYDOWN, win32con.VK_END, 0)
+    assert surface._sample_view(3, history=True).following and not surface._history_unread
+
+
+def test_reply_during_a_thumb_drag_preserves_reading_and_does_not_move_the_composer(surface):
+    prepare_scrolling(surface)
+    surface._scroll_to(3, 5)
+    scrollbar = grab_thumb(surface)
+    before = surface._read_view(3, history=True)
+    draft, selection = surface._gui.texts[7], surface._gui.selections.get(7)
+    surface._update_history(history_entries(21))
+    assert surface._read_view(3, history=True).anchor == before.anchor
+    assert surface._history_unread and not surface._read_view(3, history=True).following
+    assert surface._gui.capture == scrollbar
+    assert surface._gui.texts[7] == draft and surface._gui.selections.get(7) == selection
+    surface._procedure(scrollbar, win32con.WM_LBUTTONUP, 0, mouse_point(4, 2000))
+    assert not surface._history_unread
+
+
+def test_native_keyboard_and_ime_messages_delegate_without_replacing_native_edit_behavior(surface):
+    prepare_scrolling(surface)
+    surface._scroll_to(3, surface._scroll_state(3).maximum)
+
+    def page_up(handle, key):
+        if key == win32con.VK_PRIOR:
+            surface._gui.first_lines[handle] = max(0, surface._gui.first_lines[handle] - 2)
+
+    surface._gui.native_key = page_up
+    surface._gui.events.clear()
+    surface._edit_procedure(3, win32con.WM_KEYDOWN, win32con.VK_PRIOR, 0)
+    assert not surface._read_view(3, history=True).following
+    surface._edit_procedure(7, 0x010F, 0, 8)  # WM_IME_COMPOSITION stays with the native EDIT.
+    calls = [
+        e
+        for e in surface._gui.events
+        if e[0] == "default-edit" and e[1:4] == (3, win32con.WM_KEYDOWN, win32con.VK_PRIOR)
+    ]
+    assert len(calls) == 1
+    assert ("default-edit", 7, 0x010F, 0, 8) in surface._gui.events
+    surface._edit_procedure(7, win32con.WM_NCDESTROY, 0, 0)
+    assert 7 not in surface._gui.subclasses
+    assert ("remove-subclass", 7, 1) in surface._gui.events
+
+
+def test_custom_scrollbar_keyboard_keeps_tab_navigation_and_wants_scrolling_keys(surface):
+    prepare_scrolling(surface)
+    scrollbar = surface._scrollbars[HISTORY_SCROLL]
+    assert surface._procedure(scrollbar, win32con.WM_GETDLGCODE, win32con.VK_TAB, 0) == (
+        win32con.DLGC_WANTARROWS
+    )
+    assert (
+        surface._procedure(scrollbar, win32con.WM_GETDLGCODE, win32con.VK_NEXT, 0)
+        & win32con.DLGC_WANTALLKEYS
+    )
+
+
+def test_empty_ime_preedit_is_native_and_survives_reflow_without_redraw_or_selection_toggles(
+    surface,
+):
+    prepare_scrolling(surface)
+    surface._edit_procedure(7, 0x010D, 0, 0)
+    assert surface._ime_composing
+    assert TeachingSurface._composition_active(surface)
+    sends = []
+    surface._user32.GetKeyState = lambda key: 0
+    surface._send_user = lambda: sends.append(True)
+    message = ctypes.wintypes.MSG(hWnd=7, message=win32con.WM_KEYDOWN, wParam=13, lParam=0)
+    assert not surface._composer_key(message)
+    surface._gui.events.clear()
+    surface._gui.rect = (100, 100, 900, 400)
+    surface._layout()
+    assert not any(
+        event[0] == "message"
+        and event[1] == 7
+        and event[2] in (win32con.WM_SETREDRAW, win32con.EM_SETSEL, win32con.EM_LINESCROLL)
+        for event in surface._gui.events
+    )
+    assert not sends
+    surface._edit_procedure(7, 0x010E, 0, 0)
+    assert not surface._ime_composing
+    assert surface._composer_key(message)
+    assert sends == [True]
+
+
+def test_incoming_history_does_not_toggle_composer_redraw_or_disturb_its_ime(surface):
+    prepare_scrolling(surface)
+    surface._edit_procedure(7, 0x010D, 0, 0)
+    draft, selection = surface._gui.texts[7], surface._gui.selections.get(7)
+    surface._gui.events.clear()
+    surface._update_history(history_entries(21))
+    assert surface._ime_composing
+    assert surface._gui.texts[7] == draft and surface._gui.selections.get(7) == selection
+    assert not any(
+        event[0] == "message" and event[1] == 7 and event[2] == win32con.WM_SETREDRAW
+        for event in surface._gui.events
+    )
+
+
+def test_x_while_a_thumb_is_captured_releases_capture_and_keeps_real_quit_semantics(surface):
+    prepare_scrolling(surface)
+    grab_thumb(surface)
+    exits = []
+    surface._on_exit = lambda: exits.append(True)
+    surface._procedure(1, win32con.WM_CLOSE, 0, 0)
+    assert exits == [True]
+    assert surface._scroll_drag is None and not surface._gui.capture
+    assert not surface.controller.snapshot().armed
+    assert ("message", 1, win32con.WM_CANCELMODE, 0, 0) in surface._gui.events
+
+
+def test_page_size_uses_the_native_formatting_rectangle_and_measured_font_height(surface):
+    prepare_scrolling(surface)
+    original = surface._gui.native_message
+
+    def formatted(handle, message, wparam, lparam):
+        if handle == 3 and message == win32con.EM_GETRECT:
+            rect = ctypes.cast(lparam, ctypes.POINTER(ctypes.wintypes.RECT)).contents
+            rect.left, rect.top, rect.right, rect.bottom = 4, 7, 500, 43
+            return 0
+        return original(handle, message, wparam, lparam)
+
+    def metrics(dc, pointer):
+        ctypes.cast(pointer, ctypes.POINTER(_TextMetric)).contents.height = 18
+        return True
+
+    surface._gui.native_message = formatted
+    surface._gdi32.GetTextMetricsW = metrics
+    surface._line_height = 0
+    state = surface._scroll_state(3)
+    assert state.page == 2
+    assert surface._line_height == 18
+    assert surface._gui.GetClientRect(3)[3] != 36

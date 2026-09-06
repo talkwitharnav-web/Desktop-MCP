@@ -64,6 +64,8 @@ Top/Bottom dock inside the work area; the explicit **Taskbar edge** choice can
 need **Pin first** to remain above the taskbar. These are local layout choices,
 not input grants. `DesktopStatus.transcript.layout` reports content-free layout
 state and the last completed physical bounds.
+The human can scroll either text pane with its slim dark bar, wheel or keyboard;
+do not use desktop input tools to operate these protected conversation controls.
 
 Use this loop while a transcript conversation is active:
 

@@ -270,6 +270,13 @@ the ribbon. Both retain your draft, selection, reading position and per-mode
 window size during the session. **Latest** returns to the newest message and
 marks unread replies when you are deliberately reading older history.
 
+Both native text panes use slim dark scrollbars: an **8-DIP gutter** with a
+roughly 6-DIP thumb, rather than the stock white scrollbar. Drag the thumb, click
+the track, use the wheel, or Tab to a bar and use arrows, Page Up/Down, Home/End.
+Selection, reading position and follow-latest behavior remain intact. Reflow
+batches child positioning and completes background/control repainting after
+font and geometry changes, avoiding leftover borders or text during resizing.
+
 The message box stays separate from the read-only history: **Enter sends**,
 **Shift+Enter adds a line**, and **Send** also works with input methods such as IME.
 Drag the title bar or use **Top**/**Bottom** to dock inside the work area with an
@@ -283,7 +290,7 @@ messages or changing desktop permissions. The model can use
 click protected application controls. `DesktopStatus.transcript` reports
 `enabled`, actual `visible`, pending-message count and listener status.
 Its `layout` record reports `compact`, `dock`, physical outer `bounds`, actual
-`dpi`, physical `font_height` and `split` once laid out. Bounds describe the last
+`dpi`, physical `font_height`, `scrollbar_width` and `split` once laid out. Bounds describe the last
 completed layout, not a live drag sample.
 
 Closing either main window quits the application. Minimize the instruction window
@@ -314,6 +321,8 @@ Chat is bounded and held in memory: up to 32 displayed entries and 32 unanswered
 messages, with 16,000 characters per message. A full queue reports an error and
 keeps your draft. Closing Desktop-MCP clears its local chat; the connected
 Copilot client may retain its normal session history.
+Send reads the complete native message buffer, not a truncated window-caption
+helper, so long accepted drafts are not silently cut to a short prefix.
 
 An agent can publish a step, mark the relevant area, and wait for your pointer:
 

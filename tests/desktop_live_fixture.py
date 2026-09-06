@@ -158,7 +158,9 @@ class IsolatedFixtureWindow:
             assert process.returncode == 0, stderr
         finally:
             try:
-                if process.poll() is None:
+                if process.poll() is None or (
+                    self._gui_process is not None and self._gui_process.is_running()
+                ):
                     self._terminate_owned()
                 if self._reader is not None:
                     self._reader.join(3)

@@ -83,6 +83,8 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    windows = []
+    info = None
     try:
         connecting = asyncio.create_task(connect(name, timeout=20))
         exited = asyncio.create_task(process.wait())
@@ -106,8 +108,6 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
         assert info["status"]["state"] == "stopped"
         assert info["status"]["completed_actions"] == 0
         assert "mode" not in info["status"]
-        windows = []
-
         def collect(handle, _):
             if win32process.GetWindowThreadProcessId(handle)[1] == info["pid"]:
                 title = win32gui.GetWindowText(handle)
@@ -165,7 +165,9 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
                     assert rows[handle]["root_id"] == transcript
                 origin = win32gui.ClientToScreen(transcript, (0, 0))
                 _, _, width, height = win32gui.GetClientRect(transcript)
-                for identifier in (*range(201, 210), *range(301, 306)):
+                assert rows[win32gui.GetDlgItem(transcript, 306)]["role"] == "transcript-history-scrollbar"
+                assert rows[win32gui.GetDlgItem(transcript, 307)]["role"] == "transcript-composer-scrollbar"
+                for identifier in (*range(201, 210), *range(301, 308)):
                     child = win32gui.GetDlgItem(transcript, identifier)
                     assert child and child in rows
                     if not win32gui.IsWindowVisible(child):
@@ -179,7 +181,8 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
                 foreground = win32gui.GetForegroundWindow()
                 for compact in (False, True):
                     win32gui.SendMessage(
-                        win32gui.GetDlgItem(transcript, 207), win32con.BM_CLICK, 0, 0
+                        transcript, win32con.WM_COMMAND, 207,
+                        win32gui.GetDlgItem(transcript, 207),
                     )
                     status = (await client.call_tool("DesktopStatus")).data
                     assert status["interface_ready"], status["last_error"]
@@ -189,7 +192,17 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
                     assert win32gui.SendMessage(composer, win32con.EM_GETSEL, 0, 0) == (
                         7 | (14 << 16)
                     )
-                    assert win32gui.GetForegroundWindow() == foreground
+                    actual_foreground = win32gui.GetForegroundWindow()
+                    assert actual_foreground == foreground, {
+                        "before": foreground,
+                        "after": actual_foreground,
+                        "after_is_owned": (
+                            win32gui.IsWindow(actual_foreground)
+                            and win32process.GetWindowThreadProcessId(actual_foreground)[1] == info["pid"]
+                        ),
+                        "transcript": transcript,
+                        "main": main_panel,
+                    }
                     if not compact:
                         assert not layout["split"]
                         assert layout["bounds"][3] - layout["bounds"][1] > (
@@ -219,8 +232,9 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
                 )
                 win32gui.SendMessage(pin, win32con.BM_CLICK, 0, 0)
                 assert control_text(composer) == draft
-                win32gui.SendMessage(composer, win32con.WM_SETTEXT, 0, "Native transcript question")
-                assert control_text(composer) == "Native transcript question"
+                native_question = "Native transcript question " + "\u03bb" * 1000
+                win32gui.SendMessage(composer, win32con.WM_SETTEXT, 0, native_question)
+                assert control_text(composer) == native_question
                 win32gui.SendMessage(sender, win32con.BM_CLICK, 0, 0)
                 question = await client.call_tool("TranscriptRead", {"timeout": 2.0})
                 assert question.data["message"] is not None, (
@@ -228,7 +242,7 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
                     control_text(win32gui.GetDlgItem(transcript, 302)),
                     win32gui.IsWindowEnabled(sender),
                 )
-                assert question.data["message"]["text"] == "Native transcript question"
+                assert question.data["message"]["text"] == native_question
                 assert control_text(composer) == ""
                 await client.call_tool(
                     "Transcript",
@@ -270,5 +284,17 @@ async def test_either_window_x_ends_its_owned_host_process(tmp_path, window_kind
         assert all(not win32gui.IsWindow(handle) for handle, _ in windows)
     finally:
         if process.returncode is None:
-            process.kill()
-            await process.wait()
+            for window, _ in windows:
+                if (
+                    info is not None
+                    and win32gui.IsWindow(window)
+                    and win32process.GetWindowThreadProcessId(window)[1] == info["pid"]
+                ):
+                    win32gui.PostMessage(window, win32con.WM_CLOSE, 0, 0)
+            try:
+                await asyncio.wait_for(process.communicate(), 5)
+            except asyncio.TimeoutError:
+                process.kill()
+                await asyncio.wait_for(process.communicate(), 5)
+        else:
+            await process.communicate()

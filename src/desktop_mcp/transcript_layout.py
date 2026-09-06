@@ -7,10 +7,12 @@ import math
 from typing import Literal
 
 from desktop_mcp.contracts import Rect
+from desktop_mcp.transcript_scroll import SCROLLBAR_DIP
 
 PIN, TOP, BOTTOM, CLEAR, STOP = range(201, 206)
 SEND, EXPAND, TASKBAR, LATEST = range(206, 210)
 HISTORY, STATUS, COMPOSER, HISTORY_LABEL, COMPOSER_LABEL = range(301, 306)
+HISTORY_SCROLL, COMPOSER_SCROLL = 306, 307
 
 Dock = Literal["floating", "top", "bottom", "taskbar-edge"]
 COMPACT_SIZE = (1120, 164)
@@ -35,6 +37,7 @@ class TranscriptLayout:
     font_height: int
     split: bool
     controls: dict[int, Rect]
+    scrollbar_width: int
 
 
 def _validate(width: int, height: int, dpi_scale: float) -> None:
@@ -135,7 +138,15 @@ def layout_client(width: int, height: int, dpi_scale: float, *, compact: bool) -
         box(SEND, logical_width - _PAD - send_width, composer_top, send_width, composer_height)
     box(HISTORY_LABEL, _PAD, _PAD, history_width - latest_width - _GAP, _HEADER)
     box(LATEST, _PAD + history_width - latest_width, _PAD, latest_width, _HEADER)
-    return TranscriptLayout(scale, max(1, round(FONT_DIP * scale)), split, controls)
+    scrollbar_width = max(1, round(SCROLLBAR_DIP * scale))
+    for editor, scrollbar in ((HISTORY, HISTORY_SCROLL), (COMPOSER, COMPOSER_SCROLL)):
+        left, top, right, bottom = controls[editor]
+        reserved = min(scrollbar_width, max(1, (right - left - 1) // 2))
+        controls[editor] = left, top, right - reserved, bottom
+        controls[scrollbar] = right - reserved, top, right, bottom
+    return TranscriptLayout(
+        scale, max(1, round(FONT_DIP * scale)), split, controls, scrollbar_width
+    )
 
 
 def usable_area(area: Rect, dpi_scale: float, dock: Dock) -> Rect:

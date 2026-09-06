@@ -190,6 +190,21 @@ implementation lives under `src/desktop_mcp`.
   newly widened ribbon outside its work area. Native fakes model pywin32's
   six-field scroll-info result, and maximized-state queries use the actual
   `user32.IsZoomed` export rather than an invented pywin32 method.
+  The barless native EDITs now use owned, slim dark scrollbar children and
+  `transcript_scroll.py` line/track math. Their range comes from actual EDIT
+  line/formatting APIs and GDI text metrics; `GetScrollInfo` is invalid without
+  a native scroll style. Per-owned-EDIT comctl32 subclasses retain native text,
+  IME and accessibility handling while synchronizing wheel/navigation changes.
+  Thumb capture is cancelled on up, cancel, hide, reflow, deactivation and
+  destruction; scrollbars remain in content-free role/target protection.
+  Reflow batches child positioning without copied pixels or intermediate paints,
+  suppresses redraw only on eligible EDITs (never root visibility or active IME),
+  and finishes with background erasure and a full root/children repaint.
+  Follow-latest uses explicit line scrolling inside redraw-suppressed updates;
+  native caret scrolling can leave the newly replaced history at the top while
+  EDIT redraw/visibility is suppressed.
+  Send reads a bounded complete `WM_GETTEXT` buffer; window-caption helpers can
+  truncate long messages and must not serve as the draft reader.
   Docking and minimum sizes share the current monitor's work-area/DPI constraints;
   panel minimum tracking sizes never apply to the separately sized ink canvas.
   Transcript close/fatal-exit handling sends owned `WM_CANCELMODE`, so native
