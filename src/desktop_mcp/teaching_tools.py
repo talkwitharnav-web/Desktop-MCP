@@ -118,7 +118,7 @@ def register_teaching_tools(
 
     @mcp.tool(
         name="Laser",
-        description="Show a temporary visual laser without moving the real cursor. Give exactly one loc, path, or bounds; bounds traces an ellipse around a button/object. Coordinates are image pixels with frame_id, otherwise physical desktop pixels. The laser never clicks or edits Blender. It clears on stop/context changes.",
+        description="Show a temporary visual laser without moving the real cursor (duration 0.01..10 seconds). Give exactly one loc, path, or bounds. Bounds continuously circles an ellipse around a button/object; a path whose last point equals its first also loops, at a speed independent of duration. An open path sweeps once and rests at its endpoint; loc stays in place. Coordinates are image pixels with frame_id, otherwise physical desktop pixels. The laser never clicks or edits Blender. It clears on stop/context/input changes.",
         annotations=presentation,
     )
     def laser(
@@ -133,6 +133,7 @@ def register_teaching_tools(
             raise ValueError("Give exactly one of loc, path or bounds.")
         app = get_app()
         with app.controller.operation("Laser guidance"):
+            ellipse_bounds = None
             if bounds is not None:
                 corners, context, revision = map_points(
                     app, [(bounds[0], bounds[1]), (bounds[2], bounds[3])], frame_id
@@ -141,6 +142,7 @@ def register_teaching_tools(
                 top, bottom = sorted((corners[0][1], corners[1][1]))
                 if left == right or top == bottom:
                     raise ValueError("Laser bounds must have positive width and height.")
+                ellipse_bounds = (left, top, right, bottom)
                 cx, cy = (left + right) / 2, (top + bottom) / 2
                 rx, ry = (right - left) / 2, (bottom - top) / 2
                 points = [
@@ -148,8 +150,9 @@ def register_teaching_tools(
                         round(cx + rx * math.cos(2 * math.pi * index / 48)),
                         round(cy + ry * math.sin(2 * math.pi * index / 48)),
                     )
-                    for index in range(49)
+                    for index in range(48)
                 ]
+                points.append(points[0])
             else:
                 points, context, revision = map_points(
                     app, [loc] if loc is not None else path, frame_id
@@ -161,6 +164,7 @@ def register_teaching_tools(
                 lifetime=duration,
                 expected_context=context,
                 expected_input_revision=revision,
+                laser_bounds=ellipse_bounds,
             )
             return {"identifier": identifier, "duration": duration, "moves_real_cursor": False}
 

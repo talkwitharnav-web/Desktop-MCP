@@ -277,6 +277,51 @@ def test_erase_and_expiry_only_remove_our_annotations(rig: Rig) -> None:
     assert rig.call("erase") == 2
 
 
+def test_looping_laser_keeps_exact_bounds_until_its_bounded_deadline(rig: Rig) -> None:
+    bounds = (-30, -21, 51, 40)
+    identifier = rig.call(
+        "draw",
+        "laser",
+        [(-30, -20), (50, 40), (-30, -20)],
+        lifetime=10.0,
+        laser_bounds=bounds,
+    )
+    for now in (100.0, 102.0, 107.6, 109.99):
+        rig.clock.value = now
+        marks = rig.session.snapshot().marks
+        assert len(marks) == 1
+        assert marks[0].identifier == identifier
+        assert marks[0].laser_bounds == bounds
+        assert marks[0].expires_at == 110.0
+    rig.clock.value = 110.0
+    assert rig.session.snapshot().marks == ()
+    assert rig.position_calls == 0
+
+
+@pytest.mark.parametrize("invalidation", ["stop", "context", "input"])
+def test_looping_laser_is_cleared_before_deadline_on_invalidation(rig: Rig, invalidation) -> None:
+    rig.call("draw", "laser", [(0, 0)], lifetime=10.0, laser_bounds=(-20, -20, 20, 20))
+    if invalidation == "stop":
+        rig.controller.stop()
+        rig.controller.arm_local()
+    elif invalidation == "context":
+        rig.current = None
+    else:
+        rig.controller.notify_human_input(kind="button")
+    rig.clock.value += 0.2
+    assert rig.session.snapshot().marks == ()
+    assert rig.position_calls == 0
+
+
+@pytest.mark.parametrize("bounds", [(0, 0, 0, 1), (-500, 0, 20, 20)])
+def test_invalid_laser_bounds_cannot_publish_state(rig: Rig, bounds) -> None:
+    with pytest.raises(ValueError):
+        rig.call("draw", "laser", [(0, 0)], laser_bounds=bounds)
+    assert rig.session.snapshot().marks == ()
+    with pytest.raises(ValueError, match="Only a laser"):
+        rig.draw(laser_bounds=(-20, -20, 20, 20))
+
+
 def test_resource_and_shape_limits_are_explicit_without_silent_eviction(rig: Rig) -> None:
     invalid = [
         ("path", [(0, 0)], {}),
@@ -657,14 +702,14 @@ def test_laser_animates_and_fades_without_drawing_an_opaque_surface() -> None:
     snapshot = scene(mark("laser", ((10, 20), (80, 20)), expires=2.0))
     with (
         render_marks(snapshot, (0, 0, 100, 40), now=0.0) as first,
-        render_marks(snapshot, (0, 0, 100, 40), now=1.0) as moving,
+        render_marks(snapshot, (0, 0, 100, 40), now=0.6) as moving,
         render_marks(snapshot, (0, 0, 100, 40), now=1.9) as fading,
         render_marks(snapshot, (0, 0, 100, 40), now=2.0) as expired,
     ):
-        assert first.getpixel((10, 20))[3] > 200
-        assert moving.getpixel((57, 20))[3] > 150
+        assert first.getbbox() is None
+        assert moving.getpixel((45, 20))[3] > 200
         assert first.getpixel((90, 39))[3] == 0
-        assert fading.getchannel("A").getextrema()[1] < first.getchannel("A").getextrema()[1]
+        assert fading.getchannel("A").getextrema()[1] < moving.getchannel("A").getextrema()[1]
         assert expired.getbbox() is None
 
 

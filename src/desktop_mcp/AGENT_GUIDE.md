@@ -201,6 +201,11 @@ silently substituting shell/file operations or application scripting.
 
 `Laser` points or circles without moving the real pointer. `Draw` adds outlined
 ink; `Erase` removes only that overlay, never app objects or files.
+`Laser(bounds=...)` continuously orbits an ellipse for its bounded duration;
+a path ending at its starting point also loops. An open path sweeps once and
+rests at its endpoint. Duration controls visibility (0.01..10 seconds), not
+orbit speed. One call animates locally; do not issue frame-by-frame tool calls.
+Use `Draw` when a persistent outline is more useful than a temporary moving laser.
 `WaitForCursor` gives the learner a bounded turn and checks vicinity plus dwell.
 It does not prove they clicked a button or completed an application action.
 Input tools become available afterward if access is still armed; no mode switch

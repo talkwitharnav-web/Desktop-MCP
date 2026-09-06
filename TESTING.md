@@ -38,6 +38,11 @@ exception fields or unvalidated frame arguments.
 `test_desktop_control_ui.py` and `test_desktop_cursor.py` use native fakes and
 synthetic renderings. `test_desktop_teaching.py` exercises the pure teaching model
 and renderer. These are not evidence of real Windows hook behavior or appearance.
+`test_desktop_teaching_render.py` covers continuous laser seams, fractional ellipse
+geometry, lifetime-independent orbit speed, open-path/point fades, clipping,
+bounded supersampling/cache and image ownership. Its synthetic frame/cost
+comparisons do not establish native timer/upload performance or universal 60Hz;
+heavy mixed or multi-laser scenes can exceed a single frame budget.
 
 `test_desktop_conversation.py` covers the real MCP chat tools around a fake
 desktop: incoming delivery, reply acknowledgements, exclusive listeners, queue

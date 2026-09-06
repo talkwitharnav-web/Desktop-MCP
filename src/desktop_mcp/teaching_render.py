@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from bisect import bisect_right
+from contextlib import closing
+from dataclasses import dataclass
+from functools import lru_cache
 import math
 import time
 
@@ -11,10 +14,12 @@ from PIL import Image, ImageDraw, ImageFilter
 from desktop_mcp.contracts import Rect
 from desktop_mcp.teaching import (
     MAX_MARKS,
+    MAX_POINTS,
     Mark,
     TeachingSnapshot,
     WaitTarget,
     _color,
+    _laser_bounds,
     _number,
     _point,
     _points,
@@ -24,6 +29,10 @@ from desktop_mcp.teaching import (
 MAX_RENDER_PIXELS = 16_777_216
 MAX_RENDER_DIMENSION = 8192
 _INK_EDGE_WIDTH = 2.0
+_LASER_SPEED = 360.0
+_LASER_MIN_PERIOD = 1.2
+_LASER_MAX_PERIOD = 3.0
+_LASER_TRAIL_LENGTH = 120.0
 _XY = tuple[float, float]
 _RGBA = tuple[int, int, int, int]
 
@@ -39,6 +48,15 @@ def _check_size(size: tuple[int, int]) -> None:
         )
 
 
+def _sampling(size: tuple[int, int], maximum: int) -> int:
+    while (
+        max(size) * maximum > MAX_RENDER_DIMENSION
+        or size[0] * size[1] * maximum * maximum > MAX_RENDER_PIXELS
+    ):
+        maximum //= 2
+    return maximum
+
+
 def _scene(snapshot: TeachingSnapshot, now: float) -> tuple[tuple[Mark, ...], WaitTarget | None]:
     if (
         not isinstance(snapshot, TeachingSnapshot)
@@ -51,6 +69,7 @@ def _scene(snapshot: TeachingSnapshot, now: float) -> tuple[tuple[Mark, ...], Wa
         if not isinstance(mark, Mark):
             raise ValueError("The snapshot contains an invalid annotation.")
         points = _points(mark.kind, mark.points)
+        laser_bounds = _laser_bounds(mark.kind, mark.laser_bounds)
         color = _color(mark.color)
         width = _number(mark.width, "width", 0.5, 32.0)
         created = _number(mark.created_at, "created_at", -math.inf, math.inf)
@@ -66,7 +85,15 @@ def _scene(snapshot: TeachingSnapshot, now: float) -> tuple[tuple[Mark, ...], Wa
         if now >= created and (expiry is None or now < expiry):
             marks.append(
                 Mark(
-                    mark.identifier, mark.kind, points, color, width, created, expiry, mark.context
+                    mark.identifier,
+                    mark.kind,
+                    points,
+                    color,
+                    width,
+                    created,
+                    expiry,
+                    mark.context,
+                    laser_bounds,
                 )
             )
     waiting = snapshot.waiting
@@ -96,7 +123,12 @@ def visible_bounds(
             if mark.kind == "laser"
             else (mark.width + _INK_EDGE_WIDTH) / 2 + 2
         )
-        xs, ys = zip(*mark.points)
+        points = (
+            (mark.laser_bounds[:2], mark.laser_bounds[2:])
+            if mark.laser_bounds is not None
+            else mark.points
+        )
+        xs, ys = zip(*points)
         regions.append((min(xs) - padding, min(ys) - padding, max(xs) + padding, max(ys) + padding))
     if waiting is not None:
         x, y = waiting.center
@@ -151,8 +183,15 @@ def _segment(a: _XY, b: _XY, bounds: tuple[float, float, float, float]) -> tuple
     return (a[0] + start * dx, a[1] + start * dy), (a[0] + end * dx, a[1] + end * dy)
 
 
-def _stroke(image: Image.Image, points: tuple[_XY, ...], width: float, color: _RGBA) -> None:
-    draw = ImageDraw.Draw(image)
+def _stroke(
+    image: Image.Image,
+    points: tuple[_XY, ...],
+    width: float,
+    color: _RGBA | int,
+    *,
+    draw: ImageDraw.ImageDraw | None = None,
+) -> None:
+    draw = ImageDraw.Draw(image) if draw is None else draw
     radius = max(0.5, width / 2)
     bounds = (-radius, -radius, image.width - 1 + radius, image.height - 1 + radius)
     for a, b in zip(points, points[1:]):
@@ -180,36 +219,114 @@ def _ellipse(
     )
 
 
-def _trail(points: tuple[_XY, ...], progress: float) -> tuple[_XY, ...]:
-    cumulative = [0.0]
-    for a, b in zip(points, points[1:]):
-        cumulative.append(cumulative[-1] + math.dist(a, b))
-    total = cumulative[-1]
-    if total == 0:
-        return (points[-1],)
-    head = total * progress
-    tail = max(0.0, head - min(120.0, max(12.0, total * 0.18)))
+@dataclass(frozen=True)
+class _LaserPath:
+    points: tuple[_XY, ...]
+    cumulative: tuple[float, ...]
+    closed: bool
 
-    def at(distance: float) -> _XY:
-        index = min(len(points) - 2, bisect_right(cumulative, distance) - 1)
-        length = cumulative[index + 1] - cumulative[index]
-        ratio = (distance - cumulative[index]) / length if length else 0.0
-        a, b = points[index], points[index + 1]
+    @property
+    def length(self) -> float:
+        return self.cumulative[-1]
+
+    @property
+    def period(self) -> float:
+        return max(_LASER_MIN_PERIOD, min(_LASER_MAX_PERIOD, self.length / _LASER_SPEED))
+
+    def at(self, distance: float) -> _XY:
+        if self.length == 0:
+            return self.points[0]
+        distance = distance % self.length if self.closed else max(0.0, min(self.length, distance))
+        index = min(len(self.points) - 2, bisect_right(self.cumulative, distance) - 1)
+        ratio = (distance - self.cumulative[index]) / (
+            self.cumulative[index + 1] - self.cumulative[index]
+        )
+        a, b = self.points[index], self.points[index + 1]
         return a[0] + ratio * (b[0] - a[0]), a[1] + ratio * (b[1] - a[1])
 
-    return (
-        at(tail),
-        *(point for point, distance in zip(points, cumulative) if tail < distance < head),
-        at(head),
+
+@lru_cache(maxsize=MAX_MARKS)
+def _laser_path(points: tuple[_XY, ...], bounds: Rect | None = None) -> _LaserPath:
+    """Cache only bounded geometry, never a mark's lifetime, context or visibility."""
+    if bounds is not None:
+        left, top, right, bottom = bounds
+        cx, cy = (left + right) / 2, (top + bottom) / 2
+        rx, ry = (right - left) / 2, (bottom - top) / 2
+        steps = min(MAX_POINTS - 1, max(96, math.ceil(math.tau * max(rx, ry) / 3)))
+        points = tuple(
+            (
+                cx + rx * math.cos(math.tau * index / steps),
+                cy + ry * math.sin(math.tau * index / steps),
+            )
+            for index in range(steps)
+        )
+        points += (points[0],)
+    vertices = [points[0]]
+    cumulative = [0.0]
+    for point in points[1:]:
+        length = math.dist(vertices[-1], point)
+        if length:
+            vertices.append(point)
+            cumulative.append(cumulative[-1] + length)
+    return _LaserPath(
+        tuple(vertices),
+        tuple(cumulative),
+        len(vertices) > 2 and vertices[0] == vertices[-1],
     )
 
 
-def _laser(canvas: Image.Image, mark: Mark, bounds: Rect, factor: float, now: float) -> None:
+def _trail(path: _LaserPath, head: float, length: float) -> tuple[_XY, ...]:
+    if path.length == 0 or length <= 0:
+        return (path.at(head),)
+    tail = head - length if path.closed else max(0.0, head - length)
+    length = head - tail
+    if length == 0:
+        return (path.at(head),)
+    # Uniform distance samples keep the fade smooth even on a two-vertex path.
+    steps = max(1, min(64, math.ceil(length / 2)))
+    distances = {tail + length * index / steps for index in range(steps + 1)}
+    for offset in (-path.length, 0.0) if path.closed else (0.0,):
+        distances.update(
+            distance + offset for distance in path.cumulative if tail < distance + offset < head
+        )
+    return tuple(path.at(distance) for distance in sorted(distances))
+
+
+def _ease(value: float) -> float:
+    value = max(0.0, min(1.0, value))
+    return value * value * (3.0 - 2.0 * value)
+
+
+def _laser_frame(mark: Mark, now: float) -> tuple[tuple[_XY, ...], float]:
     assert mark.expires_at is not None
     lifetime = mark.expires_at - mark.created_at
-    progress = min(1.0, (now - mark.created_at) / (lifetime * 0.75))
-    opacity = min(1.0, (mark.expires_at - now) / min(0.5, lifetime * 0.3))
-    physical = _trail(mark.points, progress)
+    elapsed = max(0.0, now - mark.created_at)
+    opacity = _ease(elapsed / min(0.14, lifetime * 0.2)) * _ease(
+        (mark.expires_at - now) / min(0.3, lifetime * 0.25)
+    )
+    path = _laser_path(mark.points, mark.laser_bounds)
+    length = min(_LASER_TRAIL_LENGTH, path.length * 0.22)
+    if path.closed:
+        head = (elapsed / path.period % 1.0) * path.length
+    else:
+        travel = min(path.period, lifetime * 0.75)
+        head = _ease(elapsed / travel) * path.length
+        length *= 1.0 - _ease((elapsed - travel) / min(0.2, lifetime * 0.25))
+    return _trail(path, head, length), opacity
+
+
+def _laser(
+    canvas: Image.Image,
+    mark: Mark,
+    bounds: Rect,
+    factor: float,
+    now: float,
+    *,
+    sampling: int,
+) -> None:
+    physical, opacity = _laser_frame(mark, now)
+    if opacity == 0:
+        return
     points = tuple(((x - bounds[0]) * factor, (y - bounds[1]) * factor) for x, y in physical)
     width = mark.width * factor
     padding = max(12 * factor, width * 4)
@@ -220,29 +337,75 @@ def _laser(canvas: Image.Image, mark: Mark, bounds: Rect, factor: float, now: fl
     bottom = min(canvas.height, math.ceil(max(ys) + padding) + 1)
     if left >= right or top >= bottom:
         return
-    local = tuple((x - left, y - top) for x, y in points)
+    size = right - left, bottom - top
+    sampling = _sampling(size, sampling)
+    halo_sampling = max(1, sampling // 2)
+    halo_scale = halo_sampling / sampling
+    local = tuple(((x - left) * sampling, (y - top) * sampling) for x, y in points)
+    halo_points = tuple((x * halo_scale, y * halo_scale) for x, y in local)
+    factor *= sampling
+    width *= sampling
+    cumulative = [0.0]
+    for a, b in zip(local, local[1:]):
+        cumulative.append(cumulative[-1] + math.dist(a, b))
     rgb = tuple(int(mark.color[index : index + 2], 16) for index in (1, 3, 5))
-    with Image.new("RGBA", (right - left, bottom - top)) as glow:
-        _stroke(glow, local, max(width * 3, 7 * factor), (*rgb, round(100 * opacity)))
-        with glow.filter(ImageFilter.GaussianBlur(max(1.0, width * 0.65))) as soft:
-            with Image.new("RGBA", glow.size) as core:
-                for index in range(1, len(local)):
-                    alpha = round(235 * opacity * (0.2 + 0.8 * index / (len(local) - 1)))
-                    _stroke(core, local[index - 1 : index + 1], width, (*rgb, alpha))
-                x, y = local[-1]
-                radius = max(2 * factor, width * 0.8)
-                draw = ImageDraw.Draw(core)
-                draw.ellipse(
-                    (x - radius, y - radius, x + radius, y + radius),
-                    fill=(*rgb, round(235 * opacity)),
-                )
-                radius *= 0.5
-                draw.ellipse(
-                    (x - radius, y - radius, x + radius, y + radius),
-                    fill=(255, 255, 255, round(255 * opacity)),
-                )
-                soft.alpha_composite(core)
-            canvas.alpha_composite(soft, dest=(left, top))
+    with (
+        closing(Image.new("L", (size[0] * halo_sampling, size[1] * halo_sampling))) as halo,
+        closing(Image.new("RGBA", (size[0] * sampling, size[1] * sampling))) as core,
+    ):
+        halo_draw, core_draw = ImageDraw.Draw(halo), ImageDraw.Draw(core)
+        for index in range(1, len(local)):
+            strength = _ease(cumulative[index] / cumulative[-1]) if cumulative[-1] else 1.0
+            segment = local[index - 1 : index + 1]
+            _stroke(
+                halo,
+                halo_points[index - 1 : index + 1],
+                max(width * 1.8, 4 * factor) * halo_scale,
+                round(60 * opacity * strength),
+                draw=halo_draw,
+            )
+            _stroke(
+                core,
+                segment,
+                width * (0.35 + 0.65 * strength),
+                (*rgb, round(235 * opacity * strength)),
+                draw=core_draw,
+            )
+        head = local[-1:]
+        diameter = max(3.6 * factor, width * 1.4)
+        _stroke(
+            halo,
+            halo_points[-1:],
+            diameter * 1.5 * halo_scale,
+            round(65 * opacity),
+            draw=halo_draw,
+        )
+        _stroke(core, head, diameter, (*rgb, round(245 * opacity)), draw=core_draw)
+        _stroke(
+            core,
+            head,
+            diameter * 0.42,
+            (255, 250, 238, round(255 * opacity)),
+            draw=core_draw,
+        )
+        # A lower-resolution alpha-only halo avoids blurring four channels at 4x.
+        with (
+            closing(
+                halo.filter(ImageFilter.GaussianBlur(max(0.7 * factor, width * 0.65) * halo_scale))
+            ) as soft,
+            closing(Image.new("RGBA", size, (*rgb, 0))) as glow,
+        ):
+            if halo_sampling > 1:
+                with closing(soft.resize(size, Image.Resampling.LANCZOS)) as alpha:
+                    glow.putalpha(alpha)
+            else:
+                glow.putalpha(soft)
+            if sampling > 1:
+                with closing(core.resize(size, Image.Resampling.LANCZOS)) as sharp:
+                    glow.alpha_composite(sharp)
+            else:
+                glow.alpha_composite(core)
+            canvas.alpha_composite(glow, dest=(left, top))
 
 
 def render_marks(
@@ -255,7 +418,7 @@ def render_marks(
     """Render an RGBA overlay with a transparent background and bounded allocation.
 
     Output is limited to 8192 pixels per side and 16,777,216 pixels total.
-    Small overlays are supersampled; large overlays keep the same memory cap.
+    Laser patches are supersampled locally; ink uses a bounded supersampled canvas.
     The caller owns the returned image.
     """
     bounds = _rect(bounds)
@@ -264,14 +427,16 @@ def render_marks(
     size = math.ceil((bounds[2] - bounds[0]) * scale), math.ceil((bounds[3] - bounds[1]) * scale)
     _check_size(size)
     marks, waiting = _scene(snapshot, now)
-    sampling = 2 if size[0] * size[1] <= MAX_RENDER_PIXELS // 4 else 1
+    sampling = _sampling(
+        size, 2 if waiting is not None or any(mark.kind != "laser" for mark in marks) else 1
+    )
     factor = scale * sampling
     canvas = Image.new("RGBA", (size[0] * sampling, size[1] * sampling))
     result: Image.Image | None = None
     try:
         for mark in marks:
             if mark.kind == "laser":
-                _laser(canvas, mark, bounds, factor, now)
+                _laser(canvas, mark, bounds, factor, now, sampling=4 // sampling)
                 continue
             points = tuple(
                 ((x - bounds[0]) * factor, (y - bounds[1]) * factor) for x, y in mark.points

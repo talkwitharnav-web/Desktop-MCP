@@ -35,6 +35,7 @@ class Mark:
     created_at: float
     expires_at: float | None
     context: CaptureContext | None
+    laser_bounds: Rect | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,14 @@ def _points(kind: object, points: object) -> tuple[Point, ...]:
         if result[0][0] == result[1][0] or result[0][1] == result[1][1]:
             raise ValueError("The two corners must define a positive width and height.")
     return result
+
+
+def _laser_bounds(kind: str, bounds: object) -> Rect | None:
+    if bounds is None:
+        return None
+    if kind != "laser":
+        raise ValueError("Only a laser can carry ellipse bounds.")
+    return _rect(bounds)
 
 
 def _context(value: object) -> CaptureContext:
@@ -240,9 +249,11 @@ class TeachingSession:
         lifetime: float | None = None,
         expected_context: CaptureContext | None = None,
         expected_input_revision: int | None = None,
+        laser_bounds: Rect | None = None,
     ) -> str:
         """Add an outlined annotation anchored to a currently available context."""
         points = _points(kind, points)
+        laser_bounds = _laser_bounds(kind, laser_bounds)
         color = _color(color)
         width = _number(width, "width", 0.5, 32.0)
         if kind == "laser" and lifetime is None:
@@ -268,6 +279,8 @@ class TeachingSession:
         ):
             raise RuntimeError("The annotation's target context is unavailable or changed.")
         _in_bounds(points, current)
+        if laser_bounds is not None:
+            _in_bounds((laser_bounds[:2], laser_bounds[2:]), current)
         now, identifier = self._now(), uuid4().hex
         after = self._authorize(generation=before.generation)
         if after.input_revision != before.input_revision:
@@ -287,6 +300,7 @@ class TeachingSession:
                 self._last_time,
                 self._last_time + lifetime if lifetime is not None else None,
                 current,
+                laser_bounds,
             )
             self._check_scene(
                 (*tuple(item.mark for item in self._marks.values()), mark),

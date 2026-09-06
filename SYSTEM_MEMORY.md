@@ -165,6 +165,14 @@ implementation lives under `src/desktop_mcp`.
 - Teaching model commits validate the combined mark/wait canvas before publishing.
   Native sizing uses the renderer's same stroke/glow-aware bounds and allocation
   limits; an oversized transient scene is hidden with a diagnostic, not a UI crash.
+  `Mark.laser_bounds` retains exact physical ellipse geometry while the compatible
+  path remains available. `teaching_render._laser_path` caches only bounded
+  arc-length geometry, never visibility/authorization. Closed paths orbit across
+  a continuous seam for the existing lifetime; open paths sweep once and rest.
+  Laser-only scenes supersample local patches instead of the whole canvas.
+  Callers explicitly close each returned RGBA image after use. Animation is
+  elapsed-time based; native scheduling must drop missed frames, not replay a
+  backlog or freeze the clock that also determines expiry.
   Outline ink keeps its requested hue above a neutral contrast edge; shared bounds
   include the extra stroke and antialiasing margin. Cursor-wait progress uses a
   second status line when space permits. Work-area-clamped clients reduce spacing

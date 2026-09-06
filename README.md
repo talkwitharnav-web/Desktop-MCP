@@ -53,6 +53,8 @@ resources. There is no separate hardcoded copy to keep synchronized.
   whose MCP image-result forwarding does not.
 - Teaching and control in **one armed session**: explain, circle a control,
   click the next tab, and keep explaining without changing modes.
+- Smooth local laser sweeps and continuously orbiting circles, with bounded
+  lifetimes, eased fades and no movement of the user's real pointer.
 - A short, wide, Alt-Tab-accessible transcript ribbon with optional expanded
   history, local pinning, top/bottom docking and an explicit taskbar-edge choice.
   Type questions into its message box and receive agent replies in the same

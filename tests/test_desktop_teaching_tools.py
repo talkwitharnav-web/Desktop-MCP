@@ -76,6 +76,45 @@ def test_laser_circles_image_bounds_without_moving_the_pointer(teaching_tools):
     assert mark[1] == "laser"
     assert mark[2][0] == mark[2][-1] == (140, 60)
     assert len(mark[2]) == 49
+    assert mark[3]["laser_bounds"] == (100, 50, 140, 70)
+    assert app.backend.events == []
+
+
+@pytest.mark.parametrize("bounds", [(11, 7, 90, 28), (90, 28, 11, 7), (0, 1, 1, 2)])
+def test_laser_bounds_preserve_exact_ellipse_and_always_close_the_compatibility_path(
+    teaching_tools, bounds
+):
+    app, tools, calls = teaching_tools
+    result = tools["Laser"](bounds=bounds, duration=10.0)
+    mark = next(call for call in calls if call[0] == "draw")
+    left, right = sorted((bounds[0], bounds[2]))
+    top, bottom = sorted((bounds[1], bounds[3]))
+    assert mark[2][0] == mark[2][-1]
+    assert mark[3]["laser_bounds"] == (left, top, right, bottom)
+    assert mark[3]["lifetime"] == result["duration"] == 10.0
+    assert app.backend.events == []
+
+
+@pytest.mark.parametrize("arguments", [{"loc": (10, 20)}, {"path": [(1, 2), (30, 40)]}])
+def test_laser_points_do_not_become_implicit_ellipses(teaching_tools, arguments):
+    app, tools, calls = teaching_tools
+    tools["Laser"](**arguments)
+    mark = next(call for call in calls if call[0] == "draw")
+    assert mark[3]["laser_bounds"] is None
+    assert mark[2] == ([arguments["loc"]] if "loc" in arguments else arguments["path"])
+    assert app.backend.events == []
+
+
+def test_laser_bounds_flow_through_the_real_teaching_model(teaching_tools):
+    app, tools, _ = teaching_tools
+    app.teaching = TeachingSession(
+        app.controller, position=app.backend.position, context=app.teaching_context
+    )
+    result = tools["Laser"](bounds=(10, 11, 60, 36), duration=10.0)
+    (mark,) = app.teaching.snapshot().marks
+    assert mark.identifier == result["identifier"]
+    assert mark.laser_bounds == (10, 11, 60, 36)
+    assert mark.expires_at - mark.created_at == 10.0
     assert app.backend.events == []
 
 
